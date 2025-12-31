@@ -484,15 +484,80 @@ Respond in this EXACT JSON format:
 }
 
 // Update person's last seen and increment count
-export async function updatePersonSeen(personId: string): Promise<void> {
+// Returns greeting info if this is first time today or after a long gap
+export interface GreetingInfo {
+  shouldGreet: boolean;
+  personName: string;
+  isOwner: boolean;
+  relationship: string;
+  timeSinceLastSeen: number; // in milliseconds
+  isFirstTimeToday: boolean;
+  greetingType: 'morning' | 'afternoon' | 'evening' | 'night' | 'welcome_back';
+}
+
+export async function updatePersonSeen(personId: string): Promise<GreetingInfo | null> {
   try {
     await connectToDatabase();
+    
+    // Get the current person data first
+    const person = await FaceData.findById(personId);
+    if (!person) return null;
+    
+    const now = new Date();
+    const lastSeen = person.metadata.lastSeen;
+    const timeSinceLastSeen = now.getTime() - lastSeen.getTime();
+    
+    // Check if this is the first time today
+    const lastSeenDate = new Date(lastSeen);
+    const isFirstTimeToday = lastSeenDate.toDateString() !== now.toDateString();
+    
+    // Consider a "long gap" as more than 4 hours (14400000 ms)
+    const longGapThreshold = 4 * 60 * 60 * 1000; // 4 hours
+    const isLongGap = timeSinceLastSeen > longGapThreshold;
+    
+    // Determine if we should greet
+    const shouldGreet = isFirstTimeToday || isLongGap;
+    
+    // Determine greeting type based on time of day
+    const hour = now.getHours();
+    let greetingType: GreetingInfo['greetingType'];
+    if (hour >= 5 && hour < 12) {
+      greetingType = 'morning';
+    } else if (hour >= 12 && hour < 17) {
+      greetingType = 'afternoon';
+    } else if (hour >= 17 && hour < 21) {
+      greetingType = 'evening';
+    } else {
+      greetingType = 'night';
+    }
+    
+    // If it's been more than a day, make it a "welcome back"
+    if (timeSinceLastSeen > 24 * 60 * 60 * 1000) {
+      greetingType = 'welcome_back';
+    }
+    
+    // Update the database
     await FaceData.findByIdAndUpdate(personId, {
-      $set: { 'metadata.lastSeen': new Date() },
+      $set: { 'metadata.lastSeen': now },
       $inc: { 'metadata.seenCount': 1 },
     });
+    
+    if (shouldGreet) {
+      return {
+        shouldGreet: true,
+        personName: person.personName,
+        isOwner: person.isOwner || false,
+        relationship: person.relationship,
+        timeSinceLastSeen,
+        isFirstTimeToday,
+        greetingType,
+      };
+    }
+    
+    return null;
   } catch (error) {
     console.error('Update person seen error:', error);
+    return null;
   }
 }
 

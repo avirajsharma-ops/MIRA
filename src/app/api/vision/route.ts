@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { analyzeImageWithGemini, analyzeScreenWithGemini, detectGestureWithGemini } from '@/lib/vision';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
-import { detectFacesWithGemini, getKnownPeople, updatePersonSeen } from '@/lib/face/faceRecognition';
+import { detectFacesWithGemini, getKnownPeople, updatePersonSeen, GreetingInfo } from '@/lib/face/faceRecognition';
 
 export async function POST(request: NextRequest) {
   try {
@@ -44,9 +44,13 @@ export async function POST(request: NextRequest) {
           const knownPeople = await getKnownPeople(payload.userId);
           const faceResult = await detectFacesWithGemini(imageBase64, knownPeople);
           
-          // Update lastSeen for recognized people
+          // Update lastSeen for recognized people and collect greeting info
+          const greetings: GreetingInfo[] = [];
           for (const person of faceResult.recognizedPeople) {
-            await updatePersonSeen(person.personId);
+            const greetingInfo = await updatePersonSeen(person.personId);
+            if (greetingInfo && greetingInfo.shouldGreet) {
+              greetings.push(greetingInfo);
+            }
           }
           
           analysis = {
@@ -56,6 +60,7 @@ export async function POST(request: NextRequest) {
               recognizedPeople: faceResult.recognizedPeople,
               unknownFaces: faceResult.unknownFaces,
               speakingPerson: faceResult.speakingPerson,
+              greetings, // Add greetings to trigger in the frontend
             }
           };
         } catch (err) {

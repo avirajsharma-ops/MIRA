@@ -246,6 +246,9 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   const lastUnknownFaceTimeRef = useRef<number>(0);
   const knownPeopleCountRef = useRef<number | null>(null);
   const awaitingFaceInfoRef = useRef(false);
+  
+  // Track who we've greeted in this session to avoid repeated greetings
+  const greetedPeopleRef = useRef<Set<string>>(new Set());
 
   // Audio player
   const {
@@ -449,6 +452,43 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
           unknownFacePromptedRef.current = false;
           awaitingFaceInfoRef.current = false;
           setPendingUnknownFace(null);
+          
+          // Check for greetings (first time today or after long gap)
+          if (speakers.greetings && speakers.greetings.length > 0 && sendMessageRef.current) {
+            for (const greeting of speakers.greetings) {
+              // Only greet if we haven't greeted this person in this session
+              if (!greetedPeopleRef.current.has(greeting.personName)) {
+                greetedPeopleRef.current.add(greeting.personName);
+                
+                // Build greeting prompt based on time of day and context
+                let greetingPrompt: string;
+                const greetingTypeMap: Record<string, string> = {
+                  morning: 'Good morning',
+                  afternoon: 'Good afternoon', 
+                  evening: 'Good evening',
+                  night: 'Hi',
+                  welcome_back: 'Welcome back',
+                };
+                const timeGreeting = greetingTypeMap[greeting.greetingType] || 'Hello';
+                
+                if (greeting.isOwner) {
+                  // Greeting for the account owner
+                  greetingPrompt = `[SYSTEM: The account owner "${greeting.personName}" has just appeared on camera for the first time ${greeting.isFirstTimeToday ? 'today' : 'in a while'}. Greet them warmly and naturally. Use "${timeGreeting}" as your greeting style. Be friendly and personal - you know them well. Don't mention "camera" or "detected" - just greet them as if you're happy to see them. Keep it brief and natural, maybe ask how they're doing or comment on the time of day.]`;
+                } else {
+                  // Greeting for a known person (not owner)
+                  greetingPrompt = `[SYSTEM: "${greeting.personName}" (${greeting.relationship || 'known person'}) has just appeared on camera for the first time ${greeting.isFirstTimeToday ? 'today' : 'in a while'}. Greet them warmly using "${timeGreeting}". Be friendly and natural. Don't mention "camera" or "detected" - just greet them naturally. Keep it brief.]`;
+                }
+                
+                console.log(`[Face] Triggering greeting for ${greeting.personName} (${greeting.greetingType})`);
+                
+                // Only send greeting if not currently speaking or processing
+                if (!isSpeaking && !isLoading) {
+                  sendMessageRef.current(greetingPrompt);
+                  break; // Only greet one person at a time
+                }
+              }
+            }
+          }
         }
         
         // Check for unknown faces when we haven't prompted recently
