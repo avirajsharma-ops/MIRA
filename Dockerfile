@@ -1,25 +1,20 @@
 # ===========================================
 # MIRA AI Assistant - Production Dockerfile
-# Single-stage build for reliability
 # ===========================================
 
-FROM node:20-slim AS builder
+# Use full Debian-based Node image for better native module compatibility
+FROM node:20-bookworm AS builder
 
 WORKDIR /app
 
-# Install build dependencies for native modules (lightningcss)
-RUN apt-get update && apt-get install -y \
-    python3 \
-    make \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy package files and install dependencies
+# Copy package files
 COPY package.json package-lock.json* ./
+
+# Install dependencies - the full node image has all needed build tools
 RUN npm install --legacy-peer-deps
 
-# Rebuild native modules for Linux x64 (fixes lightningcss)
-RUN npm rebuild lightningcss
+# Explicitly install the Linux x64 binary for lightningcss
+RUN npm install lightningcss-linux-x64-gnu --save-optional --legacy-peer-deps || true
 
 # Copy source code
 COPY . .

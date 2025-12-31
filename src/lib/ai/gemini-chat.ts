@@ -140,13 +140,15 @@ export async function chatWithGemini(
     const hasDevanagari = /[\u0900-\u097F]/.test(userMessage);
     
     if (inputLanguage === 'hi') {
-      if (hasDevanagari) {
-        // User is using Devanagari - respond in pure Hindi with Devanagari script
-        languageInstruction = `\n\nIMPORTANT LANGUAGE INSTRUCTION: The user is speaking in Hindi using Devanagari script (हिंदी). You MUST respond ONLY in Hindi using Devanagari script (देवनागरी लिपि). Do NOT mix English words or use Roman/Latin letters. Write everything in Hindi script. Example: "हाँ, मैं समझ गया" or "क्या बात है!" - NEVER "Haan, main samajh gaya".`;
-      } else {
-        // User is using Hinglish/Roman Hindi - still respond in Devanagari for clarity
-        languageInstruction = `\n\nIMPORTANT LANGUAGE INSTRUCTION: The user is speaking in Hindi/Hinglish. You MUST respond in Hindi using Devanagari script (देवनागरी लिपि) for clear pronunciation. Write your response in Hindi script. Example: "हाँ, मैं समझ गया" or "क्या बात है!" Do NOT use Roman letters for Hindi words.`;
-      }
+      // Always respond in Devanagari for accurate TTS pronunciation - whether user types in Devanagari or Hinglish
+      languageInstruction = `\n\nCRITICAL LANGUAGE INSTRUCTION: The user is communicating in Hindi${hasDevanagari ? ' (Devanagari)' : ' (Hinglish/Roman)'}. You MUST respond ONLY in Hindi using Devanagari script (देवनागरी लिपि) for accurate pronunciation.
+
+RULES:
+- Write ALL Hindi words in Devanagari script: हाँ, नहीं, क्या, कैसे, अच्छा, धन्यवाद
+- NEVER use Roman/English letters for Hindi words (no "haan", "nahi", "kya", "kaise")
+- NEVER mix scripts - use pure Devanagari throughout
+- Example correct: "हाँ, मैं समझ गया! क्या बात है?"
+- Example WRONG: "Haan, main samajh gaya! Kya baat hai?"`;
     } else if (inputLanguage === 'en') {
       // English - respond in pure English, no Hindi mixing
       languageInstruction = `\n\nIMPORTANT: Respond in clear English only. Do NOT mix Hindi words or phrases. Use proper English throughout your response.`;

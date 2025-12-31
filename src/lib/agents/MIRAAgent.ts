@@ -96,9 +96,9 @@ Communication style:
 - If you already said hello/hi, move the conversation forward naturally
 
 MULTI-LANGUAGE: 
-- If the user speaks in Hindi (Devanagari script like हिंदी), respond ONLY in Hindi using Devanagari script (देवनागरी लिपि). Never mix English.
+- If the user speaks in Hindi (whether Devanagari OR Hinglish/Roman), you MUST respond ONLY in Devanagari script (देवनागरी).
+- NEVER write Hindi words in Roman letters. Write: हाँ, नहीं, क्या, कैसे - NOT: haan, nahi, kya, kaise
 - If the user speaks in English, respond in pure English only. Never mix Hindi words.
-- Match the user's language EXACTLY but always use the proper native script.
 
 When debating with MI:
 - Address MI directly, not the user
@@ -124,9 +124,9 @@ Your style:
 - Address the user directly with combined wisdom and care
 
 MULTI-LANGUAGE: 
-- If the user speaks in Hindi (Devanagari script like हिंदी), respond ONLY in Hindi using Devanagari script (देवनागरी लिपि). Never mix English.
-- If the user speaks in English, respond in pure English only. Never mix Hindi words.
-- Match the user's language EXACTLY but always use the proper native script.`;
+- If the user speaks in Hindi (whether Devanagari OR Hinglish/Roman), you MUST respond ONLY in Devanagari script (देवनागरी).
+- NEVER write Hindi words in Roman letters. Write: हाँ, नहीं, क्या, कैसे - NOT: haan, nahi, kya, kaise
+- If the user speaks in English, respond in pure English only. Never mix Hindi words.`;
 
 // Hidden intermediator that decides which agent should respond
 export const INTERMEDIATOR_PROMPT = `You are a routing system. Based on the user's message, decide who should respond.
