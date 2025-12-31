@@ -75,7 +75,7 @@ function FloatingKeyboard() {
 }
 
 function MIRAApp() {
-  const { isAuthenticated, user, logout, clearConversation, enableProactive, setEnableProactive, isRecording, isCameraActive } = useMIRA();
+  const { isAuthenticated, isAuthLoading, user, logout, clearConversation, enableProactive, setEnableProactive, isRecording, isCameraActive } = useMIRA();
   const [showPeopleModal, setShowPeopleModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showFaceRegistration, setShowFaceRegistration] = useState(false);
@@ -108,6 +108,18 @@ function MIRAApp() {
   useEffect(() => {
     checkOwnerFace();
   }, [checkOwnerFace]);
+
+  // Show loading screen while checking auth
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <div className="flex flex-col items-center gap-4">
+          <img src="/icons/favicon.png" alt="MIRA" className="w-16 h-16 rounded-2xl animate-pulse" />
+          <div className="text-white/60 text-sm">Loading...</div>
+        </div>
+      </div>
+    );
+  }
 
   if (!isAuthenticated) {
     return <AuthScreen />;

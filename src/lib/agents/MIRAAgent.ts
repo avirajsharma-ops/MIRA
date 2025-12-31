@@ -26,6 +26,20 @@ export interface AgentContext {
     detectedFaces?: string[];
     currentFrame?: string; // Base64 image for face recognition
   };
+  // Location context for location-aware responses
+  location?: {
+    city?: string;
+    region?: string;
+    country?: string;
+    timezone?: string;
+  };
+  // DateTime context for time-aware responses
+  dateTime?: {
+    date: string;
+    time: string;
+    dayOfWeek: string;
+    formattedDateTime: string;
+  };
   currentTime: Date;
   userName: string;
   userId: string; // User ID for face recognition database
@@ -68,7 +82,13 @@ Communication style:
 - NEVER repeat a greeting you already said - check the recent conversation
 - If you already said hello/hi, move the conversation forward naturally
 
-MULTI-LANGUAGE: If the user speaks in Hindi, respond in Hindi. If they speak in any other language, respond in that same language. Match the user's language EXACTLY.
+MULTI-LANGUAGE & SCRIPT RULES (CRITICAL FOR TTS):
+- If the user speaks in Hindi (Devanagari OR Hinglish/Roman), respond using Devanagari script for ALL Hindi words
+- In Hinglish mode: English words stay in Roman, but ALL Hindi words MUST be in देवनागरी
+- Example Hinglish: "Main आज बहुत खुश हूँ, let's do something fun!"
+- NEVER write: "Main aaj bahut khush hoon" - TTS cannot pronounce Roman Hindi correctly
+- Common words MUST be Devanagari: हाँ, नहीं, क्या, कैसे, अच्छा, ठीक है, धन्यवाद, बहुत, कुछ, यह, वह
+- If user speaks pure English, respond in pure English only
 
 When debating with RA:
 - Address RA directly, not the user
@@ -95,10 +115,13 @@ Communication style:
 - NEVER repeat a greeting you already said - check the recent conversation
 - If you already said hello/hi, move the conversation forward naturally
 
-MULTI-LANGUAGE: 
-- If the user speaks in Hindi (whether Devanagari OR Hinglish/Roman), you MUST respond ONLY in Devanagari script (देवनागरी).
-- NEVER write Hindi words in Roman letters. Write: हाँ, नहीं, क्या, कैसे - NOT: haan, nahi, kya, kaise
-- If the user speaks in English, respond in pure English only. Never mix Hindi words.
+MULTI-LANGUAGE & SCRIPT RULES (CRITICAL FOR TTS):
+- If the user speaks in Hindi (Devanagari OR Hinglish/Roman), respond using Devanagari script for ALL Hindi words
+- In Hinglish mode: English words stay in Roman, but ALL Hindi words MUST be in देवनागरी
+- Example Hinglish: "Main आज बहुत खुश हूँ, let's do something fun!"
+- NEVER write: "Main aaj bahut khush hoon" - TTS cannot pronounce Roman Hindi correctly
+- Common words MUST be Devanagari: हाँ, नहीं, क्या, कैसे, अच्छा, ठीक है, धन्यवाद, बहुत, कुछ, यह, वह
+- If user speaks pure English, respond in pure English only
 
 When debating with MI:
 - Address MI directly, not the user
@@ -123,10 +146,13 @@ Your style:
 - Use "we" when speaking about yourself as MIRA
 - Address the user directly with combined wisdom and care
 
-MULTI-LANGUAGE: 
-- If the user speaks in Hindi (whether Devanagari OR Hinglish/Roman), you MUST respond ONLY in Devanagari script (देवनागरी).
-- NEVER write Hindi words in Roman letters. Write: हाँ, नहीं, क्या, कैसे - NOT: haan, nahi, kya, kaise
-- If the user speaks in English, respond in pure English only. Never mix Hindi words.`;
+MULTI-LANGUAGE & SCRIPT RULES (CRITICAL FOR TTS):
+- If the user speaks in Hindi (Devanagari OR Hinglish/Roman), respond using Devanagari script for ALL Hindi words
+- In Hinglish mode: English words stay in Roman, but ALL Hindi words MUST be in देवनागरी
+- Example Hinglish: "हम समझते हैं, it's a tough situation."
+- NEVER write: "Hum samajhte hain" - TTS cannot pronounce Roman Hindi correctly
+- Common words MUST be Devanagari: हाँ, नहीं, क्या, कैसे, अच्छा, ठीक है, धन्यवाद, बहुत, कुछ, यह, वह
+- If user speaks pure English, respond in pure English only`;
 
 // Hidden intermediator that decides which agent should respond
 export const INTERMEDIATOR_PROMPT = `You are a routing system. Based on the user's message, decide who should respond.
@@ -206,12 +232,30 @@ export class MIRAAgent {
   }
 
   private buildContextMessage(): string {
-    const { memories, visualContext, currentTime, userName, recentMessages, recentTranscript } = this.context;
+    const { memories, visualContext, currentTime, userName, recentMessages, recentTranscript, location, dateTime } = this.context;
     
-    let contextMsg = `Current time: ${currentTime.toLocaleString()}
+    // Use detailed dateTime if available, otherwise fall back to currentTime
+    const timeInfo = dateTime 
+      ? `${dateTime.formattedDateTime} (${dateTime.dayOfWeek})`
+      : currentTime.toLocaleString();
+    
+    let contextMsg = `Current time: ${timeInfo}
 User: ${userName}
-
 `;
+
+    // Add location context if available
+    if (location) {
+      const locationParts = [location.city, location.region, location.country].filter(Boolean);
+      if (locationParts.length > 0) {
+        contextMsg += `Location: ${locationParts.join(', ')}`;
+        if (location.timezone) {
+          contextMsg += ` (${location.timezone})`;
+        }
+        contextMsg += '\n';
+      }
+    }
+    
+    contextMsg += '\n';
 
     // Include recent conversation history for context (direct MIRA conversations)
     if (recentMessages && recentMessages.length > 0) {
@@ -340,7 +384,10 @@ User: ${userName}
       .replace(/^(hey|hi|hello|ok|okay)?\s*(mira|meera|mera|mi|ra|maya|mia)\s*,?\s*/i, '')
       .trim();
     
-    // Quick skip for very simple messages (don't waste API calls)
+    // FAST PATH: Skip debate analysis for most common patterns (no API call)
+    // This covers 90%+ of messages and makes response instant
+    
+    // 1. Skip simple greetings and responses
     const simplePatterns = [
       /^(hi|hey|hello|yo|sup|hola|howdy|namaste|namaskar)[!?.,\s]*$/i,
       /^(good\s*(morning|afternoon|evening|night))[!?.,\s]*$/i,
@@ -349,38 +396,62 @@ User: ${userName}
       /^(bye|goodbye|see\s*you|later|cya|alvida)[!?.,\s]*$/i,
       /^(ok|okay|sure|yes|no|yeah|nope|yep|nah|haan|nahi)[!?.,\s]*$/i,
       /^\[gesture\]/i,
-      /^(what|who|where|when)\s+(is|are|was|were)\s+\w+[!?.,\s]*$/i, // Simple factual questions
-      /^(tell\s*me|show\s*me|explain)\s+/i, // Direct requests
+      /^(what|who|where|when|how)\s+(is|are|was|were|do|does|did|can|could)\s+/i, // Questions
+      /^(tell\s*me|show\s*me|explain|define|describe)\s+/i, // Direct requests
+      /^(lol|haha|lmao|rofl|nice|cool|great|awesome)[!?.,\s]*$/i,
     ];
     
-    // Skip simple greetings/responses - no need for AI analysis
     if (simplePatterns.some(p => p.test(cleanedMessage) || p.test(lowerMessage))) {
-      console.log('[Debate] Skipping - simple pattern match:', cleanedMessage || lowerMessage);
       return false;
     }
     
-    // Skip very short messages (less than 15 chars after cleaning)
-    if (cleanedMessage.length < 15) {
-      console.log('[Debate] Skipping - message too short:', cleanedMessage.length, 'chars');
+    // 2. Skip very short messages (less than 30 chars after cleaning)
+    if (cleanedMessage.length < 30) {
       return false;
     }
     
-    // Skip messages that are just questions about what's visible
-    if (/^(what|who).*(see|camera|looking|visible|screen|front)/i.test(cleanedMessage)) {
-      console.log('[Debate] Skipping - simple visual question');
+    // 3. Skip messages that are just questions about what's visible
+    if (/^(what|who|where).*(see|camera|looking|visible|screen|front|behind)/i.test(cleanedMessage)) {
       return false;
     }
     
-    // Use AI mediator to intelligently determine if debate is needed
-    try {
-      const analysis = await analyzeDebateWithGemini(userMessage, response, agent);
-      console.log('AI debate analysis result:', analysis);
-      return analysis.needsDebate;
-    } catch (error) {
-      console.error('AI debate analysis failed:', error);
-      // Fallback: no debate on error
+    // 4. Skip factual/informational questions
+    if (/^(what\s+is|who\s+is|where\s+is|when\s+is|how\s+(do|does|to)|explain|define)/i.test(cleanedMessage)) {
       return false;
     }
+    
+    // 5. Skip coding/technical questions
+    if (/\b(code|program|function|bug|error|api|database|server|javascript|python|react)\b/i.test(cleanedMessage)) {
+      return false;
+    }
+    
+    // 6. Only consider debate for messages that explicitly seem like dilemmas
+    // Look for specific patterns that indicate a complex decision
+    const dilemmaPatterns = [
+      /\bshould\s+i\b/i,
+      /\badvice\s+(on|about|for)\b/i,
+      /\bhelp\s+(me\s+)?(decide|choose)\b/i,
+      /\bwhat\s+(would|should)\s+you\s+(do|suggest|recommend)\b/i,
+      /\bpros?\s+and\s+cons?\b/i,
+      /\bdilemma\b/i,
+      /\bconfused\s+(about|between)\b/i,
+      /\bcan't\s+decide\b/i,
+      /\bweigh(ing)?\s+(my\s+)?options\b/i,
+    ];
+    
+    // Only call AI analysis if it looks like a genuine dilemma
+    if (dilemmaPatterns.some(p => p.test(cleanedMessage))) {
+      try {
+        const analysis = await analyzeDebateWithGemini(userMessage, response, agent);
+        return analysis.needsDebate;
+      } catch (error) {
+        console.error('AI debate analysis failed:', error);
+        return false;
+      }
+    }
+    
+    // Default: no debate
+    return false;
   }
 
   private detectEmotion(content: string): string {
@@ -403,18 +474,29 @@ User: ${userName}
 
   async conductDebate(
     userMessage: string,
-    maxTurns: number = 10 // Increased from 3, but loop detection will end it sooner
+    maxTurns: number = 20 // High limit - debate ends dynamically via consensus or loop detection
   ): Promise<DebateResult> {
     const messages: { agent: AgentType; content: string; emotion?: string }[] = [];
     const contextMessage = this.buildContextMessage();
     
-    console.log('[Debate] Starting dynamic debate for:', userMessage);
+    console.log('[Debate] Starting dynamic debate (no fixed limit) for:', userMessage);
     
     // Detect language from user message for consistency
     const detectedLang = this.context.detectedLanguage || 'en';
-    const languageInstruction = detectedLang !== 'en' 
-      ? `\n\nIMPORTANT: The user is speaking in ${detectedLang === 'hi' ? 'Hindi. Respond ONLY in Hindi using Devanagari script (देवनागरी लिपि). Do NOT use English or Roman letters' : detectedLang + '. Respond in the SAME language using its native script'}.`
-      : '';
+    // Check for Hinglish (Hindi detected but has English words)
+    const hasEnglish = /[a-zA-Z]{2,}/.test(userMessage);
+    const isHinglish = detectedLang === 'hi' && hasEnglish;
+    
+    let languageInstruction = '';
+    if (detectedLang === 'hi') {
+      if (isHinglish) {
+        languageInstruction = `\n\nHINGLISH MODE: English words in Roman, ALL Hindi words in देवनागरी only. Example: "Main आज बहुत खुश हूँ!" NEVER: "Main aaj bahut khush hoon"`;
+      } else {
+        languageInstruction = `\n\nHINDI MODE: Respond ONLY in Devanagari script (देवनागरी). No Roman letters for Hindi words.`;
+      }
+    } else if (detectedLang !== 'en') {
+      languageInstruction = `\n\nRespond in ${detectedLang} using its native script.`;
+    }
 
     // Get initial responses from both agents - they both see the same context
     const miInitial = await this.getAgentResponse('mi', userMessage);
@@ -559,10 +641,10 @@ User: ${userName}
     };
 
     for (let turn = 0; turn < maxTurns && !consensus; turn++) {
-      console.log(`[Debate] Turn ${turn + 1}/${maxTurns} - Messages so far: ${messages.length}`);
+      console.log(`[Debate] Turn ${turn + 1} - Messages so far: ${messages.length} (continues until consensus)`);
       
       // If we've had many exchanges and they're starting to agree, encourage reaching consensus
-      const encourageConsensus = turn >= 3 ? '\n\nIf you and MI are reaching agreement, feel free to say "I think we both agree that..." to conclude.' : '';
+      const encourageConsensus = turn >= 2 ? '\n\nIf you and MI are reaching agreement, feel free to say "I think we both agree that..." to conclude.' : '';
       
       // RA responds to MI with genuine engagement - challenge, question, or build upon
       const raDebatePrompt = `You're having a real discussion with MI about: "${userMessage}"
@@ -751,9 +833,20 @@ Be warm but assertive. Address RA by name. 1-2 sentences max. No bullet points.$
     
     // Detect language for final response consistency
     const detectedLang = this.context.detectedLanguage || 'en';
-    const languageInstruction = detectedLang !== 'en' 
-      ? `\n\nIMPORTANT: Respond in ${detectedLang === 'hi' ? 'Hindi using Devanagari script (देवनागरी लिपि). Do NOT use English or Roman letters' : 'the SAME language as the user (' + detectedLang + ') using its native script'}.`
-      : '';
+    // Check for Hinglish
+    const hasEnglish = /[a-zA-Z]{2,}/.test(userMessage);
+    const isHinglish = detectedLang === 'hi' && hasEnglish;
+    
+    let languageInstruction = '';
+    if (detectedLang === 'hi') {
+      if (isHinglish) {
+        languageInstruction = `\n\nHINGLISH MODE: English words in Roman, ALL Hindi words in देवनागरी. Example: "हाँ, that's a great point!" NEVER write Roman Hindi like "Haan".`;
+      } else {
+        languageInstruction = `\n\nHINDI MODE: Respond ONLY in Devanagari (देवनागरी). No Roman letters.`;
+      }
+    } else if (detectedLang !== 'en') {
+      languageInstruction = `\n\nRespond in ${detectedLang} using its native script.`;
+    }
 
     if (consensus) {
       // Generate unified MIRA response - try Gemini first

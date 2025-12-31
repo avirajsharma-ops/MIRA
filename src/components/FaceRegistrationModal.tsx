@@ -2,6 +2,7 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import Modal from './Modal';
+import { useFaceDetection } from '@/hooks';
 
 interface FaceRegistrationModalProps {
   isOpen: boolean;
@@ -27,22 +28,31 @@ export default function FaceRegistrationModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
+  const [faceDetectionStatus, setFaceDetectionStatus] = useState<string>('');
+  
+  // Use face detection hook for extracting embeddings
+  const { isModelLoaded, isLoading: isModelLoading, getFaceEmbedding, loadModels } = useFaceDetection();
 
   // Start camera when modal opens
   useEffect(() => {
     if (isOpen) {
       startCamera();
+      // Load face-api models if not loaded
+      if (!isModelLoaded && !isModelLoading) {
+        loadModels();
+      }
     } else {
       stopCamera();
       setCapturedImage(null);
       setError(null);
       setCountdown(null);
+      setFaceDetectionStatus('');
     }
     
     return () => {
       stopCamera();
     };
-  }, [isOpen]);
+  }, [isOpen, isModelLoaded, isModelLoading, loadModels]);
 
   const startCamera = async () => {
     try {
@@ -119,6 +129,7 @@ export default function FaceRegistrationModal({
   const retakePhoto = () => {
     setCapturedImage(null);
     setError(null);
+    setFaceDetectionStatus('');
   };
 
   const submitPhoto = async () => {
@@ -133,6 +144,26 @@ export default function FaceRegistrationModal({
       // Extract base64 data (remove data URL prefix)
       const base64Data = capturedImage.replace(/^data:image\/\w+;base64,/, '');
       
+      // Try to extract face embedding using face-api.js
+      let faceDescriptor: number[] | undefined;
+      
+      if (isModelLoaded) {
+        setFaceDetectionStatus('Analyzing face...');
+        const embeddingResult = await getFaceEmbedding(capturedImage);
+        
+        if (embeddingResult) {
+          faceDescriptor = embeddingResult.embedding;
+          setFaceDetectionStatus('Face detected ✓');
+          console.log('[FaceReg] Face embedding extracted, 128-dim vector');
+        } else {
+          setFaceDetectionStatus('No face detected, saving image only');
+          console.warn('[FaceReg] No face detected in image');
+        }
+      } else {
+        setFaceDetectionStatus('Face models loading...');
+        console.warn('[FaceReg] Face models not loaded, saving without embedding');
+      }
+      
       const response = await fetch('/api/faces', {
         method: 'POST',
         headers: {
@@ -145,6 +176,7 @@ export default function FaceRegistrationModal({
           personName: userName,
           relationship: 'Account Owner',
           isOwner: true,
+          faceDescriptor, // Include embedding if available
         }),
       });
       
@@ -160,6 +192,7 @@ export default function FaceRegistrationModal({
       setError('Failed to register face. Please try again.');
     } finally {
       setIsSubmitting(false);
+      setFaceDetectionStatus('');
     }
   };
 
@@ -176,29 +209,23 @@ export default function FaceRegistrationModal({
   };
 
   return (
-    <Modal isOpen={isOpen} onClose={handleClose} title="">
-      <div className="p-6 max-w-lg mx-auto">
-        {/* Header */}
-        <div className="text-center mb-6">
-          <div className="w-16 h-16 mx-auto mb-4 bg-white/10 border border-white/20 rounded-full flex items-center justify-center">
-            <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-              <circle cx="12" cy="7" r="4" />
-            </svg>
-          </div>
-          <h2 className="text-2xl font-bold text-white mb-2">
-            {isNewAccount ? 'Welcome to MIRA!' : 'Face Registration Required'}
-          </h2>
-          <p className="text-white/60 text-sm">
-            {isNewAccount 
-              ? `Hi ${userName}! Let's set up face recognition so MIRA can recognize you.`
-              : `Please register your face so MIRA can identify you as the account owner.`
-            }
-          </p>
-        </div>
+    <Modal 
+      isOpen={isOpen} 
+      onClose={handleClose} 
+      title={isNewAccount ? `Welcome, ${userName}!` : 'Face Registration'} 
+      size="sm"
+    >
+      <div className="-mt-2">
+        {/* Subtitle */}
+        <p className="text-white/50 text-xs text-center mb-3">
+          {isNewAccount 
+            ? 'Quick face scan for recognition'
+            : 'Register your face for MIRA'
+          }
+        </p>
 
-        {/* Camera / Preview */}
-        <div className="relative aspect-[4/3] bg-black/50 rounded-xl overflow-hidden mb-6">
+        {/* Camera / Preview - Compact */}
+        <div className="relative aspect-[4/3] max-h-[40vh] bg-black/50 rounded-xl overflow-hidden mb-3 mx-auto">
           {!capturedImage ? (
             <>
               <video
@@ -210,15 +237,15 @@ export default function FaceRegistrationModal({
                 style={{ transform: 'scaleX(-1)' }}
               />
               
-              {/* Face guide overlay */}
+              {/* Face guide overlay - smaller */}
               <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <div className="w-48 h-60 border-2 border-dashed border-white/30 rounded-full" />
+                <div className="w-32 h-40 sm:w-40 sm:h-52 border-2 border-dashed border-white/30 rounded-full" />
               </div>
               
               {/* Countdown overlay */}
               {countdown !== null && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/50">
-                  <span className="text-6xl font-bold text-white animate-pulse">
+                  <span className="text-5xl font-bold text-white animate-pulse">
                     {countdown}
                   </span>
                 </div>
@@ -227,10 +254,7 @@ export default function FaceRegistrationModal({
               {/* Camera loading state */}
               {!isCameraReady && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/70">
-                  <div className="text-center">
-                    <div className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin mx-auto mb-2" />
-                    <p className="text-white/60 text-sm">Starting camera...</p>
-                  </div>
+                  <div className="w-6 h-6 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
                 </div>
               )}
             </>
@@ -246,30 +270,32 @@ export default function FaceRegistrationModal({
         {/* Hidden canvas for capture */}
         <canvas ref={canvasRef} className="hidden" />
 
-        {/* Error message */}
-        {error && (
-          <div className="mb-4 p-3 bg-red-500/20 border border-red-500/30 rounded-lg">
-            <p className="text-red-400 text-sm text-center">{error}</p>
+        {/* Status messages - compact inline */}
+        {(error || faceDetectionStatus || (isModelLoading && !capturedImage)) && (
+          <div className={`mb-3 px-3 py-2 rounded-lg text-xs text-center ${
+            error ? 'bg-red-500/20 text-red-400' :
+            faceDetectionStatus ? 'bg-purple-500/20 text-purple-300' :
+            'bg-blue-500/20 text-blue-300'
+          }`}>
+            {error || faceDetectionStatus || 'Loading face models...'}
           </div>
         )}
 
-        {/* Instructions */}
-        {!capturedImage && isCameraReady && (
-          <div className="mb-4 p-3 bg-white/5 rounded-lg">
-            <p className="text-white/60 text-sm text-center">
-              Position your face within the oval guide and click capture
-            </p>
-          </div>
+        {/* Instruction - only when camera ready and no other status */}
+        {!capturedImage && isCameraReady && !isModelLoading && !error && !faceDetectionStatus && (
+          <p className="text-white/40 text-xs text-center mb-3">
+            Position face in oval, then capture
+          </p>
         )}
 
-        {/* Actions */}
-        <div className="flex gap-3">
+        {/* Actions - compact buttons */}
+        <div className="flex gap-2">
           {!capturedImage ? (
             <>
               {!isNewAccount && (
                 <button
                   onClick={onClose}
-                  className="flex-1 py-3 px-4 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-colors"
+                  className="flex-1 py-2.5 px-3 bg-white/10 hover:bg-white/20 text-white text-sm rounded-lg transition-colors"
                 >
                   Later
                 </button>
@@ -277,7 +303,7 @@ export default function FaceRegistrationModal({
               <button
                 onClick={startCountdown}
                 disabled={!isCameraReady || countdown !== null}
-                className="flex-1 py-3 px-4 bg-white text-black rounded-xl font-semibold hover:bg-white/90 transition-opacity disabled:opacity-50"
+                className="flex-1 py-2.5 px-3 bg-white text-black text-sm rounded-lg font-medium hover:bg-white/90 transition-opacity disabled:opacity-50"
               >
                 {countdown !== null ? `${countdown}...` : '📸 Capture'}
               </button>
@@ -287,35 +313,28 @@ export default function FaceRegistrationModal({
               <button
                 onClick={retakePhoto}
                 disabled={isSubmitting}
-                className="flex-1 py-3 px-4 bg-white/10 hover:bg-white/20 text-white rounded-xl transition-colors disabled:opacity-50"
+                className="flex-1 py-2.5 px-3 bg-white/10 hover:bg-white/20 text-white text-sm rounded-lg transition-colors disabled:opacity-50"
               >
                 Retake
               </button>
               <button
                 onClick={submitPhoto}
                 disabled={isSubmitting}
-                className="flex-1 py-3 px-4 bg-white text-black rounded-xl font-semibold hover:bg-white/90 transition-opacity disabled:opacity-50"
+                className="flex-1 py-2.5 px-3 bg-white text-black text-sm rounded-lg font-medium hover:bg-white/90 transition-opacity disabled:opacity-50"
               >
-                {isSubmitting ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                    Saving...
-                  </span>
-                ) : (
-                  '✓ Confirm'
-                )}
+                {isSubmitting ? 'Saving...' : '✓ Confirm'}
               </button>
             </>
           )}
         </div>
 
-        {/* Skip option for new accounts */}
+        {/* Skip option for new accounts - minimal */}
         {isNewAccount && !capturedImage && (
           <button
             onClick={handleSkip}
-            className="w-full mt-3 py-2 text-white/40 hover:text-white/60 text-sm transition-colors"
+            className="w-full mt-2 py-1.5 text-white/30 hover:text-white/50 text-xs transition-colors"
           >
-            Skip for now (you can add this later)
+            Skip for now
           </button>
         )}
       </div>

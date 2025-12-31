@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
 
-// Redirect to streaming endpoint for faster response
+// ElevenLabs TTS - optimized for ultra-low latency
+// Using eleven_flash_v2_5 (~75ms) with streaming optimizations
 export async function POST(request: NextRequest) {
   try {
     const token = getTokenFromHeader(request.headers.get('authorization'));
@@ -23,37 +24,40 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    if (voice !== 'mi' && voice !== 'ra') {
+    if (voice !== 'mi' && voice !== 'ra' && voice !== 'mira') {
       return NextResponse.json(
-        { error: 'Voice must be "mi" or "ra"' },
+        { error: 'Voice must be "mi", "ra", or "mira"' },
         { status: 400 }
       );
     }
 
-    // Use ElevenLabs turbo model with optimized settings
     const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-    // Voice IDs - must be configured via environment variables
-    const VOICE_MAP = {
-      mi: process.env.ELEVENLABS_VOICE_MI || '',
-      ra: process.env.ELEVENLABS_VOICE_RA || '',
-    };
+    const ELEVENLABS_VOICE_MI = process.env.ELEVENLABS_VOICE_MI;
+    const ELEVENLABS_VOICE_RA = process.env.ELEVENLABS_VOICE_RA;
+    // Use Flash v2.5 for ultra-low latency (~75ms), fallback to turbo_v2_5 (~250ms)
+    const ELEVENLABS_MODEL = process.env.ELEVENLABS_MODEL || 'eleven_flash_v2_5';
 
     if (!ELEVENLABS_API_KEY) {
-      return NextResponse.json({ error: 'TTS not configured' }, { status: 500 });
+      return NextResponse.json({ error: 'TTS not configured - missing API key' }, { status: 500 });
     }
 
-    // Fix pronunciation
-    const correctedText = text
-      .replace(/\bMIRA\b/gi, 'Meera')
-      .replace(/\bMI\b/g, 'Me')
-      .replace(/\bMi\b/g, 'Me')
-      .replace(/\bRA\b/g, 'Raa')
-      .replace(/\bRa\b/g, 'Raa');
+    if (!ELEVENLABS_VOICE_MI || !ELEVENLABS_VOICE_RA) {
+      return NextResponse.json({ error: 'TTS not configured - missing voice IDs' }, { status: 500 });
+    }
 
-    const voiceId = VOICE_MAP[voice as 'mi' | 'ra'];
+    // ElevenLabs Voice IDs from environment variables
+    const voiceMap: Record<string, string> = {
+      mi: ELEVENLABS_VOICE_MI,
+      ra: ELEVENLABS_VOICE_RA,
+      mira: ELEVENLABS_VOICE_MI,
+    };
 
+    const selectedVoiceId = voiceMap[voice as 'mi' | 'ra' | 'mira'];
+
+    // Call ElevenLabs API with low-latency optimizations
+    // Using mp3_22050_32 for faster encoding (lower bitrate = faster)
     const response = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,
+      `https://api.elevenlabs.io/v1/text-to-speech/${selectedVoiceId}?output_format=mp3_22050_32`,
       {
         method: 'POST',
         headers: {
@@ -62,13 +66,13 @@ export async function POST(request: NextRequest) {
           'xi-api-key': ELEVENLABS_API_KEY,
         },
         body: JSON.stringify({
-          text: correctedText,
-          model_id: 'eleven_turbo_v2_5', // Fastest model
+          text: text,
+          model_id: ELEVENLABS_MODEL,
           voice_settings: {
-            stability: voice === 'mi' ? 0.5 : 0.7,
+            stability: 0.5,
             similarity_boost: 0.75,
-            style: voice === 'mi' ? 0.3 : 0.1,
-            use_speaker_boost: true,
+            style: 0.0,  // Disable style for faster processing
+            use_speaker_boost: false,  // Disable for lower latency
           },
         }),
       }
@@ -77,9 +81,13 @@ export async function POST(request: NextRequest) {
     if (!response.ok) {
       const error = await response.text();
       console.error('ElevenLabs error:', error);
-      return NextResponse.json({ error: 'TTS failed' }, { status: 500 });
+      return NextResponse.json(
+        { error: 'Failed to generate speech' },
+        { status: response.status }
+      );
     }
 
+    // Get the audio as array buffer
     const audioBuffer = await response.arrayBuffer();
 
     return new NextResponse(new Uint8Array(audioBuffer), {

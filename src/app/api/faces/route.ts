@@ -2,7 +2,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { connectToDatabase } from '@/lib/mongodb';
 import FaceData from '@/models/FaceData';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
-import { compareForRecognition } from '@/lib/vision';
 import mongoose from 'mongoose';
 
 export async function POST(request: NextRequest) {
@@ -19,13 +18,15 @@ export async function POST(request: NextRequest) {
 
     await connectToDatabase();
 
-    const { action, imageBase64, personName, relationship, isOwner } = await request.json();
+    // Parse request body ONCE - it can only be read once
+    const body = await request.json();
+    const { action, imageBase64, personName, relationship, isOwner, faceDescriptor, personId, embedding } = body;
 
     if (action === 'register') {
-      // Register a new face
-      if (!imageBase64 || !personName) {
+      // Register a new face with embedding from face-api.js
+      if (!personName) {
         return NextResponse.json(
-          { error: 'Image and person name are required' },
+          { error: 'Person name is required' },
           { status: 400 }
         );
       }
@@ -37,35 +38,40 @@ export async function POST(request: NextRequest) {
       });
 
       if (existing) {
-        // Add new photo to existing record
-        existing.photos.push({
-          url: `data:image/jpeg;base64,${imageBase64}`,
-          uploadedAt: new Date(),
-          isPrimary: false,
-        });
+        // Update existing record with new embedding if provided
+        if (faceDescriptor && Array.isArray(faceDescriptor) && faceDescriptor.length === 128) {
+          existing.faceDescriptor = faceDescriptor;
+        }
+        if (imageBase64) {
+          existing.photos.push({
+            url: `data:image/jpeg;base64,${imageBase64}`,
+            uploadedAt: new Date(),
+            isPrimary: false,
+          });
+        }
         existing.metadata.lastSeen = new Date();
         existing.metadata.seenCount += 1;
         await existing.save();
 
         return NextResponse.json({
-          message: 'Photo added to existing face record',
+          message: 'Face record updated',
           faceData: existing,
         });
       }
 
-      // Create new face record
+      // Create new face record with embedding
       const faceData = await FaceData.create({
         userId: new mongoose.Types.ObjectId(payload.userId),
         personName,
         relationship: relationship || 'unknown',
-        faceDescriptor: [], // We'll use vision API for comparison instead
-        photos: [
+        faceDescriptor: faceDescriptor || [], // 128-dim embedding from face-api.js
+        photos: imageBase64 ? [
           {
             url: `data:image/jpeg;base64,${imageBase64}`,
             uploadedAt: new Date(),
             isPrimary: true,
           },
-        ],
+        ] : [],
         metadata: {
           firstSeen: new Date(),
           lastSeen: new Date(),
@@ -81,55 +87,56 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    if (action === 'recognize') {
-      // Try to recognize a face
-      if (!imageBase64) {
+    if (action === 'update-embedding') {
+      // Update face embedding for an existing person
+      if (!personId || !embedding || !Array.isArray(embedding)) {
         return NextResponse.json(
-          { error: 'Image is required' },
+          { error: 'Person ID and embedding array required' },
           { status: 400 }
         );
       }
 
-      // Get all registered faces for this user
-      const allFaces = await FaceData.find({
+      const face = await FaceData.findOne({
+        _id: new mongoose.Types.ObjectId(personId),
         userId: new mongoose.Types.ObjectId(payload.userId),
       });
 
-      for (const face of allFaces) {
-        const primaryPhoto = face.photos.find((p: { url: string; isPrimary: boolean }) => p.isPrimary) || face.photos[0];
-        if (!primaryPhoto) continue;
-
-        // Extract base64 from stored URL
-        const storedBase64 = primaryPhoto.url.replace('data:image/jpeg;base64,', '');
-
-        const result = await compareForRecognition(
-          imageBase64,
-          storedBase64,
-          face.personName
-        );
-
-        if (result.isMatch && result.confidence >= 70) {
-          // Update last seen
-          face.metadata.lastSeen = new Date();
-          face.metadata.seenCount += 1;
-          await face.save();
-
-          return NextResponse.json({
-            recognized: true,
-            person: {
-              name: face.personName,
-              relationship: face.relationship,
-              isOwner: face.isOwner,
-              seenCount: face.metadata.seenCount,
-            },
-            confidence: result.confidence,
-          });
-        }
+      if (!face) {
+        return NextResponse.json({ error: 'Face not found' }, { status: 404 });
       }
 
+      face.faceDescriptor = embedding;
+      face.metadata.lastSeen = new Date();
+      await face.save();
+
       return NextResponse.json({
-        recognized: false,
-        message: 'Face not recognized',
+        message: 'Embedding updated',
+        faceData: face,
+      });
+    }
+
+    if (action === 'update-last-seen') {
+      // Update last seen timestamp for a person
+      if (!personId) {
+        return NextResponse.json({ error: 'Person ID required' }, { status: 400 });
+      }
+
+      const face = await FaceData.findOne({
+        _id: new mongoose.Types.ObjectId(personId),
+        userId: new mongoose.Types.ObjectId(payload.userId),
+      });
+
+      if (!face) {
+        return NextResponse.json({ error: 'Face not found' }, { status: 404 });
+      }
+
+      face.metadata.lastSeen = new Date();
+      face.metadata.seenCount += 1;
+      await face.save();
+
+      return NextResponse.json({
+        message: 'Last seen updated',
+        faceData: face,
       });
     }
 
@@ -157,11 +164,30 @@ export async function GET(request: NextRequest) {
 
     await connectToDatabase();
 
+    // Get embeddings flag from query params
+    const { searchParams } = new URL(request.url);
+    const includeEmbeddings = searchParams.get('embeddings') === 'true';
+
     const faces = await FaceData.find({
       userId: new mongoose.Types.ObjectId(payload.userId),
-    }).select('personName relationship isOwner metadata');
+    }).select(includeEmbeddings 
+      ? 'personName relationship isOwner metadata faceDescriptor' 
+      : 'personName relationship isOwner metadata'
+    );
 
-    return NextResponse.json({ faces });
+    // Format response with embeddings if requested
+    const formattedFaces = faces.map(face => ({
+      personId: face._id.toString(),
+      personName: face.personName,
+      relationship: face.relationship,
+      isOwner: face.isOwner,
+      metadata: face.metadata,
+      ...(includeEmbeddings && face.faceDescriptor?.length > 0 && {
+        embedding: face.faceDescriptor,
+      }),
+    }));
+
+    return NextResponse.json({ faces: formattedFaces });
   } catch (error) {
     console.error('Get faces error:', error);
     return NextResponse.json(

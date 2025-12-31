@@ -7,6 +7,7 @@ interface FullScreenSpheresProps {
   speakingAgent: 'mi' | 'ra' | 'mira' | null;
   isSpeaking: boolean;
   audioLevel: number;
+  isThinking?: boolean;
 }
 
 interface Particle {
@@ -42,6 +43,7 @@ export default function FullScreenSpheres({
   speakingAgent,
   isSpeaking,
   audioLevel,
+  isThinking = false,
 }: FullScreenSpheresProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const particlesRef = useRef<Particle[]>([]);
@@ -51,6 +53,7 @@ export default function FullScreenSpheres({
   const transitionProgressRef = useRef(mode === 'combined' ? 1 : 0);
   const mouseRef = useRef({ x: 0, y: 0, isActive: false });
   const isSpeakingRef = useRef(isSpeaking);
+  const isThinkingRef = useRef(isThinking);
   const speakingAgentRef = useRef(speakingAgent);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const initializedRef = useRef(false);
@@ -73,6 +76,11 @@ export default function FullScreenSpheres({
   useEffect(() => {
     speakingAgentRef.current = speakingAgent;
   }, [speakingAgent]);
+
+  // Update thinking state ref
+  useEffect(() => {
+    isThinkingRef.current = isThinking;
+  }, [isThinking]);
 
   // Handle window resize
   useEffect(() => {
@@ -115,6 +123,7 @@ export default function FullScreenSpheres({
     const particleCount = 5000; // More particles for larger screen
     const radius = getSphereRadius();
     const centers = getSphereCenters();
+    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
 
     for (let i = 0; i < particleCount; i++) {
       // Fibonacci sphere distribution
@@ -128,16 +137,26 @@ export default function FullScreenSpheres({
       // Assign to MI or RA based on index
       const colorType: 'mi' | 'ra' = i % 2 === 0 ? 'mi' : 'ra';
       
-      // Start position based on current mode
+      // Start position based on current mode - scale for dpr to match animation loop
       const center = mode === 'combined' ? centers.combined : centers[colorType];
+      const cx = dimensions.width / 2;
+      const cy = dimensions.height / 2;
+      
+      // Calculate initial position matching what animation loop expects
+      const scaledBaseX = sphereX * dpr;
+      const scaledBaseY = sphereY * dpr;
+      const scaledBaseZ = sphereZ * dpr;
+      const targetCenterX = center.x * dpr;
+      const targetCenterY = center.y * dpr;
       
       particles.push({
         targetX: sphereX,
         targetY: sphereY,
         targetZ: sphereZ,
-        x: sphereX + center.x - dimensions.width / 2,
-        y: sphereY + center.y - dimensions.height / 2,
-        z: sphereZ,
+        // Initialize at exact target position (scaled) to prevent zoom effect
+        x: scaledBaseX + targetCenterX - cx * dpr,
+        y: scaledBaseY + targetCenterY - cy * dpr,
+        z: scaledBaseZ,
         vx: 0,
         vy: 0,
         vz: 0,
@@ -182,12 +201,16 @@ export default function FullScreenSpheres({
     const currentAudioLevel = audioLevelRef.current;
     // ONLY react to audio when AI is speaking, not user voice - use refs for continuous animation
     const aiSpeaking = isSpeakingRef.current;
+    const aiThinking = isThinkingRef.current;
     const currentMode = modeRef.current;
     const centers = getSphereCenters();
     const radius = getSphereRadius();
     
     // Determine which agent is currently speaking (mi, ra, or mira for both) - use ref
     const currentSpeaker = speakingAgentRef.current;
+
+    // Thinking animation - subtle pulsing glow effect
+    const thinkingPulse = aiThinking ? Math.sin(time * 3) * 0.3 + 0.7 : 0; // 0 to 1 pulse
 
     // Smooth transition between modes
     const targetProgress = currentMode === 'combined' ? 1 : 0;
@@ -199,18 +222,20 @@ export default function FullScreenSpheres({
     }
     const progress = transitionProgressRef.current;
 
-    // Rotation speed based on AI speaking only
-    const rotationSpeed = aiSpeaking ? 0.5 : 0.25;
+    // Rotation speed based on AI speaking or thinking
+    const rotationSpeed = aiSpeaking ? 0.5 : aiThinking ? 0.35 : 0.25;
     const rotTime = time * rotationSpeed;
 
-    // Physics constants
-    const SPRING = 0.04;
-    const FRICTION = 0.92;
+    // Physics constants - softer spring and higher friction for smoother movement
+    const SPRING = 0.025;
+    const FRICTION = 0.88;
     const Z_PERSPECTIVE = 1200;
     
-    // Voice distortion settings
-    const voiceAngle = time * 2.5;
-    const voiceDistortRadius = radius * 0.4 * (1 + (aiSpeaking ? currentAudioLevel : 0));
+    // Voice distortion settings - dynamically mapped to audio level
+    const baseVoiceSpeed = 2.0;
+    const voiceSpeedBoost = currentAudioLevel * 1.5; // Faster rotation at higher volumes
+    const voiceAngle = time * (baseVoiceSpeed + voiceSpeedBoost);
+    const voiceDistortRadius = radius * (0.3 + currentAudioLevel * 0.4); // Grows with volume
 
     particlesRef.current.forEach((p) => {
       // Determine if THIS particle should react to speech
@@ -225,8 +250,9 @@ export default function FullScreenSpheres({
       // No pulse scale - keep sphere size constant
       const pulseScale = 1;
       
-      // Organic intensity - stronger for reacting particles
-      const organicIntensity = 15 + (particleShouldReact ? 25 + currentAudioLevel * 40 : 0);
+      // Organic intensity - stronger for reacting particles, subtle movement during thinking
+      const thinkingBoost = aiThinking ? 8 + thinkingPulse * 12 : 0;
+      const organicIntensity = 15 + thinkingBoost + (particleShouldReact ? 25 + currentAudioLevel * 40 : 0);
       
       // Calculate target center based on transition progress
       const miCenter = { x: centers.mi.x * dpr, y: centers.mi.y * dpr };
@@ -266,12 +292,19 @@ export default function FullScreenSpheres({
       const targetY = rotatedY + targetCenterY - cy + noiseY;
       const targetZ = rotatedZ + noiseZ;
 
-      // Spring physics towards target
-      p.vx += (targetX - p.x) * SPRING;
-      p.vy += (targetY - p.y) * SPRING;
-      p.vz += (targetZ - p.z) * SPRING;
+      // Spring physics towards target - use softer spring to prevent sudden jumps
+      const springForce = SPRING;
+      p.vx += (targetX - p.x) * springForce;
+      p.vy += (targetY - p.y) * springForce;
+      p.vz += (targetZ - p.z) * springForce;
+      
+      // Clamp velocity to prevent extreme stretching/zooming
+      const maxVelocity = 25;
+      p.vx = Math.max(-maxVelocity, Math.min(maxVelocity, p.vx));
+      p.vy = Math.max(-maxVelocity, Math.min(maxVelocity, p.vy));
+      p.vz = Math.max(-maxVelocity, Math.min(maxVelocity, p.vz));
 
-      // Mouse interaction - particles repel from cursor
+      // Mouse interaction - particles repel from cursor (reduced force)
       const mouse = mouseRef.current;
       if (mouse.isActive) {
         const scale = Z_PERSPECTIVE / (Z_PERSPECTIVE + p.z);
@@ -281,16 +314,16 @@ export default function FullScreenSpheres({
         const dx = screenX - mouse.x * dpr;
         const dy = screenY - mouse.y * dpr;
         const dist = Math.sqrt(dx * dx + dy * dy);
-        const mouseRadius = radius * dpr * 0.8;
+        const mouseRadius = radius * dpr * 0.6;
         
         if (dist < mouseRadius && dist > 0) {
           const force = (mouseRadius - dist) / mouseRadius;
           const angle = Math.atan2(dy, dx);
           
-          const mouseForce = force * 200;
+          const mouseForce = force * 60;
           p.vx += Math.cos(angle) * mouseForce;
           p.vy += Math.sin(angle) * mouseForce;
-          p.vz += -force * mouseForce * 0.3;
+          p.vz += -force * mouseForce * 0.15;
         }
       }
 
@@ -315,21 +348,25 @@ export default function FullScreenSpheres({
           const dy = screenY - distortY;
           const dist = Math.sqrt(dx * dx + dy * dy);
 
-          // Interaction radius - based on AI audio level
-          const baseInteractionRadius = radius * dpr * 0.6;
-          const audioBoost = currentAudioLevel;
+          // Interaction radius - dynamically scales with audio level
+          const baseInteractionRadius = radius * dpr * 0.5;
+          const audioBoost = currentAudioLevel * 1.5; // More responsive to audio
           const interactionRadius = baseInteractionRadius * (1 + audioBoost);
 
           if (dist < interactionRadius && dist > 0) {
             const force = (interactionRadius - dist) / interactionRadius;
             const angle = Math.atan2(dy, dx);
 
-            // Force intensity based on AI audio level
-            const forceIntensity = 0.4 + currentAudioLevel * 0.6;
-            const voiceForce = force * 150 * forceIntensity;
+            // Force intensity dynamically mapped to audio level
+            // Base force when speaking + exponential boost based on volume
+            const baseForce = 80;
+            const audioMultiplier = 1 + Math.pow(currentAudioLevel, 0.7) * 3; // Exponential response
+            const dynamicForce = baseForce * audioMultiplier;
+            const voiceForce = force * dynamicForce;
+            
             p.vx += Math.cos(angle) * voiceForce;
             p.vy += Math.sin(angle) * voiceForce;
-            p.vz += -force * voiceForce * 0.3;
+            p.vz += -force * voiceForce * 0.25;
           }
         }
       }
@@ -346,8 +383,11 @@ export default function FullScreenSpheres({
       const finalScale = Z_PERSPECTIVE / (Z_PERSPECTIVE + p.z);
       if (p.z > -Z_PERSPECTIVE + 10 && finalScale > 0) {
         const depthAlpha = Math.min(1, Math.max(0.1, finalScale * p.alpha - p.z / 2000));
-        // Only boost glow for particles belonging to speaking agent
-        const glowAlpha = particleShouldReact ? depthAlpha * (1.5 + currentAudioLevel * 0.8) : depthAlpha;
+        // Boost glow for speaking particles, enhanced glow during thinking
+        const thinkingGlow = aiThinking ? thinkingPulse * 0.6 : 0;
+        const glowAlpha = particleShouldReact 
+          ? depthAlpha * (1.5 + currentAudioLevel * 0.8) 
+          : depthAlpha * (1 + thinkingGlow);
 
         // Colors
         const { r, g, b } = p.colorType === 'mi'
@@ -356,9 +396,24 @@ export default function FullScreenSpheres({
 
         const screenX = cx + p.x * finalScale;
         const screenY = cy + p.y * finalScale;
-        // Only scale particles for speaking agent
-        const particleSize = p.size * finalScale * (particleShouldReact ? 1 + currentAudioLevel * 0.3 : 1);
+        // Scale particles for speaking agent, subtle pulse during thinking
+        const thinkingSizeBoost = aiThinking ? 1 + thinkingPulse * 0.15 : 1;
+        const particleSize = p.size * finalScale * thinkingSizeBoost * (particleShouldReact ? 1 + currentAudioLevel * 0.3 : 1);
 
+        // Draw outer glow during thinking phase
+        if (aiThinking && thinkingPulse > 0.3) {
+          const glowSize = particleSize * (2 + thinkingPulse * 1.5);
+          const glowIntensity = thinkingPulse * 0.3;
+          const gradient = ctx.createRadialGradient(screenX, screenY, particleSize * 0.5, screenX, screenY, glowSize);
+          gradient.addColorStop(0, `rgba(${r},${g},${b},${glowIntensity})`);
+          gradient.addColorStop(1, `rgba(${r},${g},${b},0)`);
+          ctx.beginPath();
+          ctx.arc(screenX, screenY, glowSize, 0, Math.PI * 2);
+          ctx.fillStyle = gradient;
+          ctx.fill();
+        }
+
+        // Draw main particle
         ctx.beginPath();
         ctx.arc(screenX, screenY, particleSize, 0, Math.PI * 2);
         ctx.fillStyle = `rgba(${r},${g},${b},${Math.min(1, glowAlpha)})`;

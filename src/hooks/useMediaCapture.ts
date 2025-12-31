@@ -14,7 +14,7 @@ export function useMediaCapture(options: UseMediaCaptureOptions = {}) {
   const {
     enableCamera = true,
     enableScreen = true,
-    captureInterval = 3000, // Capture every 3 seconds for faster face recognition
+    captureInterval = 10000, // Capture every 10 seconds to reduce API load
     onCameraFrame,
     onScreenFrame,
   } = options;

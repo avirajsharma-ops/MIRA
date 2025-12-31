@@ -7,6 +7,7 @@ export type GestureType =
   | 'peace'          // Peace sign - friendly
   | 'fist'           // Fist bump / power
   | 'open_palm'      // Stop / wait
+  | 'raised_hand'    // Hand raised - attention/greeting (from Vision API)
   | 'pointing'       // Pointing at something
   | 'ok'             // OK sign
   | 'call_me'        // Phone gesture
@@ -82,6 +83,15 @@ Respectfully acknowledge this and pause. Ask calmly if they need you to wait,
 stop what you're doing, or if there's something specific they want to address.
 Be patient and attentive. Don't be overly apologetic.`,
     responseStyle: 'ra',
+    cooldownMs: 8000,
+  },
+  {
+    gesture: 'raised_hand',
+    prompt: `The user {personContext} raised their hand! 🙋
+They're trying to get your attention or saying hi! Respond warmly and enthusiastically.
+If you know their name, greet them by it! Ask what you can help them with.
+Be friendly, attentive, and ready to assist. Make them feel acknowledged!`,
+    responseStyle: 'mi',
     cooldownMs: 8000,
   },
   {

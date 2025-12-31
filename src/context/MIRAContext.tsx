@@ -1,8 +1,9 @@
 'use client';
 
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
-import { useMediaCapture, useAudioPlayer } from '@/hooks';
+import { useMediaCapture, useAudioPlayer, useFaceDetection, type KnownFace, type FaceDetectionResult } from '@/hooks';
 import { useLiveSpeech } from '@/hooks/useLiveSpeech';
+import { isMobileDevice, shouldEnableFaceDetection } from '@/lib/utils/deviceDetection';
 // MediaPipe gesture detection disabled due to WASM compatibility issues
 // import { useGestureDetection } from '@/lib/gesture/useGestureDetection';
 import { 
@@ -30,6 +31,25 @@ interface VisualContext {
   screenDescription?: string;
   detectedFaces?: string[];
   currentFrame?: string; // Current camera frame as base64 for face recognition
+}
+
+interface LocationContext {
+  latitude: number;
+  longitude: number;
+  city?: string;
+  region?: string;
+  country?: string;
+  timezone?: string;
+  accuracy?: number;
+}
+
+interface DateTimeContext {
+  date: string; // YYYY-MM-DD
+  time: string; // HH:MM:SS
+  dayOfWeek: string;
+  timestamp: number;
+  timezone: string;
+  formattedDateTime: string; // Human readable
 }
 
 // MIRA trigger keywords for detecting when user is talking to MIRA
@@ -93,6 +113,31 @@ function isFuzzyMatch(word: string, target: string, maxDistance: number = 2): bo
   return distance <= allowedDistance;
 }
 
+// Get current date/time context
+function getCurrentDateTime(): DateTimeContext {
+  const now = new Date();
+  const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  
+  return {
+    date: now.toISOString().split('T')[0],
+    time: now.toTimeString().split(' ')[0],
+    dayOfWeek: days[now.getDay()],
+    timestamp: now.getTime(),
+    timezone,
+    formattedDateTime: now.toLocaleString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+      hour12: true,
+      timeZoneName: 'short'
+    })
+  };
+}
+
 // Track if MIRA recently asked a follow-up question (managed externally)
 let lastMiraQuestionTime = 0;
 let miraAskedFollowUp = false;
@@ -105,10 +150,16 @@ export function setMiraAskedFollowUp(asked: boolean) {
   }
 }
 
-// Check if message is a follow-up response (no wake word needed within 30 seconds of MIRA's question)
+// Check if message is a follow-up response (no wake word needed within 45 seconds of MIRA's question)
 function isFollowUpResponse(text: string): boolean {
   const timeSinceQuestion = Date.now() - lastMiraQuestionTime;
-  const followUpWindow = 30000; // 30 seconds to respond without wake word
+  const followUpWindow = 45000; // 45 seconds to respond without wake word
+  
+  console.log('[FollowUp] Checking follow-up:', {
+    miraAskedFollowUp,
+    timeSinceQuestion,
+    withinWindow: timeSinceQuestion <= followUpWindow
+  });
   
   if (!miraAskedFollowUp || timeSinceQuestion > followUpWindow) {
     return false;
@@ -123,33 +174,59 @@ function isFollowUpResponse(text: string): boolean {
     /not\s+talking\s+to\s+(you|mira)/i,
   ];
   if (notForMira.some(p => p.test(lower))) {
+    console.log('[FollowUp] Message appears directed at someone else');
     return false;
   }
   
-  // Common follow-up response patterns
+  // Skip if it contains another wake word (alexa, siri, google, etc.)
+  const otherAssistants = /\b(alexa|siri|google|hey google|cortana)\b/i;
+  if (otherAssistants.test(lower)) {
+    console.log('[FollowUp] Message directed at another assistant');
+    return false;
+  }
+  
+  // Within the follow-up window, MOST responses should be treated as follow-ups
+  // Only exclude if clearly not for MIRA
+  
+  // Common follow-up response patterns (very broad to catch most answers)
   const followUpPatterns = [
-    /^(yes|no|yeah|yep|nope|sure|okay|ok|nah|maybe|probably|definitely|absolutely)[.,!?\s]*$/i,
-    /^(i think|i guess|i mean|well|actually|hmm|um|let me)/i,
-    /^(that's|it's|this is|it was|there's)/i,
-    /^(the|a|an|my|his|her|their|our|your)\s+/i,
+    /^(yes|no|yeah|yep|nope|sure|okay|ok|nah|maybe|probably|definitely|absolutely)/i,
+    /^(i think|i guess|i mean|well|actually|hmm|um|let me|i'd|i would|i could)/i,
+    /^(that's|it's|this is|it was|there's|here's|those|these)/i,
+    /^(the|a|an|my|his|her|their|our|your|some|any|all|both)\s+/i,
     /^(because|since|so|but|and|or|if|when|where|what|why|how|which)/i,
-    /^(about|around|maybe|probably|definitely|certainly)/i,
-    /^(not\s+really|kind\s+of|sort\s+of|i\s+don't|i\s+do|i\s+am|i\s+have|i\s+was)/i,
+    /^(about|around|maybe|probably|definitely|certainly|actually|basically)/i,
+    /^(not\s+really|kind\s+of|sort\s+of|i\s+don't|i\s+do|i\s+am|i\s+have|i\s+was|i\s+will|i\s+can)/i,
     /^[0-9]/,  // Starts with a number (answering a question)
-    /^(one|two|three|four|five|six|seven|eight|nine|ten)/i,
+    /^(one|two|three|four|five|six|seven|eight|nine|ten|first|second|third)/i,
+    /^(it|he|she|they|we|you|that|this|those|these)\s+/i,  // Pronoun starts
+    /^(can|could|would|should|will|won't|don't|didn't|isn't|aren't|wasn't)/i,
+    /^(never|always|sometimes|often|usually|rarely|just|only|even)/i,
+    /^(like|love|hate|want|need|prefer|enjoy)/i,
+    /^(go|come|take|make|get|give|put|try|let|see|look|find)/i,  // Common verbs
   ];
   
   // If message matches follow-up patterns, it's likely a response to MIRA's question
   if (followUpPatterns.some(p => p.test(lower))) {
-    console.log('[FollowUp] Detected follow-up response within window');
+    console.log('[FollowUp] Detected follow-up response pattern within window');
     return true;
   }
   
-  // Short responses (under 20 words) within the window are likely follow-ups
+  // Within 30 seconds, be very lenient - most responses are likely follow-ups
+  // unless they're very long (might be a new topic)
   const wordCount = lower.split(/\s+/).length;
-  if (wordCount <= 20 && timeSinceQuestion < 15000) { // 15 seconds for short responses
-    console.log('[FollowUp] Short response within tight window - treating as follow-up');
-    return true;
+  if (timeSinceQuestion < 30000) {
+    // Under 30 seconds: accept responses up to 50 words
+    if (wordCount <= 50) {
+      console.log('[FollowUp] Response within 30s window - treating as follow-up');
+      return true;
+    }
+  } else if (timeSinceQuestion < 45000) {
+    // 30-45 seconds: accept shorter responses (up to 25 words)
+    if (wordCount <= 25) {
+      console.log('[FollowUp] Short response within extended window - treating as follow-up');
+      return true;
+    }
   }
   
   return false;
@@ -212,6 +289,7 @@ function isDirectedAtMira(text: string): boolean {
 interface MIRAContextType {
   // Auth
   isAuthenticated: boolean;
+  isAuthLoading: boolean;
   user: { id: string; name: string; email: string } | null;
   login: (email: string, password: string) => Promise<boolean>;
   register: (email: string, password: string, name: string) => Promise<boolean>;
@@ -255,6 +333,12 @@ interface MIRAContextType {
   gestureEnabled: boolean;
   setGestureEnabled: (enabled: boolean) => void;
   isHandsLoaded: boolean;
+
+  // Location & Time
+  location: LocationContext | null;
+  locationPermission: 'granted' | 'denied' | 'prompt' | 'unavailable';
+  dateTime: DateTimeContext;
+  requestLocationPermission: () => Promise<boolean>;
 }
 
 const MIRAContext = createContext<MIRAContextType | null>(null);
@@ -270,6 +354,7 @@ export function useMIRA() {
 export function MIRAProvider({ children }: { children: React.ReactNode }) {
   // Auth state
   const [isAuthenticated, setIsAuthenticated] = useState(false);
+  const [isAuthLoading, setIsAuthLoading] = useState(true); // Start true to check existing session
   const [user, setUser] = useState<{ id: string; name: string; email: string } | null>(null);
 
   // Conversation state
@@ -277,6 +362,13 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isDebating, setIsDebating] = useState(false);
+  
+  // Ref for instant access to loading state (avoids stale closures)
+  const isProcessingMessageRef = useRef(false);
+  
+  // Refs for face detection callback - prevents STT interference from re-renders
+  const isSpeakingRef = useRef(false);
+  const isLoadingRef = useRef(false);
 
   // Visual context
   const [visualContext, setVisualContext] = useState<VisualContext>({});
@@ -302,13 +394,14 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   
   // Person context for gestures (from face recognition)
   const [currentPerson, setCurrentPerson] = useState<{ name?: string; context?: string } | null>(null);
+  const currentPersonRef = useRef<string | null>(null); // Ref to track current person without triggering re-renders
   
   // Unknown face detection state
   const [pendingUnknownFace, setPendingUnknownFace] = useState<{
     imageBase64: string;
-    description: string;
-    distinctiveFeatures: string[];
+    embedding: number[];
   } | null>(null);
+  const pendingUnknownFaceRef = useRef<boolean>(false); // Track if we have a pending face without triggering re-renders
   const unknownFacePromptedRef = useRef(false);
   const lastUnknownFaceTimeRef = useRef<number>(0);
   const knownPeopleCountRef = useRef<number | null>(null);
@@ -316,15 +409,159 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   
   // Track who we've greeted in this session to avoid repeated greetings
   const greetedPeopleRef = useRef<Set<string>>(new Set());
+  
+  // Location and DateTime state
+  const [location, setLocation] = useState<LocationContext | null>(null);
+  const [locationPermission, setLocationPermission] = useState<'granted' | 'denied' | 'prompt' | 'unavailable'>('prompt');
+  const [dateTime, setDateTime] = useState<DateTimeContext>(() => getCurrentDateTime());
+  const locationWatchIdRef = useRef<number | null>(null);
 
-  // Audio player
+  // Reverse geocode location to get city/country
+  const reverseGeocode = useCallback(async (lat: number, lon: number): Promise<Partial<LocationContext>> => {
+    try {
+      // Use OpenStreetMap Nominatim (free, no API key needed)
+      const response = await fetch(
+        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=10`,
+        { headers: { 'User-Agent': 'MIRA-Assistant/1.0' } }
+      );
+      if (response.ok) {
+        const data = await response.json();
+        return {
+          city: data.address?.city || data.address?.town || data.address?.village || data.address?.municipality,
+          region: data.address?.state || data.address?.region,
+          country: data.address?.country,
+        };
+      }
+    } catch (error) {
+      console.log('[Location] Reverse geocoding failed:', error);
+    }
+    return {};
+  }, []);
+
+  // Request location permission and start tracking
+  const requestLocationPermission = useCallback(async (): Promise<boolean> => {
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setLocationPermission('unavailable');
+      console.log('[Location] Geolocation not available');
+      return false;
+    }
+
+    return new Promise((resolve) => {
+      navigator.geolocation.getCurrentPosition(
+        async (position) => {
+          setLocationPermission('granted');
+          const { latitude, longitude, accuracy } = position.coords;
+          const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+          
+          // Get city/country info
+          const geoInfo = await reverseGeocode(latitude, longitude);
+          
+          const locationData: LocationContext = {
+            latitude,
+            longitude,
+            accuracy,
+            timezone,
+            ...geoInfo,
+          };
+          
+          setLocation(locationData);
+          console.log('[Location] Permission granted:', locationData);
+          
+          // Start watching position for updates
+          if (locationWatchIdRef.current === null) {
+            locationWatchIdRef.current = navigator.geolocation.watchPosition(
+              async (pos) => {
+                const newGeoInfo = await reverseGeocode(pos.coords.latitude, pos.coords.longitude);
+                setLocation({
+                  latitude: pos.coords.latitude,
+                  longitude: pos.coords.longitude,
+                  accuracy: pos.coords.accuracy,
+                  timezone,
+                  ...newGeoInfo,
+                });
+              },
+              () => {}, // Ignore watch errors
+              { enableHighAccuracy: false, timeout: 30000, maximumAge: 300000 } // Update every 5 mins max
+            );
+          }
+          
+          resolve(true);
+        },
+        (error) => {
+          if (error.code === error.PERMISSION_DENIED) {
+            setLocationPermission('denied');
+            console.log('[Location] Permission denied');
+          } else {
+            setLocationPermission('unavailable');
+            console.log('[Location] Error:', error.message);
+          }
+          resolve(false);
+        },
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 }
+      );
+    });
+  }, [reverseGeocode]);
+
+  // Update datetime every minute
+  useEffect(() => {
+    const updateDateTime = () => {
+      setDateTime(getCurrentDateTime());
+    };
+    
+    // Update immediately
+    updateDateTime();
+    
+    // Update every minute
+    const interval = setInterval(updateDateTime, 60000);
+    
+    return () => clearInterval(interval);
+  }, []);
+
+  // Auto-request location when authenticated
+  useEffect(() => {
+    if (isAuthenticated && locationPermission === 'prompt') {
+      // Small delay to not overwhelm user with permission requests
+      const timer = setTimeout(() => {
+        requestLocationPermission();
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [isAuthenticated, locationPermission, requestLocationPermission]);
+
+  // Cleanup location watch on unmount
+  useEffect(() => {
+    return () => {
+      if (locationWatchIdRef.current !== null) {
+        navigator.geolocation.clearWatch(locationWatchIdRef.current);
+      }
+    };
+  }, []);
+
+  // Face detection using face-api.js (client-side)
+  const {
+    isModelLoaded: isFaceModelLoaded,
+    detectFaces,
+    updateKnownFaces,
+  } = useFaceDetection();
+
+  // Audio player with TTS audio level for voice distortion
   const {
     isPlaying: isSpeaking,
     currentAgent: speakingAgent,
+    ttsAudioLevel,
     playAudio,
     playAudioAndWait,
     stopAudio,
   } = useAudioPlayer();
+
+  // Keep refs in sync with state values (for face detection callback)
+  useEffect(() => {
+    isSpeakingRef.current = isSpeaking;
+  }, [isSpeaking]);
+  
+  useEffect(() => {
+    isLoadingRef.current = isLoading;
+  }, [isLoading]);
 
   // Save transcript entry in background
   const saveTranscriptEntry = useCallback(async (
@@ -442,7 +679,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     isListening,
     isSupported: isSpeechSupported,
     interimTranscript,
-    audioLevel,
+    audioLevel: micAudioLevel,
     startListening: startVoiceRecording,
     stopListening: stopVoiceRecording,
   } = useLiveSpeech({ 
@@ -450,6 +687,9 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     continuous: true,
     language: 'en-US', // Will auto-detect other languages too
   });
+
+  // Use TTS audio level when AI is speaking, mic audio level otherwise
+  const audioLevel = isSpeaking ? ttsAudioLevel : micAudioLevel;
 
   // Alias for backward compatibility
   const isRecording = isListening;
@@ -473,154 +713,145 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   });
   */
 
-  // Media capture with speaker detection (vision API for face recognition AND gestures)
+  // Media capture with face recognition using face-api.js (client-side, no API calls)
+  // DISABLED ON MOBILE - face detection only runs on desktop
+  // Using refs where possible to minimize state changes that could affect STT
+  const lastDetectedFacesRef = useRef<string[]>([]);
+  
   const handleCameraFrame = useCallback(async (imageBase64: string) => {
-    // Always store the current frame for face recognition
-    setVisualContext(prev => ({
-      ...prev,
-      currentFrame: imageBase64,
-    }));
+    // Skip entirely on mobile devices
+    if (isMobileDevice()) {
+      return;
+    }
+    
+    // PRIORITY: Skip all vision processing when user is waiting for a response
+    // This ensures the AI response path has maximum priority
+    if (isProcessingMessageRef.current) {
+      return; // Don't even store frames during message processing to minimize interference
+    }
+    
+    // Skip face detection if models not loaded yet
+    if (!isFaceModelLoaded) {
+      return;
+    }
     
     try {
-      const token = localStorage.getItem('mira_token');
-      const response = await fetch('/api/vision', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ 
-          imageBase64, 
-          type: 'camera', 
-          detectSpeakers: true, // For face recognition and speaker detection
-          detectGestures: true, // Enable gesture detection via vision API
-        }),
-      });
-
-      if (response.ok) {
-        const { analysis } = await response.json();
-        
+      // Use face-api.js for client-side face detection
+      const result = await detectFaces(imageBase64);
+      
+      if (!result) {
+        return;
+      }
+      
+      // Update visual context only if faces have changed (prevents unnecessary re-renders)
+      const newDetectedFaces = result.detectedFaces.map(f => `Face: ${f.expression.dominant} expression`);
+      const facesChanged = JSON.stringify(newDetectedFaces) !== JSON.stringify(lastDetectedFacesRef.current);
+      
+      if (facesChanged) {
+        lastDetectedFacesRef.current = newDetectedFaces;
         setVisualContext(prev => ({
           ...prev,
-          cameraDescription: analysis.description,
-          detectedFaces: analysis.speakers?.detectedFaces?.map((f: any) => f.description) || analysis.people?.descriptions || [],
+          detectedFaces: newDetectedFaces,
         }));
+      }
+      
+      // Handle recognized faces
+      if (result.recognizedFaces.length > 0) {
+        const person = result.recognizedFaces[0];
+        console.log(`[Face] Recognized: ${person.personName} (confidence: ${(person.confidence * 100).toFixed(1)}%)`);
         
-        // Update current person context from face recognition (from speakers data)
-        const speakers = analysis.speakers;
-        if (speakers?.recognizedPeople && speakers.recognizedPeople.length > 0) {
-          const person = speakers.recognizedPeople[0];
-          console.log(`[Face] Recognized: ${person.name} (confidence: ${person.confidence})`);
+        // Only update state if the person has changed (prevents unnecessary re-renders)
+        if (currentPersonRef.current !== person.personName) {
+          currentPersonRef.current = person.personName;
           setCurrentPerson({
-            name: person.name,
-            context: person.relationship || person.context,
+            name: person.personName,
+            context: person.relationship,
           });
-          // Clear unknown face state if we recognized someone
-          unknownFacePromptedRef.current = false;
-          awaitingFaceInfoRef.current = false;
+        }
+        
+        // Clear unknown face state if we recognized someone (only if needed)
+        unknownFacePromptedRef.current = false;
+        awaitingFaceInfoRef.current = false;
+        if (pendingUnknownFaceRef.current) {
+          pendingUnknownFaceRef.current = false;
           setPendingUnknownFace(null);
-          
-          // Check for greetings (first time today or after long gap)
-          if (speakers.greetings && speakers.greetings.length > 0 && sendMessageRef.current) {
-            for (const greeting of speakers.greetings) {
-              // Only greet if we haven't greeted this person in this session
-              if (!greetedPeopleRef.current.has(greeting.personName)) {
-                greetedPeopleRef.current.add(greeting.personName);
-                
-                // Build greeting prompt based on time of day and context
-                let greetingPrompt: string;
-                const greetingTypeMap: Record<string, string> = {
-                  morning: 'Good morning',
-                  afternoon: 'Good afternoon', 
-                  evening: 'Good evening',
-                  night: 'Hi',
-                  welcome_back: 'Welcome back',
-                };
-                const timeGreeting = greetingTypeMap[greeting.greetingType] || 'Hello';
-                
-                if (greeting.isOwner) {
-                  // Greeting for the account owner
-                  greetingPrompt = `[SYSTEM: The account owner "${greeting.personName}" has just appeared on camera for the first time ${greeting.isFirstTimeToday ? 'today' : 'in a while'}. Greet them warmly and naturally. Use "${timeGreeting}" as your greeting style. Be friendly and personal - you know them well. Don't mention "camera" or "detected" - just greet them as if you're happy to see them. Keep it brief and natural, maybe ask how they're doing or comment on the time of day.]`;
-                } else {
-                  // Greeting for a known person (not owner)
-                  greetingPrompt = `[SYSTEM: "${greeting.personName}" (${greeting.relationship || 'known person'}) has just appeared on camera for the first time ${greeting.isFirstTimeToday ? 'today' : 'in a while'}. Greet them warmly using "${timeGreeting}". Be friendly and natural. Don't mention "camera" or "detected" - just greet them naturally. Keep it brief.]`;
-                }
-                
-                console.log(`[Face] Triggering greeting for ${greeting.personName} (${greeting.greetingType})`);
-                
-                // Only send greeting if not currently speaking or processing
-                if (!isSpeaking && !isLoading) {
-                  sendMessageRef.current(greetingPrompt);
-                  break; // Only greet one person at a time
-                }
-              }
-            }
-          }
         }
         
-        // Check for unknown faces when we haven't prompted recently
-        // and there are no recognized people
-        const now = Date.now();
-        const cooldownMs = 30000; // 30 second cooldown between prompts
-        
-        if (
-          speakers?.unknownFaces?.length > 0 &&
-          speakers?.recognizedPeople?.length === 0 &&
-          !unknownFacePromptedRef.current &&
-          !awaitingFaceInfoRef.current &&
-          !isSpeaking &&
-          !isLoading &&
-          (now - lastUnknownFaceTimeRef.current) > cooldownMs
-        ) {
-          const unknownFace = speakers.unknownFaces[0];
-          
-          // Store the unknown face data for later saving
-          setPendingUnknownFace({
-            imageBase64,
-            description: unknownFace.description || '',
-            distinctiveFeatures: unknownFace.distinctiveFeatures || [],
-          });
-          
-          unknownFacePromptedRef.current = true;
-          lastUnknownFaceTimeRef.current = now;
-          awaitingFaceInfoRef.current = true;
-          
-          console.log('[Face] Unknown face detected, prompting for introduction');
-          
-          // Trigger MIRA to ask who this person is
-          if (sendMessageRef.current) {
-            const introPrompt = `[SYSTEM: An unknown person has appeared in the camera. Their appearance: ${unknownFace.description || 'visible in camera'}. Distinctive features: ${unknownFace.distinctiveFeatures?.join(', ') || 'none noted'}. Please warmly introduce yourself and ask who they are so you can remember them. Be friendly and natural - don't mention "camera" or "image", just act like you're meeting them for the first time. Ask for their name and optionally their relationship to the user (friend, family, etc).]`;
-            
-            // Send as internal system message
-            sendMessageRef.current(introPrompt);
-          }
+        // Update last seen in database (non-blocking)
+        const token = localStorage.getItem('mira_token');
+        if (token) {
+          fetch('/api/faces', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              action: 'update-last-seen',
+              personId: person.personId,
+            }),
+          }).catch(() => {}); // Ignore errors for background update
         }
         
-        // Handle gesture detection from vision API
-        if (analysis.gesture && analysis.gesture !== 'none' && gestureEnabled) {
-          const gesture = analysis.gesture as GestureType;
+        // Check for greetings (first time in session) - use refs for instant access
+        if (!greetedPeopleRef.current.has(person.personName) && sendMessageRef.current && !isSpeakingRef.current && !isLoadingRef.current) {
+          greetedPeopleRef.current.add(person.personName);
           
-          // Check cooldown and processing state
-          if (!isGestureOnCooldown(gesture) && !gestureProcessingRef.current && !isSpeaking && !isLoading) {
-            console.log(`[Gesture] Vision API detected: ${gesture}`);
-            
-            // Create a DetectedGesture object for the handler
-            const detectedGesture: DetectedGesture = {
-              gesture,
-              confidence: 0.8,
-              handedness: 'Right',
-              landmarks: [],
-            };
-            
-            // Trigger response
-            handleGestureResponse(detectedGesture);
-          }
+          // Get time-based greeting
+          const hour = new Date().getHours();
+          let timeGreeting = 'Hello';
+          if (hour >= 5 && hour < 12) timeGreeting = 'Good morning';
+          else if (hour >= 12 && hour < 17) timeGreeting = 'Good afternoon';
+          else if (hour >= 17 && hour < 21) timeGreeting = 'Good evening';
+          
+          const greetingPrompt = `[SYSTEM: "${person.personName}" (${person.relationship || 'known person'}) has just appeared. Greet them warmly using "${timeGreeting}". Be friendly and natural. Don't mention "camera" or "detected" - just greet them naturally. Keep it brief.]`;
+          
+          console.log(`[Face] Triggering greeting for ${person.personName}`);
+          sendMessageRef.current(greetingPrompt);
+        }
+      }
+      
+      // Handle unknown faces - use refs for instant access
+      const now = Date.now();
+      const cooldownMs = 30000; // 30 second cooldown between prompts
+      
+      if (
+        result.unknownFaces.length > 0 &&
+        result.recognizedFaces.length === 0 &&
+        !unknownFacePromptedRef.current &&
+        !awaitingFaceInfoRef.current &&
+        !isSpeakingRef.current &&
+        !isLoadingRef.current &&
+        (now - lastUnknownFaceTimeRef.current) > cooldownMs
+      ) {
+        const unknownFace = result.unknownFaces[0];
+        
+        // Store the unknown face data with embedding for later saving
+        pendingUnknownFaceRef.current = true;
+        setPendingUnknownFace({
+          imageBase64,
+          embedding: Array.isArray(unknownFace.embedding) 
+            ? unknownFace.embedding as number[]
+            : Array.from(unknownFace.embedding),
+        });
+        
+        unknownFacePromptedRef.current = true;
+        lastUnknownFaceTimeRef.current = now;
+        awaitingFaceInfoRef.current = true;
+        
+        console.log('[Face] Unknown face detected, prompting for introduction');
+        
+        // Trigger MIRA to ask who this person is
+        if (sendMessageRef.current) {
+          const introPrompt = `[SYSTEM: An unknown person has appeared. Expression: ${unknownFace.expression.dominant}. Please warmly introduce yourself and ask who they are so you can remember them. Be friendly and natural - don't mention "camera" or "image", just act like you're meeting them for the first time. Ask for their name and optionally their relationship to the user (friend, family, etc).]`;
+          
+          sendMessageRef.current(introPrompt);
         }
       }
     } catch (error) {
-      console.error('Camera analysis error:', error);
+      console.error('Face detection error:', error);
     }
-  }, [gestureEnabled, isSpeaking, isLoading, handleGestureResponse]);
+  }, [isFaceModelLoaded, detectFaces]); // Removed isSpeaking, isLoading - using refs instead
 
   const handleScreenFrame = useCallback(async (imageBase64: string) => {
     try {
@@ -658,20 +889,83 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   } = useMediaCapture({
     onCameraFrame: handleCameraFrame,
     onScreenFrame: handleScreenFrame,
-    captureInterval: 3000, // Every 3 seconds for responsive face/gesture detection
+    captureInterval: 10000, // Every 10 seconds for face detection (client-side face-api.js)
   });
 
   // Function to auto-start media after auth
   const autoStartMedia = useCallback(() => {
     if (!mediaAutoStartedRef.current) {
       mediaAutoStartedRef.current = true;
+      const isMobile = isMobileDevice();
+      
       // Small delay to ensure component is fully mounted
       setTimeout(() => {
-        startCamera();
+        // Only start camera on desktop for face detection
+        // Mobile devices skip camera to save battery and improve mic stability
+        if (!isMobile && shouldEnableFaceDetection()) {
+          startCamera();
+          console.log('[Media] Camera started (desktop mode with face detection)');
+        } else {
+          console.log('[Media] Camera disabled (mobile mode - face detection off)');
+        }
+        
+        // Always start voice recording
         startVoiceRecording();
+        console.log('[Media] Voice recording started');
       }, 500);
     }
   }, [startCamera, startVoiceRecording]);
+
+  // Load known faces from database for face recognition
+  const loadKnownFaces = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('mira_token');
+      if (!token) {
+        console.log('[Face] No token, skipping loadKnownFaces');
+        return;
+      }
+
+      console.log('[Face] Loading known faces from database...');
+      
+      const response = await fetch('/api/faces?embeddings=true', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+
+      if (response.ok) {
+        const { faces } = await response.json();
+        
+        console.log(`[Face] API returned ${faces.length} face records`);
+        
+        // Convert to KnownFace format for face-api.js
+        const knownFaces: KnownFace[] = faces
+          .filter((f: { embedding?: number[] }) => {
+            const hasEmbedding = f.embedding && f.embedding.length === 128;
+            if (!hasEmbedding) {
+              console.log(`[Face] Skipping face without valid embedding`);
+            }
+            return hasEmbedding;
+          })
+          .map((f: { personId: string; personName: string; relationship: string; embedding: number[]; isOwner: boolean }) => ({
+            personId: f.personId,
+            personName: f.personName,
+            relationship: f.relationship,
+            embedding: f.embedding,
+            isOwner: f.isOwner,
+          }));
+
+        updateKnownFaces(knownFaces);
+        console.log(`[Face] Loaded ${knownFaces.length} known faces with valid embeddings`);
+        
+        if (knownFaces.length > 0) {
+          console.log(`[Face] Known people: ${knownFaces.map(f => f.personName).join(', ')}`);
+        }
+      } else {
+        console.error('[Face] Failed to load faces:', response.status);
+      }
+    } catch (error) {
+      console.error('[Face] Error loading known faces:', error);
+    }
+  }, [updateKnownFaces]);
 
   // Auth functions
   const login = useCallback(async (email: string, password: string): Promise<boolean> => {
@@ -688,6 +982,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         setUser(user);
         setIsAuthenticated(true);
         autoStartMedia();
+        loadKnownFaces(); // Load known faces after login
         return true;
       }
       return false;
@@ -750,7 +1045,10 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const checkAuth = async () => {
       const token = localStorage.getItem('mira_token');
-      if (!token) return;
+      if (!token) {
+        setIsAuthLoading(false);
+        return;
+      }
 
       try {
         const response = await fetch('/api/auth/me', {
@@ -761,11 +1059,22 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
           const { user } = await response.json();
           setUser(user);
           setIsAuthenticated(true);
+          
+          const isMobile = isMobileDevice();
+          
+          // Only load known faces if face detection is enabled (desktop)
+          if (!isMobile && shouldEnableFaceDetection()) {
+            loadKnownFaces(); // Load known faces for recognition
+          }
+          
           // Auto-start media on existing session
           if (!mediaAutoStartedRef.current) {
             mediaAutoStartedRef.current = true;
             setTimeout(() => {
-              startCamera();
+              // Only start camera on desktop
+              if (!isMobile && shouldEnableFaceDetection()) {
+                startCamera();
+              }
               // Only start voice if speech recognition is supported
               if (isSpeechSupported) {
                 startVoiceRecording();
@@ -777,6 +1086,8 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         }
       } catch {
         localStorage.removeItem('mira_token');
+      } finally {
+        setIsAuthLoading(false);
       }
     };
 
@@ -847,6 +1158,9 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
 
     console.log('[SendMessage] Starting:', text);
     lastActivityRef.current = new Date();
+    
+    // PRIORITY: Set processing flag IMMEDIATELY to pause all background tasks
+    isProcessingMessageRef.current = true;
     setIsLoading(true);
 
     // Check if this is a system message for unknown face prompt (don't show to user)
@@ -906,25 +1220,28 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       if (extractedName) {
         console.log(`[Face] Extracted name: ${extractedName}, relationship: ${extractedRelationship}`);
         
-        // Save the person
+        // Save the person with face embedding for recognition
         try {
           const token = localStorage.getItem('mira_token');
-          const saveResponse = await fetch('/api/people', {
+          const saveResponse = await fetch('/api/faces', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${token}`,
             },
             body: JSON.stringify({
-              name: extractedName,
+              action: 'register',
+              personName: extractedName,
               imageBase64: pendingUnknownFace.imageBase64,
               relationship: extractedRelationship,
-              context: `First met on ${new Date().toLocaleDateString()}. ${pendingUnknownFace.description}`,
+              faceDescriptor: pendingUnknownFace.embedding, // 128-dim embedding from face-api.js
             }),
           });
           
           if (saveResponse.ok) {
-            console.log(`[Face] Successfully saved ${extractedName} to people library`);
+            const { faceData } = await saveResponse.json();
+            console.log(`[Face] Successfully saved ${extractedName} with face embedding`);
+            
             // Clear the pending state
             setPendingUnknownFace(null);
             awaitingFaceInfoRef.current = false;
@@ -935,6 +1252,9 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
               name: extractedName,
               context: extractedRelationship,
             });
+            
+            // Reload known faces to include the new person
+            loadKnownFaces();
             
             // Generate a confirmation response
             const confirmationMsg = `Nice to meet you, ${extractedName}! I'll remember your face from now on. Next time I see you, I'll know it's you! 😊`;
@@ -953,15 +1273,17 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
             await playAudio(confirmationMsg, 'mi');
             
             // Return early - don't process as normal message since we handled it
+            isProcessingMessageRef.current = false;
             setIsLoading(false);
             return;
           } else {
             const errorData = await saveResponse.json();
             console.error('[Face] Failed to save person:', errorData.error);
             // If it's a duplicate, still acknowledge
-            if (errorData.error?.includes('already exists')) {
+            if (errorData.error?.includes('already exists') || errorData.message?.includes('updated')) {
               awaitingFaceInfoRef.current = false;
               setPendingUnknownFace(null);
+              loadKnownFaces(); // Reload in case embedding was updated
             }
           }
         } catch (error) {
@@ -987,7 +1309,28 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     try {
       const token = localStorage.getItem('mira_token');
       
-      console.log('[SendMessage] Calling /api/chat...');
+      // Build context object with location and datetime
+      const contextData = {
+        visualContext: visualContext.cameraDescription || visualContext.screenDescription 
+          ? visualContext 
+          : undefined,
+        location: location ? {
+          city: location.city,
+          region: location.region,
+          country: location.country,
+          timezone: location.timezone,
+        } : undefined,
+        dateTime: {
+          ...dateTime,
+          formattedDateTime: dateTime.formattedDateTime,
+        },
+      };
+      
+      console.log('[SendMessage] Calling /api/chat with context:', { 
+        hasLocation: !!location, 
+        dateTime: dateTime.formattedDateTime 
+      });
+      
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
@@ -997,10 +1340,8 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         body: JSON.stringify({
           message: text,
           conversationId,
-          sessionId: sessionIdRef.current, // Include session ID for transcript context
-          visualContext: visualContext.cameraDescription || visualContext.screenDescription 
-            ? visualContext 
-            : undefined, // Only send if we have context
+          sessionId: sessionIdRef.current,
+          ...contextData,
         }),
       });
 
@@ -1070,9 +1411,24 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         saveTranscriptEntry(data.response.content, 'mira', data.response.agent.toUpperCase(), true);
         
         // Check if MIRA's response contains a question (for follow-up detection)
+        // Be very aggressive at detecting questions - any question mark or question-like phrase
         const responseText = data.response.content;
-        const hasQuestion = /\?/.test(responseText) || 
-          /\b(what|how|when|where|why|which|who|could you|would you|can you|do you|are you|is it|have you)\b/i.test(responseText);
+        const lastSentences = responseText.split(/[.!]/).slice(-3).join(' '); // Focus on last few sentences
+        
+        const hasQuestionMark = /\?/.test(responseText);
+        const hasQuestionWords = /\b(what|how|when|where|why|which|who|whose|whom)\b.*\?/i.test(responseText);
+        const hasInvitingQuestion = /\b(could you|would you|can you|do you|are you|is it|have you|will you|shall|should|tell me|let me know|thoughts|think|prefer|like to|want to|interested in)\b/i.test(lastSentences);
+        const hasOpenEnded = /\b(anything else|what else|how about|what about|any questions|more info|tell me more|go on|continue|elaborate)\b/i.test(responseText);
+        
+        const hasQuestion = hasQuestionMark || hasQuestionWords || hasInvitingQuestion || hasOpenEnded;
+        
+        console.log('[FollowUp] Question detection:', {
+          hasQuestionMark,
+          hasQuestionWords,
+          hasInvitingQuestion,
+          hasOpenEnded,
+          result: hasQuestion
+        });
         
         if (hasQuestion) {
           console.log('[FollowUp] MIRA asked a follow-up question - enabling follow-up mode');
@@ -1107,6 +1463,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       };
       setMessages(prev => [...prev, errorMessage]);
     } finally {
+      isProcessingMessageRef.current = false;
       setIsLoading(false);
       console.log('[SendMessage] isLoading set to false');
     }
@@ -1200,6 +1557,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   const value: MIRAContextType = {
     // Auth
     isAuthenticated,
+    isAuthLoading,
     user,
     login,
     register,
@@ -1241,6 +1599,12 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     gestureEnabled,
     setGestureEnabled,
     isHandsLoaded,
+
+    // Location & Time
+    location,
+    locationPermission,
+    dateTime,
+    requestLocationPermission,
   };
 
   return <MIRAContext.Provider value={value}>{children}</MIRAContext.Provider>;

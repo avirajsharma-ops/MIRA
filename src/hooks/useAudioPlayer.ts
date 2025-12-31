@@ -15,14 +15,28 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentAgent, setCurrentAgent] = useState<AgentType | null>(null);
   const [queue, setQueue] = useState<{ text: string; agent: AgentType }[]>([]);
+  const [ttsAudioLevel, setTtsAudioLevel] = useState(0);
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const isPlayingRef = useRef(false);
   const currentAudioUrlRef = useRef<string | null>(null);
   const playPromiseRef = useRef<Promise<void> | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
+
+  // Cleanup audio level monitoring
+  const cleanupAudioAnalysis = useCallback(() => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    setTtsAudioLevel(0);
+  }, []);
 
   // Cleanup function for audio resources
   const cleanupAudio = useCallback(() => {
+    cleanupAudioAnalysis();
     if (audioRef.current) {
       audioRef.current.pause();
       audioRef.current.onended = null;
@@ -36,6 +50,75 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
       currentAudioUrlRef.current = null;
     }
     playPromiseRef.current = null;
+  }, [cleanupAudioAnalysis]);
+
+  // Start audio level monitoring for TTS playback
+  const startAudioAnalysis = useCallback((audio: HTMLAudioElement) => {
+    try {
+      // Create audio context if needed
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      
+      const audioContext = audioContextRef.current;
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = 256;
+      analyserRef.current = analyser;
+      
+      // Connect audio element to analyser
+      const source = audioContext.createMediaElementSource(audio);
+      source.connect(analyser);
+      analyser.connect(audioContext.destination);
+      
+      // Monitor audio levels
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      
+      const checkLevel = () => {
+        if (!analyserRef.current || !isPlayingRef.current) {
+          setTtsAudioLevel(0);
+          return;
+        }
+        
+        analyserRef.current.getByteFrequencyData(dataArray);
+        
+        // Calculate average level
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) {
+          sum += dataArray[i];
+        }
+        const average = sum / dataArray.length;
+        const level = Math.min(1, average / 128); // Normalize to 0-1
+        
+        setTtsAudioLevel(level);
+        
+        if (isPlayingRef.current) {
+          animationFrameRef.current = requestAnimationFrame(checkLevel);
+        }
+      };
+      
+      checkLevel();
+    } catch (error) {
+      // Audio analysis not supported, fall back to simulated levels
+      console.log('Audio analysis not available, using simulated levels');
+      
+      // Simulate audio levels based on time
+      const simulateLevel = () => {
+        if (!isPlayingRef.current) {
+          setTtsAudioLevel(0);
+          return;
+        }
+        // Create a dynamic simulation with some variation
+        const time = Date.now() * 0.01;
+        const level = 0.4 + Math.sin(time) * 0.2 + Math.sin(time * 2.3) * 0.15 + Math.random() * 0.1;
+        setTtsAudioLevel(Math.min(1, Math.max(0, level)));
+        
+        if (isPlayingRef.current) {
+          animationFrameRef.current = requestAnimationFrame(simulateLevel);
+        }
+      };
+      
+      simulateLevel();
+    }
   }, []);
 
   const playAudio = useCallback(async (text: string, agent: AgentType) => {
@@ -126,6 +209,9 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
         return;
       }
 
+      // Start audio level analysis for voice distortion effect
+      startAudioAnalysis(audio);
+
       // Start playing and store the promise
       playPromiseRef.current = audio.play();
       await playPromiseRef.current;
@@ -145,7 +231,7 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
       onSpeakingEnd?.(agent);
       setCurrentAgent(null);
     }
-  }, [onSpeakingStart, onSpeakingEnd, cleanupAudio]);
+  }, [onSpeakingStart, onSpeakingEnd, cleanupAudio, startAudioAnalysis]);
 
   const stopAudio = useCallback(async () => {
     // Wait for any pending play() promise before stopping
@@ -201,6 +287,7 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
     isPlaying,
     currentAgent,
     queue,
+    ttsAudioLevel,
     playAudio,
     playAudioAndWait,
     stopAudio,

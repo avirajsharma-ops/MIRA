@@ -138,17 +138,37 @@ export async function chatWithGemini(
     
     // Check if user is using Devanagari script (pure Hindi)
     const hasDevanagari = /[\u0900-\u097F]/.test(userMessage);
+    // Check if user has English words too (Hinglish)
+    const hasEnglish = /[a-zA-Z]{2,}/.test(userMessage);
+    const isHinglish = (inputLanguage === 'hi' || hasDevanagari) && hasEnglish;
     
-    if (inputLanguage === 'hi') {
-      // Always respond in Devanagari for accurate TTS pronunciation - whether user types in Devanagari or Hinglish
-      languageInstruction = `\n\nCRITICAL LANGUAGE INSTRUCTION: The user is communicating in Hindi${hasDevanagari ? ' (Devanagari)' : ' (Hinglish/Roman)'}. You MUST respond ONLY in Hindi using Devanagari script (देवनागरी लिपि) for accurate pronunciation.
+    if (inputLanguage === 'hi' || hasDevanagari) {
+      if (isHinglish || !hasDevanagari) {
+        // Hinglish mode: English words in Roman, Hindi words in Devanagari
+        languageInstruction = `\n\nCRITICAL LANGUAGE & SCRIPT RULES (FOR TTS PRONUNCIATION):
+The user is speaking in Hinglish. You MUST respond in Hinglish with this STRICT rule:
+- English words: Write in Roman script (normal English)
+- Hindi words: Write ONLY in देवनागरी script
+
+EXAMPLES OF CORRECT HINGLISH:
+✓ "Main आज बहुत खुश हूँ, let's do something fun!"
+✓ "हाँ definitely, यह idea बहुत अच्छा है!"
+✓ "Sure, मैं समझ गया। What's next?"
+
+EXAMPLES OF WRONG (TTS CANNOT PRONOUNCE):
+✗ "Main aaj bahut khush hoon" - Roman Hindi is WRONG
+✗ "Haan definitely, yeh idea bahut accha hai" - Roman Hindi is WRONG
+
+Common Hindi words that MUST be Devanagari: हाँ, नहीं, क्या, कैसे, अच्छा, ठीक है, धन्यवाद, बहुत, कुछ, यह, वह, मैं, तुम, आप, हम, कर, हो, है`;
+      } else {
+        // Pure Devanagari Hindi
+        languageInstruction = `\n\nCRITICAL LANGUAGE INSTRUCTION: The user is communicating in pure Hindi (Devanagari). Respond ONLY in Devanagari script (देवनागरी लिपि).
 
 RULES:
-- Write ALL Hindi words in Devanagari script: हाँ, नहीं, क्या, कैसे, अच्छा, धन्यवाद
-- NEVER use Roman/English letters for Hindi words (no "haan", "nahi", "kya", "kaise")
-- NEVER mix scripts - use pure Devanagari throughout
-- Example correct: "हाँ, मैं समझ गया! क्या बात है?"
-- Example WRONG: "Haan, main samajh gaya! Kya baat hai?"`;
+- Write ALL words in Devanagari script: हाँ, नहीं, क्या, कैसे, अच्छा, धन्यवाद
+- NEVER use Roman/English letters for Hindi words
+- Example correct: "हाँ, मैं समझ गया! क्या बात है?"`;
+      }
     } else if (inputLanguage === 'en') {
       // English - respond in pure English, no Hindi mixing
       languageInstruction = `\n\nIMPORTANT: Respond in clear English only. Do NOT mix Hindi words or phrases. Use proper English throughout your response.`;

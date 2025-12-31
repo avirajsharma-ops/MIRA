@@ -52,7 +52,7 @@ export default function AuthScreen() {
             </h1>
           </div>
           <p className="text-white/50 mt-2">
-            MI + RA • Dual AI Assistant
+            Your Intelligent AI Companion
           </p>
         </div>
 
@@ -131,9 +131,8 @@ export default function AuthScreen() {
 
         {/* Info */}
         <div className="mt-8 text-center text-white/30 text-sm">
-          <p>💜 MI - Emotional & Empathetic</p>
-          <p>💙 RA - Logical & Analytical</p>
-          <p className="mt-2">✨ Together they form MIRA</p>
+          <p>✨ Always here to help</p>
+          <p>🎯 Smart, intuitive, and personal</p>
         </div>
       </div>
     </div>

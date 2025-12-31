@@ -60,6 +60,8 @@ export async function POST(request: NextRequest) {
       message,
       conversationId,
       visualContext,
+      location,
+      dateTime,
       forceAgent, // Optional: force a specific agent
       proactive, // Flag for proactive checks
       sessionId, // Session ID for transcript context
@@ -130,14 +132,17 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Get context
+    // Check if this is a simple message - skip heavy context for fast response
+    const isSimpleMessage = checkSimpleMessage(message);
+
+    // Get context (skip memory fetching for simple messages - they don't need it)
     const contextEngine = new ContextEngine(payload.userId);
-    const memories = await contextEngine.getRelevantMemories(message);
+    const memories = isSimpleMessage ? [] : await contextEngine.getRelevantMemories(message);
 
     // Get recent transcript entries for background conversation context
-    // This includes non-MIRA conversations that provide ambient context
+    // Skip for simple messages to reduce latency
     let recentTranscriptContext: string[] = [];
-    if (sessionId) {
+    if (sessionId && !isSimpleMessage) {
       try {
         const recentEntries = await getRecentTranscriptEntries(payload.userId, sessionId, 15);
         if (recentEntries.length > 0) {
@@ -155,7 +160,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Build agent context
+    // Build agent context with location and time awareness
     const agentContext = {
       memories,
       recentMessages: conversation.messages.slice(-10).map((m: { role: string; content: string }) => ({
@@ -165,6 +170,23 @@ export async function POST(request: NextRequest) {
       // Include recent transcript as ambient context
       recentTranscript: recentTranscriptContext,
       visualContext: visualContext || undefined,
+      // Location context
+      location: location || undefined,
+      // DateTime context - use provided or generate fresh
+      dateTime: dateTime || {
+        date: new Date().toISOString().split('T')[0],
+        time: new Date().toTimeString().split(' ')[0],
+        dayOfWeek: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][new Date().getDay()],
+        formattedDateTime: new Date().toLocaleString('en-US', {
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit',
+          hour12: true,
+        }),
+      },
       currentTime: new Date(),
       userName: payload.name,
       userId: payload.userId, // For face recognition
@@ -175,26 +197,27 @@ export async function POST(request: NextRequest) {
     // Detect if user is addressing a specific agent
     const mentionedAgent = forceAgent || detectAgentMention(message);
 
-    // Check for face save intent first
-    const faceSaveResult = await agent.handleFaceSaveIntent(
-      message, 
-      visualContext?.currentFrame // base64 image from camera
-    );
-    
-    if (faceSaveResult.saved || faceSaveResult.message) {
-      // Face save was attempted - return the result
-      const responseContent = faceSaveResult.message || `I've saved ${faceSaveResult.personName} to my memory!`;
+    // Check for face save intent (skip for simple messages)
+    if (!isSimpleMessage) {
+      const faceSaveResult = await agent.handleFaceSaveIntent(
+        message, 
+        visualContext?.currentFrame // base64 image from camera
+      );
       
-      conversation.messages.push({
-        role: 'user',
-        content: message,
-        timestamp: new Date(),
-      });
-      
-      conversation.messages.push({
-        role: 'mi',
-        content: responseContent,
-        timestamp: new Date(),
+      if (faceSaveResult.saved || faceSaveResult.message) {
+        // Face save was attempted - return the result
+        const responseContent = faceSaveResult.message || `I've saved ${faceSaveResult.personName} to my memory!`;
+        
+        conversation.messages.push({
+          role: 'user',
+          content: message,
+          timestamp: new Date(),
+        });
+        
+        conversation.messages.push({
+          role: 'mi',
+          content: responseContent,
+          timestamp: new Date(),
       });
       
       conversation.metadata.totalMessages = conversation.messages.length;
@@ -212,13 +235,11 @@ export async function POST(request: NextRequest) {
         faceSaved: faceSaveResult.saved,
         personName: faceSaveResult.personName,
       });
+      }
     }
 
     let response;
     let debateMessages: { agent: string; content: string; emotion?: string }[] = [];
-
-    // Check if this is a simple message that doesn't need debate
-    const isSimpleMessage = checkSimpleMessage(message);
 
     if (mentionedAgent === 'mi') {
       // User specifically wants MI
@@ -226,8 +247,9 @@ export async function POST(request: NextRequest) {
     } else if (mentionedAgent === 'ra') {
       // User specifically wants RA
       response = await agent.getAgentResponse('ra', message);
-    } else if (mentionedAgent === 'mira') {
-      // User wants both to discuss - dynamic debate until consensus
+    } else if (mentionedAgent === 'mira' && !isSimpleMessage) {
+      // User wants both to discuss - but ONLY for complex messages
+      // Simple messages like "hey mira" should just get a single response
       const debateResult = await agent.conductDebate(message);
       debateMessages = debateResult.messages;
       response = {
@@ -235,8 +257,8 @@ export async function POST(request: NextRequest) {
         content: debateResult.finalResponse,
         consensus: debateResult.consensus,
       };
-    } else if (isSimpleMessage) {
-      // Simple message - just have MI respond warmly
+    } else if (isSimpleMessage || mentionedAgent === 'mira') {
+      // Simple message OR mira greeting - just have MI respond warmly
       response = await agent.getAgentResponse('mi', message);
     } else {
       // Use intermediator to decide which agent should respond
@@ -262,7 +284,7 @@ export async function POST(request: NextRequest) {
           console.log('Initial agent:', routedAgent);
           console.log('shouldDebate:', response.shouldDebate);
           
-          const debateResult = await agent.conductDebate(message, 2);
+          const debateResult = await agent.conductDebate(message);
           console.log('Debate messages count:', debateResult.messages.length);
           console.log('Debate consensus:', debateResult.consensus);
           

@@ -2,10 +2,17 @@
 
 export type VoiceType = 'mi' | 'ra';
 
-// ElevenLabs voice IDs - must be configured via environment variables
-const VOICE_MAP: Record<VoiceType, string> = {
-  mi: process.env.ELEVENLABS_VOICE_MI || '',
-  ra: process.env.ELEVENLABS_VOICE_RA || '',
+// ElevenLabs voice IDs - MUST be configured via environment variables
+// No fallbacks - will throw error if not configured
+const getVoiceId = (voice: VoiceType): string => {
+  const voiceId = voice === 'mi' 
+    ? process.env.ELEVENLABS_VOICE_MI 
+    : process.env.ELEVENLABS_VOICE_RA;
+  
+  if (!voiceId) {
+    throw new Error(`ELEVENLABS_VOICE_${voice.toUpperCase()} environment variable not configured`);
+  }
+  return voiceId;
 };
 
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
@@ -16,6 +23,12 @@ const MULTILINGUAL_LANGUAGES = ['hi', 'zh', 'ja', 'ko', 'ar', 'ru', 'es', 'fr', 
 // Common Hindi words romanized -> Devanagari mapping
 // This helps ElevenLabs pronounce Hindi words correctly
 const HINDI_WORD_MAP: Record<string, string> = {
+  // MIRA Agent Names - CRITICAL for correct pronunciation
+  'mi': 'मी', 'MI': 'मी',
+  'ra': 'रा', 'RA': 'रा',
+  'mira': 'मीरा', 'MIRA': 'मीरा', 'Mira': 'मीरा',
+  'meera': 'मीरा', 'Meera': 'मीरा',
+  
   // Greetings & Common Phrases
   'namaste': 'नमस्ते', 'namaskar': 'नमस्कार', 'dhanyawad': 'धन्यवाद', 'dhanyavaad': 'धन्यवाद',
   'shukriya': 'शुक्रिया', 'alvida': 'अलविदा', 'swagat': 'स्वागत', 'aabhar': 'आभार',
@@ -148,12 +161,30 @@ function fixPronunciation(text: string): string {
   // First convert Hindi words to Devanagari for proper pronunciation
   let processed = convertHindiToDevanagari(text);
   
+  // Check if the text contains Devanagari - if so, use Hindi pronunciation
+  const hasDevanagari = /[\u0900-\u097F]/.test(processed);
+  
+  if (hasDevanagari) {
+    // Use Devanagari script for agent names in Hindi context
+    return processed
+      // MIRA/Meera -> मीरा
+      .replace(/\bMIRA\b/gi, 'मीरा')
+      .replace(/\bMeera\b/gi, 'मीरा')
+      // MI -> मी
+      .replace(/\bMI\b/g, 'मी')
+      .replace(/\bMi\b/g, 'मी')
+      // RA -> रा
+      .replace(/\bRA\b/g, 'रा')
+      .replace(/\bRa\b/g, 'रा');
+  }
+  
+  // For English text, use phonetic pronunciation
   return processed
     // MIRA pronounced as "Meera" (मीरा)
     .replace(/\bMIRA\b/gi, 'Meera')
-    // MI pronounced as "Me" (मी)
-    .replace(/\bMI\b/g, 'Me')
-    .replace(/\bMi\b/g, 'Me')
+    // MI pronounced as "Mee" (मी)
+    .replace(/\bMI\b/g, 'Mee')
+    .replace(/\bMi\b/g, 'Mee')
     // RA pronounced as "Raa" (रा)
     .replace(/\bRA\b/g, 'Raa')
     .replace(/\bRa\b/g, 'Raa');
@@ -198,7 +229,7 @@ export async function generateSpeech(
     throw new Error('ElevenLabs API key not configured');
   }
 
-  const voiceId = VOICE_MAP[voice];
+  const voiceId = getVoiceId(voice);
   const correctedText = fixPronunciation(text);
   
   // Auto-detect language from text if not provided
@@ -250,7 +281,7 @@ export async function generateSpeechHD(
     throw new Error('ElevenLabs API key not configured');
   }
 
-  const voiceId = VOICE_MAP[voice];
+  const voiceId = getVoiceId(voice);
   const correctedText = fixPronunciation(text);
   
   // Always use multilingual for HD (better quality for all languages)

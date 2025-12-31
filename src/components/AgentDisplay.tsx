@@ -2,7 +2,6 @@
 
 import { useMIRA } from '@/context/MIRAContext';
 import FullScreenSpheres from './FullScreenSpheres';
-import CameraPreview from './CameraPreview';
 
 export default function AgentDisplay() {
   const {
@@ -10,6 +9,7 @@ export default function AgentDisplay() {
     isSpeaking,
     isRecording,
     isListening,
+    isLoading,
     audioLevel,
     isCameraActive,
     isScreenActive,
@@ -27,6 +27,9 @@ export default function AgentDisplay() {
   // Get audio level for sphere animation
   const effectiveAudioLevel = isRecording || isSpeaking ? audioLevel : 0;
 
+  // AI is "thinking" when loading but not yet speaking
+  const isThinking = isLoading && !isSpeaking;
+
   return (
     <div className="relative w-full h-full">
       {/* Full-screen particle spheres */}
@@ -35,6 +38,7 @@ export default function AgentDisplay() {
         speakingAgent={speakingAgent}
         isSpeaking={isSpeaking}
         audioLevel={effectiveAudioLevel}
+        isThinking={isThinking}
       />
 
       {/* Status overlay */}
@@ -48,27 +52,25 @@ export default function AgentDisplay() {
               : 'RA is speaking...'}
           </p>
         )}
-        {isRecording && !isSpeaking && (
+        {isThinking && (
+          <p className="text-purple-400/80 text-sm sm:text-lg mb-4 px-4 text-center animate-pulse">
+            Thinking...
+          </p>
+        )}
+        {isRecording && !isSpeaking && !isThinking && (
           <p className="text-red-400/80 text-xs sm:text-sm animate-pulse">
             Recording speech...
           </p>
         )}
-        {isListening && !isRecording && !isSpeaking && (
+        {isListening && !isRecording && !isSpeaking && !isThinking && (
           <p className="text-green-400/50 text-xs sm:text-sm">
             Listening...
           </p>
         )}
       </div>
 
-      {/* Camera preview */}
-      {isCameraActive && (
-        <div className="absolute bottom-20 sm:bottom-24 right-2 sm:right-4 w-28 sm:w-48 h-20 sm:h-36 rounded-lg overflow-hidden border border-white/20 bg-black z-20 camera-preview-mobile">
-          <CameraPreview />
-          <div className="absolute top-1 sm:top-2 left-1 sm:left-2 text-[10px] sm:text-xs text-white/70 bg-black/50 px-1.5 sm:px-2 py-0.5 sm:py-1 rounded">
-            Camera
-          </div>
-        </div>
-      )}
+      {/* Camera preview - HIDDEN but camera still runs for face detection */}
+      {/* The camera stream is active for face-api.js processing but not shown to user */}
 
       {/* Media controls */}
       <div className="absolute bottom-2 sm:bottom-4 left-2 sm:left-4 flex gap-1.5 sm:gap-2 z-20 media-controls-mobile safe-area-bottom safe-area-left">

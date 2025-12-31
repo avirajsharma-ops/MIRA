@@ -8,8 +8,8 @@ const inter = Inter({
 });
 
 export const metadata: Metadata = {
-  title: "MIRA - Dual AI Assistant",
-  description: "MI + RA - Your emotional and logical AI companions",
+  title: "MIRA",
+  description: "Your Intelligent AI Companion",
   manifest: "/manifest.json",
   icons: {
     icon: "/favicon.png",
