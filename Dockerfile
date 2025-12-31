@@ -4,8 +4,7 @@
 # ===========================================
 
 # Stage 1: Dependencies
-FROM node:20-alpine AS deps
-RUN apk add --no-cache libc6-compat
+FROM node:20-slim AS deps
 
 WORKDIR /app
 
@@ -16,8 +15,7 @@ COPY package.json package-lock.json* ./
 RUN npm install --legacy-peer-deps && npm cache clean --force
 
 # Stage 2: Builder
-FROM node:20-alpine AS builder
-RUN apk add --no-cache libc6-compat
+FROM node:20-slim AS builder
 
 WORKDIR /app
 
@@ -33,11 +31,14 @@ ENV NODE_ENV=production
 RUN npm run build
 
 # Stage 3: Production Runner
-FROM node:20-alpine AS runner
+FROM node:20-slim AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1
+
+# Install wget for health checks
+RUN apt-get update && apt-get install -y wget && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user for security
 RUN addgroup --system --gid 1001 nodejs
