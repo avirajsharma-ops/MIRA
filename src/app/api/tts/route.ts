@@ -32,10 +32,10 @@ export async function POST(request: NextRequest) {
 
     // Use ElevenLabs turbo model with optimized settings
     const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-    // Voice IDs - configurable via env vars with defaults
+    // Voice IDs - must be configured via environment variables
     const VOICE_MAP = {
-      mi: process.env.ELEVENLABS_VOICE_MI || 'MF4J4IDTRo0AxOO4dpFR',  // MI voice
-      ra: process.env.ELEVENLABS_VOICE_RA || 'wbOlq3nIga8HKqcDhASI',  // RA voice
+      mi: process.env.ELEVENLABS_VOICE_MI || '',
+      ra: process.env.ELEVENLABS_VOICE_RA || '',
     };
 
     if (!ELEVENLABS_API_KEY) {

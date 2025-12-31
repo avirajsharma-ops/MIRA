@@ -490,8 +490,8 @@ GEMINI_API_KEY=
 
 # ElevenLabs TTS
 ELEVENLABS_API_KEY=
-ELEVENLABS_VOICE_MI=MF4J4IDTRo0AxOO4dpFR
-ELEVENLABS_VOICE_RA=wbOlq3nIga8HKqcDhASI
+ELEVENLABS_VOICE_MI=
+ELEVENLABS_VOICE_RA=
 
 # Auth
 JWT_SECRET=
@@ -504,7 +504,7 @@ ENVEOF
     fi
     
     print_warning "Please edit ${APP_DIR}/.env and add your API keys!"
-    print_info "Required: MONGODB_URI, OPENAI_API_KEY, GEMINI_API_KEY, ELEVENLABS_API_KEY"
+    print_info "Required: MONGODB_URI, OPENAI_API_KEY, GEMINI_API_KEY, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_MI, ELEVENLABS_VOICE_RA"
     
     # Generate random secrets if not set
     JWT_SECRET=$(openssl rand -base64 32)

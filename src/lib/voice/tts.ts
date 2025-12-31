@@ -2,10 +2,10 @@
 
 export type VoiceType = 'mi' | 'ra';
 
-// ElevenLabs voice IDs - configurable via env vars with defaults
+// ElevenLabs voice IDs - must be configured via environment variables
 const VOICE_MAP: Record<VoiceType, string> = {
-  mi: process.env.ELEVENLABS_VOICE_MI || 'MF4J4IDTRo0AxOO4dpFR',  // MI voice
-  ra: process.env.ELEVENLABS_VOICE_RA || 'wbOlq3nIga8HKqcDhASI',  // RA voice
+  mi: process.env.ELEVENLABS_VOICE_MI || '',
+  ra: process.env.ELEVENLABS_VOICE_RA || '',
 };
 
 const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
