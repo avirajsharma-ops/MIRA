@@ -497,20 +497,51 @@ setup_env() {
     
     if [ -f "${APP_DIR}/.env" ]; then
         print_status ".env file found"
+        
+        # Verify required variables exist
+        REQUIRED_VARS="MONGODB_URI GEMINI_API_KEY ELEVENLABS_API_KEY ELEVENLABS_VOICE_MI ELEVENLABS_VOICE_RA JWT_SECRET NEXTAUTH_SECRET"
+        MISSING_VARS=""
+        
+        for VAR in $REQUIRED_VARS; do
+            if ! grep -q "^${VAR}=" "${APP_DIR}/.env"; then
+                MISSING_VARS="${MISSING_VARS} ${VAR}"
+            fi
+        done
+        
+        if [ -n "$MISSING_VARS" ]; then
+            print_warning "Missing environment variables:${MISSING_VARS}"
+            print_warning "Please add them to ${APP_DIR}/.env"
+        else
+            print_status "All required environment variables found"
+        fi
+        
+        # Add NEXTAUTH_URL if not present
+        if ! grep -q "^NEXTAUTH_URL=" "${APP_DIR}/.env"; then
+            echo "NEXTAUTH_URL=https://${DOMAIN}" >> "${APP_DIR}/.env"
+            print_status "Added NEXTAUTH_URL to .env"
+        fi
+        
+        # Add NEXT_PUBLIC_APP_URL if not present
+        if ! grep -q "^NEXT_PUBLIC_APP_URL=" "${APP_DIR}/.env"; then
+            echo "NEXT_PUBLIC_APP_URL=https://${DOMAIN}" >> "${APP_DIR}/.env"
+            print_status "Added NEXT_PUBLIC_APP_URL to .env"
+        fi
     else
         print_error ".env file not found!"
-        print_warning "Please create ${APP_DIR}/.env with your API keys before running this script"
+        print_warning "Please create ${APP_DIR}/.env with your API keys"
+        print_info ""
+        print_info "You can copy from .env.example:"
+        print_info "  cp .env.example .env"
+        print_info "  nano .env"
+        print_info ""
         print_info "Required variables:"
         print_info "  - MONGODB_URI"
-        print_info "  - OPENAI_API_KEY"
         print_info "  - GEMINI_API_KEY"
         print_info "  - ELEVENLABS_API_KEY"
         print_info "  - ELEVENLABS_VOICE_MI"
         print_info "  - ELEVENLABS_VOICE_RA"
         print_info "  - JWT_SECRET"
         print_info "  - NEXTAUTH_SECRET"
-        print_info "  - NEXTAUTH_URL"
-        print_info "  - NEXT_PUBLIC_APP_URL"
         exit 1
     fi
 }
