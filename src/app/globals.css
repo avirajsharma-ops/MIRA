@@ -92,3 +92,173 @@ body {
 .animate-slideUp {
   animation: slideUp 0.3s ease-out forwards;
 }
+
+/* ================================================
+   MOBILE RESPONSIVE STYLES
+   ================================================ */
+
+/* Prevent zoom on input focus (iOS) */
+@media screen and (max-width: 768px) {
+  input, textarea, select {
+    font-size: 16px !important;
+  }
+}
+
+/* Mobile header adjustments */
+@media screen and (max-width: 640px) {
+  .mobile-header {
+    padding: 0.5rem 0.75rem;
+  }
+  
+  .mobile-header h1 {
+    font-size: 1.25rem;
+  }
+  
+  .mobile-hide {
+    display: none !important;
+  }
+  
+  .mobile-compact {
+    padding: 0.5rem !important;
+    font-size: 0.75rem !important;
+  }
+  
+  .mobile-icon-only span {
+    display: none;
+  }
+  
+  .mobile-icon-only {
+    padding: 0.5rem !important;
+    min-width: 2.5rem;
+    justify-content: center;
+  }
+}
+
+/* Floating keyboard mobile */
+@media screen and (max-width: 640px) {
+  .floating-keyboard-input {
+    width: calc(100vw - 7rem) !important;
+    max-width: 280px;
+  }
+  
+  .floating-keyboard-container {
+    bottom: 1rem !important;
+  }
+}
+
+/* Agent display mobile */
+@media screen and (max-width: 640px) {
+  .camera-preview-mobile {
+    width: 120px !important;
+    height: 90px !important;
+    bottom: 80px !important;
+    right: 0.5rem !important;
+  }
+  
+  .media-controls-mobile {
+    bottom: 1rem !important;
+    left: 0.5rem !important;
+  }
+  
+  .media-controls-mobile button {
+    padding: 0.5rem 0.75rem !important;
+    font-size: 0.75rem !important;
+  }
+  
+  .status-overlay-mobile {
+    padding-bottom: 6rem !important;
+  }
+  
+  .status-overlay-mobile p {
+    font-size: 0.875rem !important;
+  }
+}
+
+/* Modal mobile adjustments */
+@media screen and (max-width: 640px) {
+  .modal-content-mobile {
+    max-width: calc(100vw - 2rem) !important;
+    max-height: calc(100vh - 4rem) !important;
+    margin: 1rem !important;
+  }
+  
+  .modal-header-mobile {
+    padding: 1rem !important;
+  }
+  
+  .modal-body-mobile {
+    padding: 1rem !important;
+  }
+}
+
+/* Touch-friendly buttons */
+@media (hover: none) and (pointer: coarse) {
+  button, a, .clickable {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  
+  .touch-button {
+    padding: 0.75rem 1rem;
+  }
+}
+
+/* Safe area insets for notched devices */
+@supports (padding: max(0px)) {
+  .safe-area-top {
+    padding-top: max(0.75rem, env(safe-area-inset-top));
+  }
+  
+  .safe-area-bottom {
+    padding-bottom: max(1rem, env(safe-area-inset-bottom));
+  }
+  
+  .safe-area-left {
+    padding-left: max(0.5rem, env(safe-area-inset-left));
+  }
+  
+  .safe-area-right {
+    padding-right: max(0.5rem, env(safe-area-inset-right));
+  }
+}
+
+/* Hide scrollbar on mobile but keep functionality */
+@media screen and (max-width: 768px) {
+  .hide-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  
+  .hide-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+}
+
+/* Landscape mode adjustments */
+@media screen and (max-height: 500px) and (orientation: landscape) {
+  .landscape-compact-header {
+    padding-top: 0.25rem !important;
+    padding-bottom: 0.25rem !important;
+  }
+  
+  .landscape-hide {
+    display: none !important;
+  }
+}
+
+/* Android WebView specific */
+.android-webview body {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Smooth scrolling on mobile */
+@media screen and (max-width: 768px) {
+  html {
+    scroll-behavior: smooth;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
