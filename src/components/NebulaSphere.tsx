@@ -112,9 +112,8 @@ export default function NebulaSphere({
     const rotationSpeed = (isSpeaking || voiceActive) ? 0.8 : 0.4;
     const rotTime = time * rotationSpeed;
 
-    // Pulse effect based on voice intensity
-    const voicePulse = voiceActive ? currentAudioLevel * 0.15 : 0;
-    const pulseScale = isSpeaking ? 1 + Math.sin(time * 8) * 0.1 : 1 + voicePulse;
+    // No pulse/zoom effect - keep sphere size constant
+    const pulseScale = 1;
 
     // Constants - voice-reactive warp strength
     const SPRING = (isSpeaking || voiceActive) ? 0.08 : 0.05;

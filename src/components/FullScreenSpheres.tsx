@@ -191,9 +191,6 @@ export default function FullScreenSpheres({
     const rotationSpeed = aiSpeaking ? 0.5 : 0.25;
     const rotTime = time * rotationSpeed;
 
-    // Base organic breathing (always active for all particles)
-    const basePulse = Math.sin(time * 2) * 0.03 + Math.sin(time * 3.7) * 0.02;
-
     // Physics constants
     const SPRING = 0.04;
     const FRICTION = 0.92;
@@ -213,9 +210,8 @@ export default function FullScreenSpheres({
         currentSpeaker === p.colorType
       );
       
-      // Pulse scale - only for reacting particles
-      const speakingPulse = particleShouldReact ? Math.sin(time * 8) * 0.1 + currentAudioLevel * 0.15 : 0;
-      const pulseScale = 1 + basePulse + speakingPulse;
+      // No pulse scale - keep sphere size constant
+      const pulseScale = 1;
       
       // Organic intensity - stronger for reacting particles
       const organicIntensity = 15 + (particleShouldReact ? 25 + currentAudioLevel * 40 : 0);

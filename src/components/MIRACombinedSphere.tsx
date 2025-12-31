@@ -93,8 +93,8 @@ export default function MIRACombinedSphere({
     const rotationSpeed = (isSpeaking || voiceActive) ? 0.6 : 0.3;
     const rotTime = time * rotationSpeed;
     
-    const voicePulse = voiceActive ? currentAudioLevel * 0.12 : 0;
-    const pulseScale = isSpeaking ? 1 + Math.sin(time * 6) * 0.08 : 1 + voicePulse;
+    // No pulse/zoom effect - keep sphere size constant
+    const pulseScale = 1;
 
     const SPRING = (isSpeaking || voiceActive) ? 0.07 : 0.05;
     const FRICTION = 0.9;
