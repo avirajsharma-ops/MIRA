@@ -2,22 +2,23 @@
 # MIRA AI Assistant - Production Dockerfile
 # ===========================================
 
-# Use full Debian-based Node image for better native module compatibility
+# Use full Debian-based Node image for native module compatibility
 FROM node:20-bookworm AS builder
 
 WORKDIR /app
 
-# Copy package files
-COPY package.json package-lock.json* ./
+# Copy package.json only (not package-lock.json due to npm optional deps bug)
+COPY package.json ./
 
-# Install dependencies - the full node image has all needed build tools
+# Fresh install without lock file to get correct platform binaries
+# This fixes the @tailwindcss/oxide and lightningcss native binding issues
 RUN npm install --legacy-peer-deps
-
-# Explicitly install the Linux x64 binary for lightningcss
-RUN npm install lightningcss-linux-x64-gnu --save-optional --legacy-peer-deps || true
 
 # Copy source code
 COPY . .
+
+# Remove any lock file that might have been copied
+RUN rm -f package-lock.json
 
 # Set environment for build
 ENV NEXT_TELEMETRY_DISABLED=1
