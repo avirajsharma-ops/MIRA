@@ -42,6 +42,10 @@ ENV NEXT_PUBLIC_APP_URL="http://localhost:3000"
 # Build the application
 RUN npm run build
 
+# Copy static files to standalone directory (required for standalone mode)
+RUN cp -r .next/static .next/standalone/.next/static
+RUN cp -r public .next/standalone/public
+
 # Create non-root user for security
 RUN addgroup --system --gid 1001 nodejs || true
 RUN adduser --system --uid 1001 nextjs || true
