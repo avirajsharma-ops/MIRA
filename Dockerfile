@@ -24,6 +24,19 @@ RUN rm -f package-lock.json
 ENV NEXT_TELEMETRY_DISABLED=1
 ENV NODE_ENV=production
 
+# Dummy env vars for build (actual values come from runtime .env)
+# These are needed because Next.js evaluates API routes at build time
+ENV MONGODB_URI="mongodb://placeholder:27017/placeholder"
+ENV OPENAI_API_KEY="placeholder"
+ENV ELEVENLABS_API_KEY="placeholder"
+ENV ELEVENLABS_VOICE_MI="placeholder"
+ENV ELEVENLABS_VOICE_RA="placeholder"
+ENV JWT_SECRET="placeholder"
+ENV NEXTAUTH_SECRET="placeholder"
+ENV NEXTAUTH_URL="http://localhost:3000"
+ENV GEMINI_API_KEY="placeholder"
+ENV NEXT_PUBLIC_APP_URL="http://localhost:3000"
+
 # Build the application
 RUN npm run build
 
