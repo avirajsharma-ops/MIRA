@@ -462,58 +462,26 @@ COMPOSEEOF
 
 # Setup environment file
 setup_env() {
-    print_step "Step 8: Setting Up Environment Variables"
+    print_step "Step 8: Checking Environment Variables"
     
     if [ -f "${APP_DIR}/.env" ]; then
-        print_warning ".env file already exists"
-        read -p "Do you want to reconfigure? (y/N): " -n 1 -r
-        echo
-        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_info "Keeping existing .env file"
-            return
-        fi
-    fi
-    
-    # Check if .env.example exists
-    if [ -f "${APP_DIR}/.env.example" ]; then
-        cp ${APP_DIR}/.env.example ${APP_DIR}/.env
+        print_status ".env file found"
     else
-        cat > ${APP_DIR}/.env << 'ENVEOF'
-# MongoDB
-MONGODB_URI=
-
-# OpenAI (for Whisper STT)
-OPENAI_API_KEY=
-
-# Google Gemini (Primary AI)
-GEMINI_API_KEY=
-
-# ElevenLabs TTS
-ELEVENLABS_API_KEY=
-ELEVENLABS_VOICE_MI=
-ELEVENLABS_VOICE_RA=
-
-# Auth
-JWT_SECRET=
-NEXTAUTH_SECRET=
-NEXTAUTH_URL=https://itsmira.cloud
-
-# App
-NEXT_PUBLIC_APP_URL=https://itsmira.cloud
-ENVEOF
+        print_error ".env file not found!"
+        print_warning "Please create ${APP_DIR}/.env with your API keys before running this script"
+        print_info "Required variables:"
+        print_info "  - MONGODB_URI"
+        print_info "  - OPENAI_API_KEY"
+        print_info "  - GEMINI_API_KEY"
+        print_info "  - ELEVENLABS_API_KEY"
+        print_info "  - ELEVENLABS_VOICE_MI"
+        print_info "  - ELEVENLABS_VOICE_RA"
+        print_info "  - JWT_SECRET"
+        print_info "  - NEXTAUTH_SECRET"
+        print_info "  - NEXTAUTH_URL"
+        print_info "  - NEXT_PUBLIC_APP_URL"
+        exit 1
     fi
-    
-    print_warning "Please edit ${APP_DIR}/.env and add your API keys!"
-    print_info "Required: MONGODB_URI, OPENAI_API_KEY, GEMINI_API_KEY, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_MI, ELEVENLABS_VOICE_RA"
-    
-    # Generate random secrets if not set
-    JWT_SECRET=$(openssl rand -base64 32)
-    NEXTAUTH_SECRET=$(openssl rand -base64 32)
-    
-    sed -i "s/^JWT_SECRET=$/JWT_SECRET=${JWT_SECRET}/" ${APP_DIR}/.env
-    sed -i "s/^NEXTAUTH_SECRET=$/NEXTAUTH_SECRET=${NEXTAUTH_SECRET}/" ${APP_DIR}/.env
-    
-    print_status "Random secrets generated for JWT and NextAuth"
 }
 
 # Build and deploy
