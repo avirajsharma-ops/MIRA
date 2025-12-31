@@ -1,8 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { MIRAProvider, useMIRA } from '@/context/MIRAContext';
-import { AuthScreen, AgentDisplay, PeopleLibraryModal, ChatHistoryModal } from '@/components';
+import { AuthScreen, AgentDisplay, PeopleLibraryModal, ChatHistoryModal, FaceRegistrationModal } from '@/components';
 
 function FloatingKeyboard() {
   const [isOpen, setIsOpen] = useState(false);
@@ -78,6 +78,36 @@ function MIRAApp() {
   const { isAuthenticated, user, logout, clearConversation, enableProactive, setEnableProactive, isRecording, isCameraActive } = useMIRA();
   const [showPeopleModal, setShowPeopleModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
+  const [showFaceRegistration, setShowFaceRegistration] = useState(false);
+  const [hasCheckedOwnerFace, setHasCheckedOwnerFace] = useState(false);
+
+  // Check if owner face exists after authentication
+  const checkOwnerFace = useCallback(async () => {
+    if (!isAuthenticated || hasCheckedOwnerFace) return;
+    
+    try {
+      const token = localStorage.getItem('mira_token');
+      const response = await fetch('/api/faces/owner', {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      
+      if (response.ok) {
+        const data = await response.json();
+        if (!data.hasOwnerFace) {
+          // Show face registration popup if no owner face registered
+          setShowFaceRegistration(true);
+        }
+      }
+    } catch (err) {
+      console.error('Error checking owner face:', err);
+    } finally {
+      setHasCheckedOwnerFace(true);
+    }
+  }, [isAuthenticated, hasCheckedOwnerFace]);
+
+  useEffect(() => {
+    checkOwnerFace();
+  }, [checkOwnerFace]);
 
   if (!isAuthenticated) {
     return <AuthScreen />;
@@ -187,6 +217,13 @@ function MIRAApp() {
       <ChatHistoryModal 
         isOpen={showHistoryModal} 
         onClose={() => setShowHistoryModal(false)} 
+      />
+      <FaceRegistrationModal
+        isOpen={showFaceRegistration}
+        onClose={() => setShowFaceRegistration(false)}
+        onSuccess={() => setShowFaceRegistration(false)}
+        userName={user?.name || 'User'}
+        isNewAccount={!hasCheckedOwnerFace}
       />
     </div>
   );

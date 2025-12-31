@@ -10,3 +10,4 @@ export { default as CameraPreview } from './CameraPreview';
 export { default as Modal } from './Modal';
 export { default as PeopleLibraryModal } from './PeopleLibraryModal';
 export { default as ChatHistoryModal } from './ChatHistoryModal';
+export { default as FaceRegistrationModal } from './FaceRegistrationModal';
