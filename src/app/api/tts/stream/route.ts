@@ -3,6 +3,25 @@ import { verifyToken, getTokenFromHeader } from '@/lib/auth';
 
 // ElevenLabs TTS Streaming - optimized for ultra-low latency
 // Using eleven_flash_v2_5 (~75ms) with streaming for fastest response
+
+// Preprocess text to replace MI/RA/MIRA with Hindi pronunciations for TTS
+function preprocessTextForTTS(text: string): string {
+  // Replace variations of MI, RA, MIRA with Hindi equivalents for proper pronunciation
+  // Using word boundaries to avoid replacing parts of other words
+  let processed = text;
+  
+  // Replace MIRA first (before MI/RA to avoid partial replacements)
+  processed = processed.replace(/\bMIRA\b/gi, 'मीरा');
+  
+  // Replace MI (मी) - careful not to replace "mi" in middle of words
+  processed = processed.replace(/\bMI\b/gi, 'मी');
+  
+  // Replace RA (रा)
+  processed = processed.replace(/\bRA\b/gi, 'रा');
+  
+  return processed;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const token = getTokenFromHeader(request.headers.get('authorization'));
@@ -66,6 +85,9 @@ export async function POST(request: NextRequest) {
 
     const selectedVoiceId = voiceMap[voice as 'mi' | 'ra' | 'mira'];
 
+    // Preprocess text to use Hindi names for MI/RA/MIRA
+    const processedText = preprocessTextForTTS(text);
+
     // Call ElevenLabs streaming API with low-latency optimizations
     // Using mp3_22050_32 for faster encoding
     const response = await fetch(
@@ -78,7 +100,7 @@ export async function POST(request: NextRequest) {
           'xi-api-key': ELEVENLABS_API_KEY,
         },
         body: JSON.stringify({
-          text: text,
+          text: processedText,
           model_id: ELEVENLABS_MODEL,
           voice_settings: {
             stability: 0.5,

@@ -640,8 +640,9 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         };
         setMessages(prev => [...prev, gestureMessage]);
         
-        // Save to transcript
-        saveTranscriptEntry(data.response, 'mira', data.agent.toUpperCase(), true);
+        // Save to transcript - use English names for UI display
+        const agentNameMap: Record<string, string> = { 'mi': 'MI', 'ra': 'RA', 'mira': 'MIRA' };
+        saveTranscriptEntry(data.response, 'mira', agentNameMap[data.agent] || data.agent.toUpperCase(), true);
         
         // Play audio response
         await playAudio(data.response, data.agent as AgentType);
@@ -900,13 +901,12 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       
       // Small delay to ensure component is fully mounted
       setTimeout(() => {
-        // Only start camera on desktop for face detection
-        // Mobile devices skip camera to save battery and improve mic stability
-        if (!isMobile && shouldEnableFaceDetection()) {
+        // Start camera on both desktop and mobile for face detection
+        if (shouldEnableFaceDetection()) {
           startCamera();
-          console.log('[Media] Camera started (desktop mode with face detection)');
+          console.log('[Media] Camera started (face detection enabled)');
         } else {
-          console.log('[Media] Camera disabled (mobile mode - face detection off)');
+          console.log('[Media] Camera disabled (face detection not available)');
         }
         
         // Always start voice recording
@@ -1382,8 +1382,9 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
             };
             setMessages(prev => [...prev, debateMessage]);
             
-            // Save debate message to transcript
-            saveTranscriptEntry(msg.content, 'mira', msg.agent.toUpperCase(), true);
+            // Save debate message to transcript - use English names for UI display
+            const agentNameMap: Record<string, string> = { 'mi': 'MI', 'ra': 'RA', 'mira': 'MIRA' };
+            saveTranscriptEntry(msg.content, 'mira', agentNameMap[msg.agent] || msg.agent.toUpperCase(), true);
             
             // Play audio for this debate message and WAIT for it to complete
             // This ensures spheres stay separated throughout the entire debate
@@ -1407,8 +1408,9 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         };
         setMessages(prev => [...prev, responseMessage]);
         
-        // Save MIRA response to transcript
-        saveTranscriptEntry(data.response.content, 'mira', data.response.agent.toUpperCase(), true);
+        // Save response to transcript - use English names for UI display
+        const finalAgentNameMap: Record<string, string> = { 'mi': 'MI', 'ra': 'RA', 'mira': 'MIRA' };
+        saveTranscriptEntry(data.response.content, 'mira', finalAgentNameMap[data.response.agent] || data.response.agent.toUpperCase(), true);
         
         // Check if MIRA's response contains a question (for follow-up detection)
         // Be very aggressive at detecting questions - any question mark or question-like phrase

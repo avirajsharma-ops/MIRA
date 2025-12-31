@@ -87,7 +87,7 @@ export async function POST(request: NextRequest) {
       const contextMatch = message.match(/\[SYSTEM: ([^\]]+)\]/);
       const faceContext = contextMatch ? contextMatch[1] : 'An unknown person is visible';
       
-      // Generate a friendly introduction from MI
+      // Generate a friendly introduction from मी
       const contextEngine = new ContextEngine(payload.userId);
       const agentContext = {
         memories: [],
@@ -99,7 +99,7 @@ export async function POST(request: NextRequest) {
       
       const agent = new MIRAAgent(agentContext);
       const introResponse = await agent.getAgentResponse('mi', 
-        `You notice someone new. ${faceContext} Introduce yourself warmly as MIRA and ask them their name. Be friendly and natural - don't mention cameras or images. Just greet them like you're meeting for the first time and ask who they are.`
+        `You notice someone new. ${faceContext} Introduce yourself warmly as मीरा and ask them their name. Be friendly and natural - don't mention cameras or images. Just greet them like you're meeting for the first time and ask who they are.`
       );
       
       return NextResponse.json({

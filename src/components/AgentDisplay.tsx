@@ -72,8 +72,8 @@ export default function AgentDisplay() {
       {/* Camera preview - HIDDEN but camera still runs for face detection */}
       {/* The camera stream is active for face-api.js processing but not shown to user */}
 
-      {/* Media controls */}
-      <div className="absolute bottom-2 sm:bottom-4 left-2 sm:left-4 flex gap-1.5 sm:gap-2 z-20 media-controls-mobile safe-area-bottom safe-area-left">
+      {/* Media controls - hidden on mobile */}
+      <div className="hidden sm:flex absolute bottom-2 sm:bottom-4 left-2 sm:left-4 gap-1.5 sm:gap-2 z-20 media-controls-mobile safe-area-bottom safe-area-left">
         <button
           onClick={() => (isCameraActive ? stopCamera() : startCamera())}
           className={`px-2 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm transition-all min-h-[36px] ${

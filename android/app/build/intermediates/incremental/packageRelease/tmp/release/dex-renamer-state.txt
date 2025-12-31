@@ -1,0 +1,4 @@
+#Thu Jan 01 00:17:22 IST 2026
+base.0=/Users/avirajsharma/Desktop/MIRA/mira-app/android/app/build/intermediates/dex/release/minifyReleaseWithR8/classes.dex
+renamed.0=classes.dex
+path.0=classes.dex

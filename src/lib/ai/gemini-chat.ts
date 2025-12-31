@@ -339,12 +339,12 @@ export async function routeWithGemini(userMessage: string): Promise<'mi' | 'ra' 
   try {
     const routingPrompt = `You are a routing system. Based on the user's message, decide who should respond.
 
-MI - Choose for:
+मी - Choose for:
 - Greetings, casual chat, small talk, emotional support
 - Feelings, relationships, creative questions
 - Personal matters, encouragement, comfort
 
-RA - Choose for:
+रा - Choose for:
 - Facts, data, technical questions, math, code
 - Practical how-to questions, problem-solving
 
@@ -352,7 +352,7 @@ BOTH - Choose ONLY for major life decisions that need both emotional AND logical
 
 User message: "${userMessage}"
 
-Respond with ONLY ONE word: MI, RA, or BOTH`;
+Respond with ONLY ONE word: मी, रा, or BOTH`;
 
     const requestBody = {
       contents: [{
@@ -381,8 +381,8 @@ Respond with ONLY ONE word: MI, RA, or BOTH`;
     const data = await response.json();
     const decision = data.candidates?.[0]?.content?.parts?.[0]?.text?.trim().toUpperCase();
 
-    if (decision === 'MI') return 'mi';
-    if (decision === 'RA') return 'ra';
+    if (decision === 'MI' || decision === 'मी') return 'mi';
+    if (decision === 'RA' || decision === 'रा') return 'ra';
     if (decision === 'BOTH') return 'both';
     
     return null;

@@ -124,9 +124,9 @@ export default function PeopleLibraryModal({ isOpen, onClose }: PeopleLibraryMod
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="People Library" size="xl">
-      <div className="flex gap-6 min-h-[400px]">
+      <div className="flex flex-col md:flex-row gap-4 md:gap-6 min-h-[350px] md:min-h-[400px]">
         {/* People List */}
-        <div className="w-1/2 border-r border-white/10 pr-6">
+        <div className="w-full md:w-1/2 md:border-r border-white/10 md:pr-6">
           <div className="mb-4 flex items-center justify-between">
             <span className="text-sm text-white/50">{people.length} people recognized</span>
             <button
@@ -154,7 +154,7 @@ export default function PeopleLibraryModal({ isOpen, onClose }: PeopleLibraryMod
               <p className="text-xs mt-2 text-white/30">MIRA will remember people as you talk</p>
             </div>
           ) : (
-            <div className="space-y-2 max-h-[400px] overflow-y-auto">
+            <div className="space-y-2 max-h-[200px] md:max-h-[400px] overflow-y-auto">
               {people.map((person) => (
                 <button
                   key={person.id}
@@ -201,12 +201,12 @@ export default function PeopleLibraryModal({ isOpen, onClose }: PeopleLibraryMod
         </div>
 
         {/* Person Details */}
-        <div className="w-1/2 pl-2">
+        <div className="w-full md:w-1/2 md:pl-2">
           {selectedPerson ? (
             <div className="space-y-4">
               <div className="flex items-start justify-between">
                 <div className="flex items-center gap-3">
-                  <div className={`w-14 h-14 rounded-full flex items-center justify-center text-2xl font-bold ${
+                  <div className={`w-12 h-12 md:w-14 md:h-14 rounded-full flex items-center justify-center text-xl md:text-2xl font-bold ${
                     selectedPerson.isOwner 
                       ? 'bg-white text-black'
                       : 'bg-white/20 text-white/70'

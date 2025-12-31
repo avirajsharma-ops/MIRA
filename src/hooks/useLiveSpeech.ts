@@ -335,11 +335,11 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
       const error = event.error;
       
       // "no-speech" is very common - just means silence was detected
-      // Silently restart without logging
+      // Silently restart without logging - IMMEDIATELY on mobile for seamless experience
       if (error === 'no-speech') {
         if (shouldBeListeningRef.current) {
-          // On mobile, use longer delay to prevent rapid cycling
-          const delay = isMobile ? 200 : 50;
+          // IMMEDIATE restart on mobile to prevent any gaps in listening
+          const delay = isMobile ? 10 : 50;
           restartTimeoutRef.current = setTimeout(() => {
             restartRecognition();
           }, delay);
@@ -349,11 +349,11 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
       
       // "aborted" means intentional stop
       if (error === 'aborted') {
-        // On mobile, check if we should restart after abort
-        if (shouldBeListeningRef.current && isMobile) {
+        // On mobile, ALWAYS restart after abort if we should be listening
+        if (shouldBeListeningRef.current) {
           restartTimeoutRef.current = setTimeout(() => {
             restartRecognition();
-          }, 500);
+          }, 100);
         }
         return;
       }
@@ -361,29 +361,33 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
       // Log other errors
       console.warn('Speech recognition error:', error);
 
-      // Restart on recoverable errors with exponential backoff on mobile
+      // Restart on recoverable errors - be more aggressive on mobile
       if (shouldBeListeningRef.current && (error === 'network' || error === 'audio-capture' || error === 'not-allowed' || error === 'service-not-allowed')) {
         reconnectAttemptsRef.current++;
         
         if (reconnectAttemptsRef.current <= maxReconnectAttempts) {
-          // Exponential backoff: 500ms, 1s, 2s, 4s... up to 30s
-          const delay = Math.min(500 * Math.pow(2, reconnectAttemptsRef.current - 1), 30000);
+          // On mobile, use shorter delays and more aggressive retry
+          const baseDelay = isMobile ? 200 : 500;
+          const delay = Math.min(baseDelay * Math.pow(1.5, reconnectAttemptsRef.current - 1), isMobile ? 5000 : 30000);
           console.log(`[Speech] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`);
           
           restartTimeoutRef.current = setTimeout(() => {
             restartRecognition();
           }, delay);
         } else {
-          console.error('[Speech] Max reconnect attempts reached');
+          console.error('[Speech] Max reconnect attempts reached, will retry on visibility change');
+          // Reset attempts so visibility change can try again
+          reconnectAttemptsRef.current = 0;
         }
       }
     };
 
     recognition.onend = () => {
-      // Auto-restart if still supposed to be listening
+      // Auto-restart IMMEDIATELY if still supposed to be listening
+      // Critical for mobile - don't let any gaps occur
       if (shouldBeListeningRef.current) {
-        // On mobile, use slightly longer delay
-        const delay = isMobile ? 100 : 50;
+        // Minimal delay to allow clean restart
+        const delay = isMobile ? 10 : 50;
         restartTimeoutRef.current = setTimeout(() => {
           restartRecognition();
         }, delay);

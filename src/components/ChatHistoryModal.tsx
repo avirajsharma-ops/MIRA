@@ -137,9 +137,9 @@ export default function ChatHistoryModal({ isOpen, onClose }: ChatHistoryModalPr
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="Chat History" size="xl">
-      <div className="flex gap-4 min-h-[450px]">
+      <div className="flex flex-col md:flex-row gap-4 min-h-[350px] md:min-h-[450px]">
         {/* Transcript List */}
-        <div className="w-1/3 border-r border-white/10 pr-4">
+        <div className="w-full md:w-1/3 md:border-r border-white/10 md:pr-4">
           {/* Filter */}
           <div className="mb-4">
             <div className="flex items-center gap-2 mb-2">
@@ -179,7 +179,7 @@ export default function ChatHistoryModal({ isOpen, onClose }: ChatHistoryModalPr
               <p className="text-xs mt-1 text-white/30">Start chatting with MIRA!</p>
             </div>
           ) : (
-            <div className="space-y-2 max-h-[380px] overflow-y-auto">
+            <div className="space-y-2 max-h-[200px] md:max-h-[380px] overflow-y-auto">
               {transcripts.map((transcript) => (
                 <button
                   key={transcript._id}
@@ -210,12 +210,12 @@ export default function ChatHistoryModal({ isOpen, onClose }: ChatHistoryModalPr
         </div>
 
         {/* Transcript Details */}
-        <div className="w-2/3 flex flex-col">
+        <div className="w-full md:w-2/3 flex flex-col">
           {selectedTranscript ? (
             <>
               {/* Header */}
               <div className="pb-3 mb-3 border-b border-white/10">
-                <h3 className="text-lg font-semibold text-white">{formatDateLong(selectedTranscript.date)}</h3>
+                <h3 className="text-base md:text-lg font-semibold text-white">{formatDateLong(selectedTranscript.date)}</h3>
                 {selectedTranscript.metadata.summary && (
                   <p className="text-sm text-white/50 mt-1">{selectedTranscript.metadata.summary}</p>
                 )}
@@ -226,7 +226,7 @@ export default function ChatHistoryModal({ isOpen, onClose }: ChatHistoryModalPr
               </div>
 
               {/* Messages */}
-              <div className="flex-1 overflow-y-auto space-y-2 max-h-[350px] pr-2">
+              <div className="flex-1 overflow-y-auto space-y-2 max-h-[200px] md:max-h-[350px] pr-2">
                 {selectedTranscript.entries.map((entry, index) => (
                   <div
                     key={index}

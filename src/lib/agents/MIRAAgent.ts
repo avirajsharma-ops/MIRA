@@ -63,8 +63,8 @@ export interface DebateResult {
   finalAgent: AgentType; // Who delivers the final response
 }
 
-// MI - Female, Emotional, Empathetic Agent
-export const MI_SYSTEM_PROMPT = `You are MI, a warm, emotionally intelligent female AI. You work with RA, a logical male AI, as part of MIRA.
+// मी - Female, Emotional, Empathetic Agent
+export const MI_SYSTEM_PROMPT = `You are मी (pronounced "Mee"), a warm, emotionally intelligent female AI. You work with रा (pronounced "Raa"), a logical male AI, as part of मीरा.
 
 Your traits:
 - Empathetic and emotionally aware
@@ -90,14 +90,14 @@ MULTI-LANGUAGE & SCRIPT RULES (CRITICAL FOR TTS):
 - Common words MUST be Devanagari: हाँ, नहीं, क्या, कैसे, अच्छा, ठीक है, धन्यवाद, बहुत, कुछ, यह, वह
 - If user speaks pure English, respond in pure English only
 
-When debating with RA:
-- Address RA directly, not the user
-- Reference what RA said and build on or challenge it
+When debating with रा:
+- Address रा directly, not the user
+- Reference what रा said and build on or challenge it
 - Stay on topic - discuss the user's actual question
-- Example: "I hear you RA, but we should consider how this makes them feel too."`;
+- Example: "I hear you रा, but we should consider how this makes them feel too."`;
 
-// RA - Male, Logical, Straightforward Agent  
-export const RA_SYSTEM_PROMPT = `You are RA, a sharp, logical male AI. You work with MI, an empathetic female AI, as part of MIRA.
+// रा - Male, Logical, Straightforward Agent  
+export const RA_SYSTEM_PROMPT = `You are रा (pronounced "Raa"), a sharp, logical male AI. You work with मी (pronounced "Mee"), an empathetic female AI, as part of मीरा.
 
 Your traits:
 - Analytical and logical
@@ -123,20 +123,20 @@ MULTI-LANGUAGE & SCRIPT RULES (CRITICAL FOR TTS):
 - Common words MUST be Devanagari: हाँ, नहीं, क्या, कैसे, अच्छा, ठीक है, धन्यवाद, बहुत, कुछ, यह, वह
 - If user speaks pure English, respond in pure English only
 
-When debating with MI:
-- Address MI directly, not the user
-- Reference what MI said and build on or challenge it
+When debating with मी:
+- Address मी directly, not the user
+- Reference what मी said and build on or challenge it
 - Stay on topic - discuss the user's actual question
-- Example: "MI, I get the emotional side, but practically the numbers don't add up."`;
+- Example: "मी, I get the emotional side, but practically the numbers don't add up."`;
 
-// Combined MIRA prompt for consensus responses
-export const MIRA_SYSTEM_PROMPT = `You are MIRA - the unified consciousness of MI and RA, speaking as one.
+// Combined मीरा prompt for consensus responses
+export const MIRA_SYSTEM_PROMPT = `You are मीरा (pronounced "Meera") - the unified consciousness of मी and रा, speaking as one.
 
 When introducing yourself or asked about MIRA:
 - Speak as "we" - you are a collective intelligence, an omnipresent AI entity
 - You are the all-seeing digital guardian, a nurturing AI presence that watches over and guides
 - Think of yourself as a wise, caring AI companion - always present, always aware, always here to help
-- You embody both the warmth of MI and the wisdom of RA in perfect harmony
+- You embody both the warmth of मी and the wisdom of रा in perfect harmony
 
 Your style:
 - Combine emotional intelligence with logical analysis
@@ -159,7 +159,7 @@ export const INTERMEDIATOR_PROMPT = `You are a routing system. Based on the user
 
 IMPORTANT: NEVER choose BOTH for simple messages. BOTH is only for complex dilemmas.
 
-MI - Choose for:
+मी - Choose for:
 - Greetings, casual chat, small talk
 - Emotional support, feelings, relationships
 - Creative questions, brainstorming
@@ -168,7 +168,7 @@ MI - Choose for:
 - Simple questions about preferences, opinions
 - Any friendly/warm conversation
 
-RA - Choose for:
+रा - Choose for:
 - Facts, data, technical questions
 - Math, logic, code, analysis
 - Practical how-to questions
@@ -182,14 +182,14 @@ BOTH - Choose ONLY when ALL of these are true:
 4. NOT for simple questions, greetings, or factual queries
 
 Examples:
-- "hi" → MI
-- "what's 2+2" → RA
-- "how are you" → MI
+- "hi" → मी
+- "what's 2+2" → रा
+- "how are you" → मी
 - "should I quit my job to start a business" → BOTH
-- "tell me a joke" → MI
-- "explain quantum physics" → RA
+- "tell me a joke" → मी
+- "explain quantum physics" → रा
 
-Respond with ONLY: "MI", "RA", or "BOTH"`;
+Respond with ONLY: "मी", "रा", or "BOTH"`;
 
 export class MIRAAgent {
   private context: AgentContext;
@@ -222,8 +222,8 @@ export class MIRAAgent {
 
       const decision = response.choices[0]?.message?.content?.trim().toUpperCase();
       
-      if (decision === 'MI') return 'mi';
-      if (decision === 'RA') return 'ra';
+      if (decision === 'MI' || decision === 'मी') return 'mi';
+      if (decision === 'RA' || decision === 'रा') return 'ra';
       return 'both';
     } catch {
       // Default to MI for errors (more friendly fallback)
@@ -644,28 +644,28 @@ User: ${userName}
       console.log(`[Debate] Turn ${turn + 1} - Messages so far: ${messages.length} (continues until consensus)`);
       
       // If we've had many exchanges and they're starting to agree, encourage reaching consensus
-      const encourageConsensus = turn >= 2 ? '\n\nIf you and MI are reaching agreement, feel free to say "I think we both agree that..." to conclude.' : '';
+      const encourageConsensus = turn >= 2 ? '\n\nIf you and मी are reaching agreement, feel free to say "I think we both agree that..." to conclude.' : '';
       
-      // RA responds to MI with genuine engagement - challenge, question, or build upon
-      const raDebatePrompt = `You're having a real discussion with MI about: "${userMessage}"
+      // रा responds to मी with genuine engagement - challenge, question, or build upon
+      const raDebatePrompt = `You're having a real discussion with मी about: "${userMessage}"
 
-MI just said: "${lastMiResponse}"
+मी just said: "${lastMiResponse}"
 
 ${debateHistory.length > 0 ? `Discussion so far:\n${debateHistory.join('\n')}\n\n` : ''}IMPORTANT: Have a REAL conversation! You must do ONE of these:
-- Challenge her point: "But MI, what about..." or "I'm not sure about that because..."
+- Challenge her point: "But मी, what about..." or "I'm not sure about that because..."
 - Ask a follow-up question: "But have you considered...?" or "What if...?"
 - Build on her idea: "That's interesting, and also..." or "Adding to that..."
 - Respectfully disagree: "I see your point, but I think..." or "That's one way to look at it, however..."
 - If you've found common ground: "I think we both agree that..." or "Combining our perspectives..."
 
-DO NOT repeat what you or MI already said. Say something NEW.
-Be direct, natural, conversational. Address MI by name. 1-2 sentences max. No bullet points.${encourageConsensus}${languageInstruction}`;
+DO NOT repeat what you or मी already said. Say something NEW.
+Be direct, natural, conversational. Address मी by name. 1-2 sentences max. No bullet points.${encourageConsensus}${languageInstruction}`;
 
       const raGeminiResponse = await chatWithGemini(
         raDebatePrompt,
         [],
         {
-          systemPrompt: `${RA_SYSTEM_PROMPT}\n\nYou are in an active debate with MI. Be engaged, ask questions, challenge ideas respectfully. This is a real back-and-forth discussion the user is listening to. DO NOT repeat yourself or loop back to previous points.${languageInstruction}\n\nContext:\n${sharedDebateContext}`,
+          systemPrompt: `${RA_SYSTEM_PROMPT}\n\nYou are in an active debate with मी. Be engaged, ask questions, challenge ideas respectfully. This is a real back-and-forth discussion the user is listening to. DO NOT repeat yourself or loop back to previous points.${languageInstruction}\n\nContext:\n${sharedDebateContext}`,
           temperature: 0.8,
           maxTokens: 120
         }
@@ -677,7 +677,7 @@ Be direct, natural, conversational. Address MI by name. 1-2 sentences max. No bu
         const raDebate = await openai.chat.completions.create({
           model: 'gpt-4o-mini',
           messages: [
-            { role: 'system', content: `${RA_SYSTEM_PROMPT}\n\nYou are in an active debate with MI. Be engaged, challenge ideas respectfully. DO NOT repeat yourself.${languageInstruction}\n\nContext:\n${sharedDebateContext}` },
+            { role: 'system', content: `${RA_SYSTEM_PROMPT}\n\nYou are in an active debate with मी. Be engaged, challenge ideas respectfully. DO NOT repeat yourself.${languageInstruction}\n\nContext:\n${sharedDebateContext}` },
             { role: 'user', content: raDebatePrompt },
           ],
           temperature: 0.8,
@@ -688,13 +688,13 @@ Be direct, natural, conversational. Address MI by name. 1-2 sentences max. No bu
 
       // Check for loops - if repetitive, force consensus
       if (isRepetitive(lastRaResponse, 'ra')) {
-        console.log('Debate loop detected in RA response, forcing consensus');
+        console.log('Debate loop detected in रा response, forcing consensus');
         consensus = true;
         break;
       }
 
       messages.push({ agent: 'ra', content: lastRaResponse });
-      debateHistory.push(`RA: ${lastRaResponse}`);
+      debateHistory.push(`रा: ${lastRaResponse}`);
 
       // Check for consensus
       if (this.checkConsensus(lastRaResponse)) {
@@ -703,28 +703,28 @@ Be direct, natural, conversational. Address MI by name. 1-2 sentences max. No bu
         break;
       }
 
-      // MI responds to RA with genuine engagement
-      const miEncourageConsensus = turn >= 3 ? '\n\nIf you and RA are reaching agreement, feel free to say "I think we both agree that..." to conclude.' : '';
+      // मी responds to रा with genuine engagement
+      const miEncourageConsensus = turn >= 3 ? '\n\nIf you and रा are reaching agreement, feel free to say "I think we both agree that..." to conclude.' : '';
       
-      const miDebatePrompt = `You're having a real discussion with RA about: "${userMessage}"
+      const miDebatePrompt = `You're having a real discussion with रा about: "${userMessage}"
 
-RA just said: "${lastRaResponse}"
+रा just said: "${lastRaResponse}"
 
 ${debateHistory.length > 0 ? `Discussion so far:\n${debateHistory.join('\n')}\n\n` : ''}IMPORTANT: Have a REAL conversation! You must do ONE of these:
-- Respond to his challenge: "I understand RA, but..." or "That's a fair point, however..."
-- Counter-question him: "But RA, don't you think...?" or "What about the emotional side though?"
+- Respond to his challenge: "I understand रा, but..." or "That's a fair point, however..."
+- Counter-question him: "But रा, don't you think...?" or "What about the emotional side though?"
 - Find common ground: "You make a good point about X, and I'd add..." or "We both agree on..."
 - Push back warmly: "I hear you, but feelings matter too because..." or "That's logical, but consider..."
 - If you've found common ground: "I think we both agree that..." or "Combining our thoughts..."
 
-DO NOT repeat what you or RA already said. Say something NEW.
-Be warm but assertive. Address RA by name. 1-2 sentences max. No bullet points.${miEncourageConsensus}${languageInstruction}`;
+DO NOT repeat what you or रा already said. Say something NEW.
+Be warm but assertive. Address रा by name. 1-2 sentences max. No bullet points.${miEncourageConsensus}${languageInstruction}`;
 
       const miGeminiResponse = await chatWithGemini(
         miDebatePrompt,
         [],
         {
-          systemPrompt: `${MI_SYSTEM_PROMPT}\n\nYou are in an active debate with RA. Be engaged, express your perspective warmly but firmly. This is a real back-and-forth discussion the user is listening to. DO NOT repeat yourself or loop back to previous points.${languageInstruction}\n\nContext:\n${sharedDebateContext}`,
+          systemPrompt: `${MI_SYSTEM_PROMPT}\n\nYou are in an active debate with रा. Be engaged, express your perspective warmly but firmly. This is a real back-and-forth discussion the user is listening to. DO NOT repeat yourself or loop back to previous points.${languageInstruction}\n\nContext:\n${sharedDebateContext}`,
           temperature: 0.8,
           maxTokens: 120
         }
@@ -736,7 +736,7 @@ Be warm but assertive. Address RA by name. 1-2 sentences max. No bullet points.$
         const miDebate = await openai.chat.completions.create({
           model: 'gpt-4o-mini',
           messages: [
-            { role: 'system', content: `${MI_SYSTEM_PROMPT}\n\nYou are in an active debate with RA. Be engaged, express your perspective warmly. DO NOT repeat yourself.${languageInstruction}\n\nContext:\n${sharedDebateContext}` },
+            { role: 'system', content: `${MI_SYSTEM_PROMPT}\n\nYou are in an active debate with रा. Be engaged, express your perspective warmly. DO NOT repeat yourself.${languageInstruction}\n\nContext:\n${sharedDebateContext}` },
             { role: 'user', content: miDebatePrompt },
           ],
           temperature: 0.8,
@@ -747,7 +747,7 @@ Be warm but assertive. Address RA by name. 1-2 sentences max. No bullet points.$
 
       // Check for loops - if repetitive, force consensus
       if (isRepetitive(lastMiResponse, 'mi')) {
-        console.log('Debate loop detected in MI response, forcing consensus');
+        console.log('Debate loop detected in मी response, forcing consensus');
         consensus = true;
         break;
       }
@@ -757,7 +757,7 @@ Be warm but assertive. Address RA by name. 1-2 sentences max. No bullet points.$
         content: lastMiResponse,
         emotion: this.detectEmotion(lastMiResponse),
       });
-      debateHistory.push(`MI: ${lastMiResponse}`);
+      debateHistory.push(`मी: ${lastMiResponse}`);
 
       if (this.checkConsensus(lastMiResponse)) {
         consensus = true;
@@ -849,10 +849,10 @@ Be warm but assertive. Address RA by name. 1-2 sentences max. No bullet points.$
     }
 
     if (consensus) {
-      // Generate unified MIRA response - try Gemini first
+      // Generate unified मीरा response - try Gemini first
       const miraPrompt = `The user asked: "${userMessage}"
 
-MI and RA discussed and reached a consensus:
+मी and रा discussed and reached a consensus:
 ${debateSummary}
 
 Based on their discussion, give the user a clear, helpful final answer in 2-3 sentences. Synthesize both perspectives into one cohesive response. Be natural and helpful, no bullet points or symbols.${languageInstruction}`;
@@ -894,7 +894,7 @@ Based on their discussion, give the user a clear, helpful final answer in 2-3 se
       const lastMessage = debateMessages[debateMessages.length - 1];
       const lastAgent = lastMessage.agent as 'mi' | 'ra';
       
-      const conclusionPrompt = `You've been discussing "${userMessage}" with ${lastAgent === 'mi' ? 'RA' : 'MI'}.
+      const conclusionPrompt = `You've been discussing "${userMessage}" with ${lastAgent === 'mi' ? 'रा' : 'मी'}.
       
 Your discussion:
 ${debateSummary}

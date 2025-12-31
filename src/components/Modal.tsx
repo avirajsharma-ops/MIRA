@@ -47,12 +47,12 @@ export default function Modal({ isOpen, onClose, title, children, size = 'lg' }:
 
   return (
     <div 
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm animate-fadeIn"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm animate-fadeIn p-2 sm:p-4"
       onClick={handleBackdropClick}
     >
       <div 
         ref={modalRef}
-        className={`${sizeClasses[size]} w-full mx-4 max-h-[85vh] bg-black border border-white/10 rounded-2xl shadow-2xl overflow-hidden animate-slideUp`}
+        className={`${sizeClasses[size]} w-full max-h-[90vh] sm:max-h-[85vh] bg-black border border-white/10 rounded-2xl shadow-2xl overflow-hidden animate-slideUp`}
       >
         {/* Header */}
         <div className={`flex items-center justify-between border-b border-white/10 bg-black ${size === 'sm' ? 'px-4 py-3' : 'px-6 py-4'}`}>
@@ -71,7 +71,7 @@ export default function Modal({ isOpen, onClose, title, children, size = 'lg' }:
         </div>
 
         {/* Content */}
-        <div className={`overflow-y-auto max-h-[calc(85vh-60px)] ${size === 'sm' ? 'p-4' : 'p-6'}`}>
+        <div className={`overflow-y-auto max-h-[calc(90vh-60px)] sm:max-h-[calc(85vh-60px)] ${size === 'sm' ? 'p-3 sm:p-4' : 'p-4 sm:p-6'}`}>
           {children}
         </div>
       </div>

@@ -1,0 +1,10 @@
+R_DEF: Internal format may change without notice
+local
+color black
+color mira_green
+color white
+mipmap ic_launcher
+mipmap ic_launcher_round
+string app_name
+style Theme.MIRA
+xml network_security_config

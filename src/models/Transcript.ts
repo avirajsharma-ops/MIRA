@@ -3,7 +3,7 @@ import mongoose, { Document, Schema } from 'mongoose';
 
 export interface ISpeaker {
   id: string; // 'user', 'mira', 'person_1', 'person_2', or personId from FaceData
-  name: string; // 'User', 'MIRA', 'MI', 'RA', 'Person 1', 'John' (if recognized)
+  name: string; // 'User', 'मीरा', 'मी', 'रा', 'Person 1', 'John' (if recognized)
   type: 'user' | 'mira' | 'other'; // Category of speaker
   isKnown: boolean; // true if face was recognized
   faceDataId?: string; // Reference to FaceData if recognized
@@ -13,7 +13,7 @@ export interface ITranscriptEntry {
   timestamp: Date;
   speaker: ISpeaker;
   content: string;
-  isDirectedAtMira: boolean; // Was this message addressed to MIRA?
+  isDirectedAtMira: boolean; // Was this message addressed to मीरा?
   confidence?: number; // Speech recognition confidence
   detectedLanguage?: string;
   visualContext?: {

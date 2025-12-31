@@ -54,11 +54,19 @@ export function createUserSpeaker(userName: string): ISpeaker {
   };
 }
 
-// Create speaker object for MIRA
-export function createMiraSpeaker(agent: 'mi' | 'ra' | 'mira'): ISpeaker {
+// Create speaker object for मीरा
+export function createMiraSpeaker(agent: 'mi' | 'ra' | 'mira' | string): ISpeaker {
+  const nameMap: Record<string, string> = {
+    'mi': 'मी',
+    'ra': 'रा',
+    'mira': 'मीरा'
+  };
+  // Normalize agent to lowercase and default to 'mira' if unknown
+  const normalizedAgent = (agent || 'mira').toLowerCase();
+  const agentKey = normalizedAgent in nameMap ? normalizedAgent : 'mira';
   return {
-    id: `mira_${agent}`,
-    name: agent.toUpperCase(),
+    id: `mira_${agentKey}`,
+    name: nameMap[agentKey],
     type: 'mira',
     isKnown: true,
   };

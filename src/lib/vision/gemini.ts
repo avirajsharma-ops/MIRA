@@ -76,7 +76,7 @@ export async function analyzeImageWithGemini(
 
   const { data: cleanedData, mimeType } = cleanBase64(imageBase64);
 
-  const prompt = `Analyze this camera image for an AI assistant named MIRA.
+  const prompt = `Analyze this camera image for an AI assistant named मीरा (MIRA).
 
 ${context ? `Additional context: ${context}` : ''}
 
