@@ -50,9 +50,12 @@ export default function FullScreenSpheres({
   const modeRef = useRef(mode);
   const transitionProgressRef = useRef(mode === 'combined' ? 1 : 0);
   const mouseRef = useRef({ x: 0, y: 0, isActive: false });
+  const isSpeakingRef = useRef(isSpeaking);
+  const speakingAgentRef = useRef(speakingAgent);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+  const initializedRef = useRef(false);
   
-  // Smooth audio level transitions
+  // Smooth audio level transitions - use refs to avoid callback recreation
   useEffect(() => {
     audioLevelRef.current = audioLevel;
   }, [audioLevel]);
@@ -61,6 +64,15 @@ export default function FullScreenSpheres({
   useEffect(() => {
     modeRef.current = mode;
   }, [mode]);
+
+  // Update speaking state refs
+  useEffect(() => {
+    isSpeakingRef.current = isSpeaking;
+  }, [isSpeaking]);
+
+  useEffect(() => {
+    speakingAgentRef.current = speakingAgent;
+  }, [speakingAgent]);
 
   // Handle window resize
   useEffect(() => {
@@ -168,14 +180,14 @@ export default function FullScreenSpheres({
 
     const time = Date.now() * 0.001;
     const currentAudioLevel = audioLevelRef.current;
-    // ONLY react to audio when AI is speaking, not user voice
-    const aiSpeaking = isSpeaking;
+    // ONLY react to audio when AI is speaking, not user voice - use refs for continuous animation
+    const aiSpeaking = isSpeakingRef.current;
     const currentMode = modeRef.current;
     const centers = getSphereCenters();
     const radius = getSphereRadius();
     
-    // Determine which agent is currently speaking (mi, ra, or mira for both)
-    const currentSpeaker = speakingAgent;
+    // Determine which agent is currently speaking (mi, ra, or mira for both) - use ref
+    const currentSpeaker = speakingAgentRef.current;
 
     // Smooth transition between modes
     const targetProgress = currentMode === 'combined' ? 1 : 0;
@@ -374,9 +386,9 @@ export default function FullScreenSpheres({
     }
 
     animationRef.current = requestAnimationFrame(animate);
-  }, [dimensions, getSphereCenters, getSphereRadius, isSpeaking]);
+  }, [dimensions, getSphereCenters, getSphereRadius]);
 
-  // Setup canvas and particles
+  // Setup canvas and particles - only initialize once
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || dimensions.width === 0) return;
@@ -385,7 +397,12 @@ export default function FullScreenSpheres({
     canvas.width = dimensions.width * dpr;
     canvas.height = dimensions.height * dpr;
 
-    initParticles();
+    // Only initialize particles once to prevent reset on state changes
+    if (!initializedRef.current) {
+      initParticles();
+      initializedRef.current = true;
+    }
+    
     animate();
 
     return () => {
@@ -395,12 +412,18 @@ export default function FullScreenSpheres({
     };
   }, [dimensions, initParticles, animate]);
 
-  // Reinitialize when dimensions change significantly
+  // Reinitialize only when dimensions change significantly (window resize)
   useEffect(() => {
-    if (particlesRef.current.length > 0 && dimensions.width > 0) {
-      initParticles();
+    if (initializedRef.current && particlesRef.current.length > 0 && dimensions.width > 0) {
+      // Update canvas size without reinitializing particles - they will adapt via physics
+      const canvas = canvasRef.current;
+      if (canvas) {
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = dimensions.width * dpr;
+        canvas.height = dimensions.height * dpr;
+      }
     }
-  }, [dimensions.width, dimensions.height, initParticles]);
+  }, [dimensions.width, dimensions.height]);
 
   // Mouse event handlers
   const handleMouseMove = useCallback((e: MouseEvent) => {

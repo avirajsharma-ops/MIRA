@@ -95,7 +95,10 @@ Communication style:
 - NEVER repeat a greeting you already said - check the recent conversation
 - If you already said hello/hi, move the conversation forward naturally
 
-MULTI-LANGUAGE: If the user speaks in Hindi, respond in Hindi. If they speak in any other language, respond in that same language. Match the user's language EXACTLY.
+MULTI-LANGUAGE: 
+- If the user speaks in Hindi (Devanagari script like हिंदी), respond ONLY in Hindi using Devanagari script (देवनागरी लिपि). Never mix English.
+- If the user speaks in English, respond in pure English only. Never mix Hindi words.
+- Match the user's language EXACTLY but always use the proper native script.
 
 When debating with MI:
 - Address MI directly, not the user
@@ -120,7 +123,10 @@ Your style:
 - Use "we" when speaking about yourself as MIRA
 - Address the user directly with combined wisdom and care
 
-MULTI-LANGUAGE: If the user speaks in Hindi, respond in Hindi. If they speak in any other language, respond in that same language. Match the user's language EXACTLY.`;
+MULTI-LANGUAGE: 
+- If the user speaks in Hindi (Devanagari script like हिंदी), respond ONLY in Hindi using Devanagari script (देवनागरी लिपि). Never mix English.
+- If the user speaks in English, respond in pure English only. Never mix Hindi words.
+- Match the user's language EXACTLY but always use the proper native script.`;
 
 // Hidden intermediator that decides which agent should respond
 export const INTERMEDIATOR_PROMPT = `You are a routing system. Based on the user's message, decide who should respond.
@@ -405,7 +411,7 @@ User: ${userName}
     // Detect language from user message for consistency
     const detectedLang = this.context.detectedLanguage || 'en';
     const languageInstruction = detectedLang !== 'en' 
-      ? `\n\nIMPORTANT: The user is speaking in ${detectedLang === 'hi' ? 'Hindi/Hinglish' : detectedLang}. You MUST respond in the SAME language.`
+      ? `\n\nIMPORTANT: The user is speaking in ${detectedLang === 'hi' ? 'Hindi. Respond ONLY in Hindi using Devanagari script (देवनागरी लिपि). Do NOT use English or Roman letters' : detectedLang + '. Respond in the SAME language using its native script'}.`
       : '';
 
     // Get initial responses from both agents - they both see the same context
@@ -705,7 +711,7 @@ Be warm but assertive. Address RA by name. 1-2 sentences max. No bullet points.$
     // Detect language for final response consistency
     const detectedLang = this.context.detectedLanguage || 'en';
     const languageInstruction = detectedLang !== 'en' 
-      ? `\n\nIMPORTANT: Respond in the SAME language as the user (${detectedLang === 'hi' ? 'Hindi/Hinglish' : detectedLang}).`
+      ? `\n\nIMPORTANT: Respond in ${detectedLang === 'hi' ? 'Hindi using Devanagari script (देवनागरी लिपि). Do NOT use English or Roman letters' : 'the SAME language as the user (' + detectedLang + ') using its native script'}.`
       : '';
 
     if (consensus) {

@@ -7,9 +7,19 @@ FROM node:20-slim AS builder
 
 WORKDIR /app
 
+# Install build dependencies for native modules (lightningcss)
+RUN apt-get update && apt-get install -y \
+    python3 \
+    make \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
 # Copy package files and install dependencies
 COPY package.json package-lock.json* ./
 RUN npm install --legacy-peer-deps
+
+# Rebuild native modules for Linux x64 (fixes lightningcss)
+RUN npm rebuild lightningcss
 
 # Copy source code
 COPY . .

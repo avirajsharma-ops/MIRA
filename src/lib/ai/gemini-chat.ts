@@ -135,10 +135,23 @@ export async function chatWithGemini(
     
     // Build system instruction with language awareness
     let languageInstruction = '';
+    
+    // Check if user is using Devanagari script (pure Hindi)
+    const hasDevanagari = /[\u0900-\u097F]/.test(userMessage);
+    
     if (inputLanguage === 'hi') {
-      languageInstruction = `\n\nIMPORTANT LANGUAGE INSTRUCTION: The user is speaking in Hindi/Hinglish (Hindi written in Roman/English letters). You MUST respond in the SAME style - use Hinglish (Hindi words written in English script). For example: "Haan, main samajh gaya" or "Kya baat hai!" Do NOT use Devanagari script unless the user uses it. Match their exact language style.`;
+      if (hasDevanagari) {
+        // User is using Devanagari - respond in pure Hindi with Devanagari script
+        languageInstruction = `\n\nIMPORTANT LANGUAGE INSTRUCTION: The user is speaking in Hindi using Devanagari script (हिंदी). You MUST respond ONLY in Hindi using Devanagari script (देवनागरी लिपि). Do NOT mix English words or use Roman/Latin letters. Write everything in Hindi script. Example: "हाँ, मैं समझ गया" or "क्या बात है!" - NEVER "Haan, main samajh gaya".`;
+      } else {
+        // User is using Hinglish/Roman Hindi - still respond in Devanagari for clarity
+        languageInstruction = `\n\nIMPORTANT LANGUAGE INSTRUCTION: The user is speaking in Hindi/Hinglish. You MUST respond in Hindi using Devanagari script (देवनागरी लिपि) for clear pronunciation. Write your response in Hindi script. Example: "हाँ, मैं समझ गया" or "क्या बात है!" Do NOT use Roman letters for Hindi words.`;
+      }
+    } else if (inputLanguage === 'en') {
+      // English - respond in pure English, no Hindi mixing
+      languageInstruction = `\n\nIMPORTANT: Respond in clear English only. Do NOT mix Hindi words or phrases. Use proper English throughout your response.`;
     } else if (inputLanguage !== 'en') {
-      languageInstruction = `\n\nIMPORTANT: The user is speaking in ${inputLanguage}. ALWAYS respond in the SAME language. Match their language exactly.`;
+      languageInstruction = `\n\nIMPORTANT: The user is speaking in ${inputLanguage}. ALWAYS respond in the SAME language using its native script. Do NOT mix with English.`;
     }
     
     const systemInstruction = options.systemPrompt + languageInstruction;
