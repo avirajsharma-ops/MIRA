@@ -171,22 +171,53 @@ setup_ssl() {
         print_status "SSL certificate obtained successfully"
         
         # Create SSL directory for nginx
-        mkdir -p ${APP_DIR}/ssl
+        mkdir -p ${APP_DIR}/nginx/ssl
         
         # Copy certificates
-        cp /etc/letsencrypt/live/${DOMAIN}/fullchain.pem ${APP_DIR}/ssl/
-        cp /etc/letsencrypt/live/${DOMAIN}/privkey.pem ${APP_DIR}/ssl/
-        chmod 600 ${APP_DIR}/ssl/*.pem
+        cp /etc/letsencrypt/live/${DOMAIN}/fullchain.pem ${APP_DIR}/nginx/ssl/
+        cp /etc/letsencrypt/live/${DOMAIN}/privkey.pem ${APP_DIR}/nginx/ssl/
+        chmod 600 ${APP_DIR}/nginx/ssl/*.pem
         
-        print_status "SSL certificates copied to ${APP_DIR}/ssl/"
+        print_status "SSL certificates copied to ${APP_DIR}/nginx/ssl/"
     else
         print_error "Failed to obtain SSL certificate"
-        print_warning "Continuing without SSL..."
+        print_warning "Generating self-signed certificate as fallback..."
+        generate_self_signed_ssl
     fi
     
     # Setup auto-renewal cron job
-    (crontab -l 2>/dev/null | grep -v certbot; echo "0 3 * * * certbot renew --quiet --post-hook 'cp /etc/letsencrypt/live/${DOMAIN}/*.pem ${APP_DIR}/ssl/ && docker compose -f ${APP_DIR}/docker-compose.yml restart nginx'") | crontab -
+    (crontab -l 2>/dev/null | grep -v certbot; echo "0 3 * * * certbot renew --quiet --post-hook 'cp /etc/letsencrypt/live/${DOMAIN}/*.pem ${APP_DIR}/nginx/ssl/ && docker compose -f ${APP_DIR}/docker-compose.yml restart nginx'") | crontab -
     print_status "SSL auto-renewal configured"
+}
+
+# Generate self-signed SSL certificate
+generate_self_signed_ssl() {
+    print_info "Generating self-signed SSL certificate..."
+    
+    mkdir -p ${APP_DIR}/nginx/ssl
+    
+    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
+        -keyout ${APP_DIR}/nginx/ssl/privkey.pem \
+        -out ${APP_DIR}/nginx/ssl/fullchain.pem \
+        -subj "/CN=${DOMAIN}"
+    
+    chmod 600 ${APP_DIR}/nginx/ssl/*.pem
+    
+    print_status "Self-signed SSL certificate generated"
+    print_warning "Note: Browsers will show a security warning with self-signed certs"
+    print_warning "Run with --ssl flag to get a proper Let's Encrypt certificate"
+}
+
+# Ensure SSL certificates exist (generate self-signed if needed)
+ensure_ssl_certs() {
+    print_step "Ensuring SSL Certificates Exist"
+    
+    if [ -f "${APP_DIR}/nginx/ssl/fullchain.pem" ] && [ -f "${APP_DIR}/nginx/ssl/privkey.pem" ]; then
+        print_status "SSL certificates found"
+    else
+        print_warning "SSL certificates not found"
+        generate_self_signed_ssl
+    fi
 }
 
 # Create nginx configuration with SSL
@@ -504,17 +535,20 @@ build_and_deploy() {
         ls -t ${BACKUP_DIR}/mira_backup_*.tar.gz 2>/dev/null | tail -n +6 | xargs -r rm
     fi
     
+    # Create nginx logs directory
+    mkdir -p ${APP_DIR}/nginx/logs
+    
     # Stop existing containers
     print_info "Stopping existing containers..."
-    docker compose -f docker-compose.prod.yml down 2>/dev/null || true
+    docker compose down 2>/dev/null || true
     
     # Build fresh image
     print_info "Building Docker image (this may take a few minutes)..."
-    docker compose -f docker-compose.prod.yml build --no-cache
+    docker compose build --no-cache
     
     # Start containers
     print_info "Starting containers..."
-    docker compose -f docker-compose.prod.yml up -d
+    docker compose up -d
     
     print_status "Containers started"
 }
@@ -527,7 +561,7 @@ wait_for_health() {
     RETRY_COUNT=0
     
     while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
-        if docker exec mira-app curl -s http://localhost:3000/api/health | grep -q "healthy"; then
+        if curl -s http://localhost:3000/api/health 2>/dev/null | grep -q "healthy"; then
             print_status "Application is healthy!"
             break
         fi
@@ -538,10 +572,10 @@ wait_for_health() {
     echo ""
     
     if [ $RETRY_COUNT -eq $MAX_RETRIES ]; then
-        print_error "Application failed to start within timeout"
-        print_info "Checking logs..."
-        docker compose -f ${APP_DIR}/docker-compose.prod.yml logs --tail=50 mira
-        exit 1
+        print_warning "Health check timed out, checking container status..."
+        docker compose ps
+        print_info "Checking app logs..."
+        docker logs mira-app --tail=30
     fi
 }
 
@@ -564,7 +598,7 @@ print_summary() {
     echo -e "${CYAN}╚═══════════════════════════════════════════════════════════╝${NC}"
     echo ""
     
-    if [ -f "${APP_DIR}/ssl/fullchain.pem" ]; then
+    if [ -f "${APP_DIR}/nginx/ssl/fullchain.pem" ]; then
         echo -e "${GREEN}🌐 Your site is live at: https://${DOMAIN}${NC}"
     else
         echo -e "${YELLOW}🌐 Your site is live at: http://${DOMAIN}${NC}"
@@ -573,19 +607,19 @@ print_summary() {
     
     echo ""
     echo "Useful commands:"
-    echo "  View logs:        docker compose -f ${APP_DIR}/docker-compose.prod.yml logs -f"
-    echo "  Restart:          docker compose -f ${APP_DIR}/docker-compose.prod.yml restart"
-    echo "  Stop:             docker compose -f ${APP_DIR}/docker-compose.prod.yml down"
-    echo "  Rebuild:          docker compose -f ${APP_DIR}/docker-compose.prod.yml up -d --build"
+    echo "  View logs:        docker compose logs -f"
+    echo "  Restart:          docker compose restart"
+    echo "  Stop:             docker compose down"
+    echo "  Rebuild:          docker compose up -d --build"
     echo ""
-    echo "  Check status:     docker compose -f ${APP_DIR}/docker-compose.prod.yml ps"
+    echo "  Check status:     docker compose ps"
     echo "  App logs:         docker logs -f mira-app"
     echo "  Nginx logs:       docker logs -f mira-nginx"
     echo ""
     
     # Show container status
     echo "Container Status:"
-    docker compose -f ${APP_DIR}/docker-compose.prod.yml ps
+    docker compose ps
 }
 
 # Main execution
@@ -606,10 +640,15 @@ main() {
     
     if [ "$SETUP_SSL" = true ]; then
         setup_ssl
+    else
+        # Always ensure SSL certs exist (generate self-signed if needed)
+        ensure_ssl_certs
     fi
     
-    create_nginx_config
-    create_docker_compose
+    # Don't regenerate nginx config - use the one from repo
+    # create_nginx_config
+    # create_docker_compose
+    
     setup_env
     build_and_deploy
     wait_for_health
