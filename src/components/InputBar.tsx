@@ -111,7 +111,7 @@ export default function InputBar() {
         <button
           type="submit"
           disabled={!text.trim() || isLoading || isRecording}
-          className="w-12 h-12 rounded-full bg-gradient-to-r from-purple-500 to-cyan-500 flex items-center justify-center hover:opacity-90 transition-opacity disabled:opacity-30"
+          className="w-12 h-12 rounded-full bg-white text-black flex items-center justify-center hover:bg-white/90 transition-opacity disabled:opacity-30"
         >
           <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
             <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" />

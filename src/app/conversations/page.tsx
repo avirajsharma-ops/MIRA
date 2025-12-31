@@ -143,7 +143,7 @@ export default function ConversationsPage() {
             </svg>
             Back to MIRA
           </button>
-          <h1 className="text-xl font-semibold bg-gradient-to-r from-blue-400 via-purple-500 to-pink-500 bg-clip-text text-transparent">
+          <h1 className="text-xl font-semibold text-white">
             Conversation History
           </h1>
           <div className="w-24" /> {/* Spacer for centering */}

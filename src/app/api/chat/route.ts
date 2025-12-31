@@ -227,8 +227,8 @@ export async function POST(request: NextRequest) {
       // User specifically wants RA
       response = await agent.getAgentResponse('ra', message);
     } else if (mentionedAgent === 'mira') {
-      // User wants both to discuss
-      const debateResult = await agent.conductDebate(message, 2);
+      // User wants both to discuss - dynamic debate until consensus
+      const debateResult = await agent.conductDebate(message);
       debateMessages = debateResult.messages;
       response = {
         agent: debateResult.finalAgent,
@@ -243,8 +243,8 @@ export async function POST(request: NextRequest) {
       const routedAgent = await agent.routeToAgent(message);
       
       if (routedAgent === 'both') {
-        // Complex topic needing both perspectives
-        const debateResult = await agent.conductDebate(message, 2);
+        // Complex topic needing both perspectives - dynamic debate
+        const debateResult = await agent.conductDebate(message);
         debateMessages = debateResult.messages;
         response = {
           agent: debateResult.finalAgent,

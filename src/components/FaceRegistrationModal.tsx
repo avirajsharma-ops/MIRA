@@ -180,7 +180,7 @@ export default function FaceRegistrationModal({
       <div className="p-6 max-w-lg mx-auto">
         {/* Header */}
         <div className="text-center mb-6">
-          <div className="w-16 h-16 mx-auto mb-4 bg-gradient-to-r from-purple-500 to-cyan-500 rounded-full flex items-center justify-center">
+          <div className="w-16 h-16 mx-auto mb-4 bg-white/10 border border-white/20 rounded-full flex items-center justify-center">
             <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
               <circle cx="12" cy="7" r="4" />
@@ -277,7 +277,7 @@ export default function FaceRegistrationModal({
               <button
                 onClick={startCountdown}
                 disabled={!isCameraReady || countdown !== null}
-                className="flex-1 py-3 px-4 bg-gradient-to-r from-purple-500 to-cyan-500 text-white rounded-xl font-semibold hover:opacity-90 transition-opacity disabled:opacity-50"
+                className="flex-1 py-3 px-4 bg-white text-black rounded-xl font-semibold hover:bg-white/90 transition-opacity disabled:opacity-50"
               >
                 {countdown !== null ? `${countdown}...` : '📸 Capture'}
               </button>
@@ -294,7 +294,7 @@ export default function FaceRegistrationModal({
               <button
                 onClick={submitPhoto}
                 disabled={isSubmitting}
-                className="flex-1 py-3 px-4 bg-gradient-to-r from-purple-500 to-cyan-500 text-white rounded-xl font-semibold hover:opacity-90 transition-opacity disabled:opacity-50"
+                className="flex-1 py-3 px-4 bg-white text-black rounded-xl font-semibold hover:bg-white/90 transition-opacity disabled:opacity-50"
               >
                 {isSubmitting ? (
                   <span className="flex items-center justify-center gap-2">

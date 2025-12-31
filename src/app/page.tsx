@@ -33,7 +33,7 @@ function FloatingKeyboard() {
           <button
             type="submit"
             disabled={isLoading || !text.trim()}
-            className="p-3 bg-gradient-to-r from-purple-500 to-cyan-500 rounded-full text-white disabled:opacity-50 transition-opacity hover:opacity-90 min-w-[44px] min-h-[44px] flex items-center justify-center"
+            className="p-3 bg-white text-black rounded-full disabled:opacity-50 transition-opacity hover:bg-white/90 min-w-[44px] min-h-[44px] flex items-center justify-center"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M22 2L11 13" />
@@ -114,14 +114,17 @@ function MIRAApp() {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900/20 to-gray-900">
+    <div className="min-h-screen bg-black">
       {/* Header */}
-      <header className="fixed top-0 left-0 right-0 z-50 bg-black/30 backdrop-blur-md border-b border-white/10 safe-area-top">
+      <header className="fixed top-0 left-0 right-0 z-50 bg-black/80 backdrop-blur-md border-b border-white/10 safe-area-top">
         <div className="flex items-center justify-between px-3 sm:px-6 py-2 sm:py-3">
           <div className="flex items-center gap-2 sm:gap-4">
-            <h1 className="text-xl sm:text-2xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
-              MIRA
-            </h1>
+            <div className="flex items-center gap-2">
+              <img src="/icons/favicon.png" alt="MIRA" className="w-7 h-7 sm:w-8 sm:h-8 rounded-lg" />
+              <h1 className="text-xl sm:text-2xl font-bold text-white">
+                MIRA
+              </h1>
+            </div>
             <span className="text-white/30 text-sm hidden sm:inline">|</span>
             <span className="text-white/50 text-xs sm:text-sm hidden sm:inline">Hello, {user?.name}</span>
             {/* Status indicators */}

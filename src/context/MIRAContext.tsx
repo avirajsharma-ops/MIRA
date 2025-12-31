@@ -93,8 +93,75 @@ function isFuzzyMatch(word: string, target: string, maxDistance: number = 2): bo
   return distance <= allowedDistance;
 }
 
-// Check if message is directed at MIRA (with fuzzy matching)
+// Track if MIRA recently asked a follow-up question (managed externally)
+let lastMiraQuestionTime = 0;
+let miraAskedFollowUp = false;
+
+// Export functions to update follow-up state
+export function setMiraAskedFollowUp(asked: boolean) {
+  miraAskedFollowUp = asked;
+  if (asked) {
+    lastMiraQuestionTime = Date.now();
+  }
+}
+
+// Check if message is a follow-up response (no wake word needed within 30 seconds of MIRA's question)
+function isFollowUpResponse(text: string): boolean {
+  const timeSinceQuestion = Date.now() - lastMiraQuestionTime;
+  const followUpWindow = 30000; // 30 seconds to respond without wake word
+  
+  if (!miraAskedFollowUp || timeSinceQuestion > followUpWindow) {
+    return false;
+  }
+  
+  const lower = text.toLowerCase().trim();
+  
+  // Skip if it's clearly addressed to someone else
+  const notForMira = [
+    /^(hey|hi|hello)\s+(mom|dad|brother|sister|friend|dude|bro|man)/i,
+    /talking\s+to\s+(someone|you)/i,
+    /not\s+talking\s+to\s+(you|mira)/i,
+  ];
+  if (notForMira.some(p => p.test(lower))) {
+    return false;
+  }
+  
+  // Common follow-up response patterns
+  const followUpPatterns = [
+    /^(yes|no|yeah|yep|nope|sure|okay|ok|nah|maybe|probably|definitely|absolutely)[.,!?\s]*$/i,
+    /^(i think|i guess|i mean|well|actually|hmm|um|let me)/i,
+    /^(that's|it's|this is|it was|there's)/i,
+    /^(the|a|an|my|his|her|their|our|your)\s+/i,
+    /^(because|since|so|but|and|or|if|when|where|what|why|how|which)/i,
+    /^(about|around|maybe|probably|definitely|certainly)/i,
+    /^(not\s+really|kind\s+of|sort\s+of|i\s+don't|i\s+do|i\s+am|i\s+have|i\s+was)/i,
+    /^[0-9]/,  // Starts with a number (answering a question)
+    /^(one|two|three|four|five|six|seven|eight|nine|ten)/i,
+  ];
+  
+  // If message matches follow-up patterns, it's likely a response to MIRA's question
+  if (followUpPatterns.some(p => p.test(lower))) {
+    console.log('[FollowUp] Detected follow-up response within window');
+    return true;
+  }
+  
+  // Short responses (under 20 words) within the window are likely follow-ups
+  const wordCount = lower.split(/\s+/).length;
+  if (wordCount <= 20 && timeSinceQuestion < 15000) { // 15 seconds for short responses
+    console.log('[FollowUp] Short response within tight window - treating as follow-up');
+    return true;
+  }
+  
+  return false;
+}
+
+// Check if message is directed at MIRA (with fuzzy matching) OR is a follow-up response
 function isDirectedAtMira(text: string): boolean {
+  // First check if it's a follow-up response
+  if (isFollowUpResponse(text)) {
+    return true;
+  }
+  
   const lower = text.toLowerCase().trim();
   const words = lower.split(/\s+/);
   
@@ -591,7 +658,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   } = useMediaCapture({
     onCameraFrame: handleCameraFrame,
     onScreenFrame: handleScreenFrame,
-    captureInterval: 10000, // Every 10 seconds
+    captureInterval: 3000, // Every 3 seconds for responsive face/gesture detection
   });
 
   // Function to auto-start media after auth
@@ -1001,6 +1068,18 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         
         // Save MIRA response to transcript
         saveTranscriptEntry(data.response.content, 'mira', data.response.agent.toUpperCase(), true);
+        
+        // Check if MIRA's response contains a question (for follow-up detection)
+        const responseText = data.response.content;
+        const hasQuestion = /\?/.test(responseText) || 
+          /\b(what|how|when|where|why|which|who|could you|would you|can you|do you|are you|is it|have you)\b/i.test(responseText);
+        
+        if (hasQuestion) {
+          console.log('[FollowUp] MIRA asked a follow-up question - enabling follow-up mode');
+          setMiraAskedFollowUp(true);
+        } else {
+          setMiraAskedFollowUp(false);
+        }
 
         // Spheres merge back ONLY when final agreed-upon response starts playing
         // This happens right before the final audio plays, so the merge animation

@@ -49,12 +49,9 @@ body {
   animation: pulse-glow 2s ease-in-out infinite;
 }
 
-/* Gradient text */
+/* Gradient text - now pure white */
 .gradient-text {
-  background: linear-gradient(135deg, #a855f7, #06b6d4);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  color: #ffffff;
 }
 
 /* Glass effect */

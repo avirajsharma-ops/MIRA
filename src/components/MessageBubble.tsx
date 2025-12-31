@@ -24,7 +24,7 @@ export default function MessageBubble({
       case 'ra':
         return 'bg-cyan-500/20 border-cyan-500/50';
       case 'mira':
-        return 'bg-gradient-to-r from-purple-500/20 to-cyan-500/20 border-white/30';
+        return 'bg-white/10 border-white/30';
       case 'user':
         return 'bg-white/10 border-white/20';
       default:

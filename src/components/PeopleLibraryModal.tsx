@@ -89,14 +89,16 @@ export default function PeopleLibraryModal({ isOpen, onClose }: PeopleLibraryMod
     try {
       const token = localStorage.getItem('mira_token');
       const response = await fetch('/api/people', {
-        method: 'PUT',
+        method: 'PATCH',
         headers: { 
           Authorization: `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           personId: selectedPerson.id,
-          updates: editForm,
+          name: editForm.name,
+          relationship: editForm.relationship,
+          context: editForm.context,
         }),
       });
 
@@ -174,7 +176,7 @@ export default function PeopleLibraryModal({ isOpen, onClose }: PeopleLibraryMod
                   <div className="flex items-center gap-3">
                     <div className={`w-10 h-10 rounded-full flex items-center justify-center text-lg font-semibold ${
                       person.isOwner 
-                        ? 'bg-gradient-to-br from-purple-500 to-cyan-500 text-white'
+                        ? 'bg-white text-black'
                         : 'bg-white/20 text-white/70'
                     }`}>
                       {person.name.charAt(0).toUpperCase()}
@@ -206,7 +208,7 @@ export default function PeopleLibraryModal({ isOpen, onClose }: PeopleLibraryMod
                 <div className="flex items-center gap-3">
                   <div className={`w-14 h-14 rounded-full flex items-center justify-center text-2xl font-bold ${
                     selectedPerson.isOwner 
-                      ? 'bg-gradient-to-br from-purple-500 to-cyan-500 text-white'
+                      ? 'bg-white text-black'
                       : 'bg-white/20 text-white/70'
                   }`}>
                     {selectedPerson.name.charAt(0).toUpperCase()}

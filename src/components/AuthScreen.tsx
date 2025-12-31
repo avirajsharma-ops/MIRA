@@ -41,20 +41,23 @@ export default function AuthScreen() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900/20 to-gray-900 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-black flex items-center justify-center p-4">
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
-          <h1 className="text-5xl font-bold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
-            MIRA
-          </h1>
+          <div className="flex items-center justify-center gap-3 mb-2">
+            <img src="/icons/favicon.png" alt="MIRA" className="w-14 h-14 rounded-xl" />
+            <h1 className="text-5xl font-bold text-white">
+              MIRA
+            </h1>
+          </div>
           <p className="text-white/50 mt-2">
             MI + RA • Dual AI Assistant
           </p>
         </div>
 
         {/* Form */}
-        <div className="bg-white/5 backdrop-blur-lg rounded-2xl p-8 border border-white/10">
+        <div className="bg-white/5 backdrop-blur-lg rounded-2xl p-8 border border-white/10 bg-black/40">
           <h2 className="text-2xl font-semibold text-white mb-6">
             {isLogin ? 'Welcome Back' : 'Create Account'}
           </h2>
@@ -105,7 +108,7 @@ export default function AuthScreen() {
             <button
               type="submit"
               disabled={isLoading}
-              className="w-full bg-gradient-to-r from-purple-500 to-cyan-500 text-white py-3 rounded-xl font-semibold hover:opacity-90 transition-opacity disabled:opacity-50"
+              className="w-full bg-white text-black py-3 rounded-xl font-semibold hover:bg-white/90 transition-opacity disabled:opacity-50"
             >
               {isLoading ? 'Loading...' : isLogin ? 'Sign In' : 'Create Account'}
             </button>

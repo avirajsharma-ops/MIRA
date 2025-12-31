@@ -11,6 +11,10 @@ export const metadata: Metadata = {
   title: "MIRA - Dual AI Assistant",
   description: "MI + RA - Your emotional and logical AI companions",
   manifest: "/manifest.json",
+  icons: {
+    icon: "/favicon.png",
+    apple: "/icons/icon-192.png",
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: "black-translucent",

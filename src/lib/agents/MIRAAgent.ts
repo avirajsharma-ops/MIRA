@@ -403,10 +403,12 @@ User: ${userName}
 
   async conductDebate(
     userMessage: string,
-    maxTurns: number = 3
+    maxTurns: number = 10 // Increased from 3, but loop detection will end it sooner
   ): Promise<DebateResult> {
     const messages: { agent: AgentType; content: string; emotion?: string }[] = [];
     const contextMessage = this.buildContextMessage();
+    
+    console.log('[Debate] Starting dynamic debate for:', userMessage);
     
     // Detect language from user message for consistency
     const detectedLang = this.context.detectedLanguage || 'en';
@@ -557,7 +559,10 @@ User: ${userName}
     };
 
     for (let turn = 0; turn < maxTurns && !consensus; turn++) {
-      console.log(`[Debate] Turn ${turn + 1}/${maxTurns}`);
+      console.log(`[Debate] Turn ${turn + 1}/${maxTurns} - Messages so far: ${messages.length}`);
+      
+      // If we've had many exchanges and they're starting to agree, encourage reaching consensus
+      const encourageConsensus = turn >= 3 ? '\n\nIf you and MI are reaching agreement, feel free to say "I think we both agree that..." to conclude.' : '';
       
       // RA responds to MI with genuine engagement - challenge, question, or build upon
       const raDebatePrompt = `You're having a real discussion with MI about: "${userMessage}"
@@ -569,9 +574,10 @@ ${debateHistory.length > 0 ? `Discussion so far:\n${debateHistory.join('\n')}\n\
 - Ask a follow-up question: "But have you considered...?" or "What if...?"
 - Build on her idea: "That's interesting, and also..." or "Adding to that..."
 - Respectfully disagree: "I see your point, but I think..." or "That's one way to look at it, however..."
+- If you've found common ground: "I think we both agree that..." or "Combining our perspectives..."
 
 DO NOT repeat what you or MI already said. Say something NEW.
-Be direct, natural, conversational. Address MI by name. 1-2 sentences max. No bullet points.${languageInstruction}`;
+Be direct, natural, conversational. Address MI by name. 1-2 sentences max. No bullet points.${encourageConsensus}${languageInstruction}`;
 
       const raGeminiResponse = await chatWithGemini(
         raDebatePrompt,
@@ -610,11 +616,14 @@ Be direct, natural, conversational. Address MI by name. 1-2 sentences max. No bu
 
       // Check for consensus
       if (this.checkConsensus(lastRaResponse)) {
+        console.log('[Debate] Consensus reached by RA');
         consensus = true;
         break;
       }
 
       // MI responds to RA with genuine engagement
+      const miEncourageConsensus = turn >= 3 ? '\n\nIf you and RA are reaching agreement, feel free to say "I think we both agree that..." to conclude.' : '';
+      
       const miDebatePrompt = `You're having a real discussion with RA about: "${userMessage}"
 
 RA just said: "${lastRaResponse}"
@@ -624,9 +633,10 @@ ${debateHistory.length > 0 ? `Discussion so far:\n${debateHistory.join('\n')}\n\
 - Counter-question him: "But RA, don't you think...?" or "What about the emotional side though?"
 - Find common ground: "You make a good point about X, and I'd add..." or "We both agree on..."
 - Push back warmly: "I hear you, but feelings matter too because..." or "That's logical, but consider..."
+- If you've found common ground: "I think we both agree that..." or "Combining our thoughts..."
 
 DO NOT repeat what you or RA already said. Say something NEW.
-Be warm but assertive. Address RA by name. 1-2 sentences max. No bullet points.${languageInstruction}`;
+Be warm but assertive. Address RA by name. 1-2 sentences max. No bullet points.${miEncourageConsensus}${languageInstruction}`;
 
       const miGeminiResponse = await chatWithGemini(
         miDebatePrompt,
@@ -688,14 +698,45 @@ Be warm but assertive. Address RA by name. 1-2 sentences max. No bullet points.$
   }
 
   private checkConsensus(response: string): boolean {
-    const consensusIndicators = [
-      'i agree', 'you\'re right', 'good point', 'we both',
-      'together', 'consensus', 'combined', 'we can agree',
-      'that makes sense', 'i see your point', 'fair enough',
-      'you have a point', 'true', 'exactly'
-    ];
     const lower = response.toLowerCase();
-    return consensusIndicators.some(ind => lower.includes(ind));
+    
+    // Strong agreement indicators that signal true consensus
+    const strongConsensusIndicators = [
+      'we both agree', 'we can agree', 'consensus reached', 'we\'ve agreed',
+      'let\'s tell them', 'together we', 'combining our views',
+      'final answer', 'in conclusion', 'to summarize',
+    ];
+    
+    // Check for strong consensus first
+    if (strongConsensusIndicators.some(ind => lower.includes(ind))) {
+      console.log('[Debate] Strong consensus detected');
+      return true;
+    }
+    
+    // Medium agreement - needs context of the debate being over
+    const mediumIndicators = [
+      'i agree with you', 'you\'re absolutely right', 'good point, and',
+      'that makes total sense', 'i see your point and', 'fair enough, so',
+      'you have a good point', 'exactly what i was thinking',
+    ];
+    
+    // Count agreement signals
+    let agreementScore = 0;
+    for (const ind of mediumIndicators) {
+      if (lower.includes(ind)) agreementScore += 2;
+    }
+    
+    // Weaker indicators
+    const weakIndicators = [
+      'i agree', 'good point', 'true', 'exactly', 'right',
+      'that makes sense', 'fair enough',
+    ];
+    for (const ind of weakIndicators) {
+      if (lower.includes(ind)) agreementScore += 1;
+    }
+    
+    // Need score of 3+ to call consensus (either strong or multiple weak)
+    return agreementScore >= 3;
   }
 
   private async generateFinalResponse(

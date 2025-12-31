@@ -47,16 +47,16 @@ export default function Modal({ isOpen, onClose, title, children, size = 'lg' }:
 
   return (
     <div 
-      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/70 backdrop-blur-sm animate-fadeIn"
+      className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 backdrop-blur-sm animate-fadeIn"
       onClick={handleBackdropClick}
     >
       <div 
         ref={modalRef}
-        className={`${sizeClasses[size]} w-full mx-4 max-h-[85vh] bg-gradient-to-br from-gray-900/95 via-gray-900/95 to-gray-800/95 border border-white/10 rounded-2xl shadow-2xl overflow-hidden animate-slideUp`}
+        className={`${sizeClasses[size]} w-full mx-4 max-h-[85vh] bg-black border border-white/10 rounded-2xl shadow-2xl overflow-hidden animate-slideUp`}
       >
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-black/30">
-          <h2 className="text-xl font-semibold bg-gradient-to-r from-purple-400 to-cyan-400 bg-clip-text text-transparent">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-white/10 bg-black">
+          <h2 className="text-xl font-semibold text-white">
             {title}
           </h2>
           <button
