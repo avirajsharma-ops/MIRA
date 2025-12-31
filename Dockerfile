@@ -1,26 +1,17 @@
 # ===========================================
 # MIRA AI Assistant - Production Dockerfile
-# Multi-stage build for optimized image size
+# Single-stage build for reliability
 # ===========================================
 
-# Stage 1: Dependencies
-FROM node:20-slim AS deps
-
-WORKDIR /app
-
-# Copy package files
-COPY package.json package-lock.json* ./
-
-# Install all dependencies
-RUN npm install --legacy-peer-deps && npm cache clean --force
-
-# Stage 2: Builder
 FROM node:20-slim AS builder
 
 WORKDIR /app
 
-# Copy dependencies from deps stage
-COPY --from=deps /app/node_modules ./node_modules
+# Copy package files and install dependencies
+COPY package.json package-lock.json* ./
+RUN npm install --legacy-peer-deps
+
+# Copy source code
 COPY . .
 
 # Set environment for build
@@ -30,7 +21,7 @@ ENV NODE_ENV=production
 # Build the application
 RUN npm run build
 
-# Stage 3: Production Runner
+# Stage 2: Production Runner
 FROM node:20-slim AS runner
 WORKDIR /app
 
