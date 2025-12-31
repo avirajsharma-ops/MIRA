@@ -1,0 +1,54 @@
+# Dependencies
+node_modules
+npm-debug.log
+
+# Build output
+.next
+out
+build
+dist
+
+# Git
+.git
+.gitignore
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files (will be injected via Docker)
+.env
+.env.local
+.env.development
+.env.production
+
+# Test files
+coverage
+__tests__
+*.test.js
+*.test.ts
+*.spec.js
+*.spec.ts
+
+# Documentation
+README.md
+CHANGELOG.md
+LICENSE
+docs
+
+# Docker
+Dockerfile*
+docker-compose*
+.dockerignore
+
+# Misc
+*.log
+*.md
+.eslintcache
+.turbo

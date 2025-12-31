@@ -1,0 +1,88 @@
+# ===========================================
+# MIRA AI Assistant - Docker Compose
+# Production deployment configuration
+# ===========================================
+
+services:
+  # ===========================================
+  # MIRA Application
+  # ===========================================
+  mira:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mira-app
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=${MONGODB_URI}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - ELEVENLABS_API_KEY=${ELEVENLABS_API_KEY}
+      - ELEVENLABS_VOICE_MI=${ELEVENLABS_VOICE_MI}
+      - ELEVENLABS_VOICE_RA=${ELEVENLABS_VOICE_RA}
+      - JWT_SECRET=${JWT_SECRET}
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - NEXTAUTH_URL=${NEXTAUTH_URL}
+    networks:
+      - mira-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ===========================================
+  # Nginx Reverse Proxy (with SSL termination)
+  # ===========================================
+  nginx:
+    image: nginx:alpine
+    container_name: mira-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+      - ./nginx/logs:/var/log/nginx
+    depends_on:
+      - mira
+    networks:
+      - mira-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  # ===========================================
+  # Watchtower (Auto-update containers)
+  # ===========================================
+  watchtower:
+    image: containrrr/watchtower
+    container_name: mira-watchtower
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_POLL_INTERVAL=86400
+      - WATCHTOWER_INCLUDE_STOPPED=true
+    networks:
+      - mira-network
+
+networks:
+  mira-network:
+    driver: bridge
+
+volumes:
+  nginx-logs:
