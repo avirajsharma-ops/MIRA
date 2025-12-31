@@ -5,19 +5,19 @@
 
 # Stage 1: Dependencies
 FROM node:20-alpine AS deps
-RUN apk add --no-cache libc6-compat python3 make g++ cairo-dev pango-dev jpeg-dev giflib-dev
+RUN apk add --no-cache libc6-compat
 
 WORKDIR /app
 
 # Copy package files
 COPY package.json package-lock.json* ./
 
-# Install all dependencies (use npm install for compatibility)
+# Install all dependencies
 RUN npm install --legacy-peer-deps && npm cache clean --force
 
 # Stage 2: Builder
 FROM node:20-alpine AS builder
-RUN apk add --no-cache libc6-compat python3 make g++ cairo-dev pango-dev jpeg-dev giflib-dev
+RUN apk add --no-cache libc6-compat
 
 WORKDIR /app
 
@@ -35,9 +35,6 @@ RUN npm run build
 # Stage 3: Production Runner
 FROM node:20-alpine AS runner
 WORKDIR /app
-
-# Install runtime dependencies for canvas
-RUN apk add --no-cache cairo pango jpeg giflib
 
 ENV NODE_ENV=production
 ENV NEXT_TELEMETRY_DISABLED=1

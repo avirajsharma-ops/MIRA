@@ -15,7 +15,6 @@
     "@tensorflow/tfjs-node": "^4.22.0",
     "axios": "^1.13.2",
     "bcryptjs": "^3.0.3",
-    "canvas": "^3.2.0",
     "face-api.js": "^0.20.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^8.21.0",
