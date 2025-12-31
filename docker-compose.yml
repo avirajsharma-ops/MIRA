@@ -55,7 +55,8 @@ services:
       - ./nginx/ssl:/etc/nginx/ssl:ro
       - ./nginx/logs:/var/log/nginx
     depends_on:
-      - mira
+      mira:
+        condition: service_started
     networks:
       - mira-network
     logging:
