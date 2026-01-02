@@ -640,11 +640,21 @@ User: ${userName}
       return false;
     };
 
-    for (let turn = 0; turn < maxTurns && !consensus; turn++) {
-      console.log(`[Debate] Turn ${turn + 1} - Messages so far: ${messages.length} (continues until consensus)`);
+    // Dynamic debate - continues until genuine consensus or max safety limit
+    const MAX_SAFETY_TURNS = 15; // Safety limit to prevent infinite loops
+    let turn = 0;
+    
+    while (!consensus && turn < MAX_SAFETY_TURNS) {
+      turn++;
+      console.log(`[Debate] Turn ${turn} - Messages so far: ${messages.length} (dynamic - continues until consensus)`);
       
-      // If we've had many exchanges and they're starting to agree, encourage reaching consensus
-      const encourageConsensus = turn >= 2 ? '\n\nIf you and मी are reaching agreement, feel free to say "I think we both agree that..." to conclude.' : '';
+      // Gradually encourage consensus as debate progresses
+      let encourageConsensus = '';
+      if (turn >= 4) {
+        encourageConsensus = '\n\nThe discussion has been going well. If you and मी have found common ground, feel free to say "I think we both agree that..." or "Combining our perspectives, the answer is..." to conclude.';
+      } else if (turn >= 2) {
+        encourageConsensus = '\n\nIf you and मी are reaching agreement, you can conclude with "I think we both agree that..."';
+      }
       
       // रा responds to मी with genuine engagement - challenge, question, or build upon
       const raDebatePrompt = `You're having a real discussion with मी about: "${userMessage}"
@@ -704,7 +714,13 @@ Be direct, natural, conversational. Address मी by name. 1-2 sentences max. N
       }
 
       // मी responds to रा with genuine engagement
-      const miEncourageConsensus = turn >= 3 ? '\n\nIf you and रा are reaching agreement, feel free to say "I think we both agree that..." to conclude.' : '';
+      // Gradually encourage consensus
+      let miEncourageConsensus = '';
+      if (turn >= 4) {
+        miEncourageConsensus = '\n\nThe discussion is progressing well. If you and रा have found a balanced answer, feel free to say "I think we both agree that..." or "Together, we suggest..." to conclude.';
+      } else if (turn >= 2) {
+        miEncourageConsensus = '\n\nIf you and रा are reaching agreement, you can conclude with "I think we both agree that..."';
+      }
       
       const miDebatePrompt = `You're having a real discussion with रा about: "${userMessage}"
 

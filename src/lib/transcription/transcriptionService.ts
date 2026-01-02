@@ -13,7 +13,12 @@ const MIRA_KEYWORDS = [
 ];
 
 // Check if message is directed at MIRA
-export function isDirectedAtMira(text: string): boolean {
+export function isDirectedAtMira(text: unknown): boolean {
+  // Type guard - ensure text is a string
+  if (typeof text !== 'string' || !text) {
+    return false;
+  }
+  
   const lower = text.toLowerCase().trim();
   
   // Check for MIRA keywords at the start or anywhere in the message

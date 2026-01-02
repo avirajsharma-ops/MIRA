@@ -291,6 +291,13 @@ export async function POST(request: NextRequest) {
         // Conduct debate between MI and RA
         const debateResult = await agent.conductDebate(unifiedResult.debateTopic);
         
+        console.log('[Chat] Debate completed:', {
+          messageCount: debateResult.messages.length,
+          consensus: debateResult.consensus,
+          finalAgent: debateResult.finalAgent,
+          finalResponsePreview: debateResult.finalResponse?.substring(0, 50)
+        });
+        
         // Add debate messages (MI and RA discussing)
         debateMessages = debateResult.messages.map(msg => ({
           agent: msg.agent,
@@ -298,12 +305,12 @@ export async function POST(request: NextRequest) {
           emotion: msg.emotion,
         }));
         
-        // Final response is the consensus
+        // Final response from the debate (synthesized answer)
         response = {
-          agent: 'mira' as const,
-          content: debateResult.consensus,
+          agent: debateResult.finalAgent || 'mira',
+          content: debateResult.finalResponse || 'Based on our discussion, I think we can help you with this.',
           emotion: 'thoughtful',
-          consensus: true,
+          consensus: debateResult.consensus,
         };
       } else {
         // Direct response - no debate needed
