@@ -2,7 +2,6 @@
 
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import Modal from './Modal';
-import { useFaceDetection } from '@/hooks';
 
 interface FaceRegistrationModalProps {
   isOpen: boolean;
@@ -28,31 +27,22 @@ export default function FaceRegistrationModal({
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [countdown, setCountdown] = useState<number | null>(null);
-  const [faceDetectionStatus, setFaceDetectionStatus] = useState<string>('');
-  
-  // Use face detection hook for extracting embeddings
-  const { isModelLoaded, isLoading: isModelLoading, getFaceEmbedding, loadModels } = useFaceDetection();
 
   // Start camera when modal opens
   useEffect(() => {
     if (isOpen) {
       startCamera();
-      // Load face-api models if not loaded
-      if (!isModelLoaded && !isModelLoading) {
-        loadModels();
-      }
     } else {
       stopCamera();
       setCapturedImage(null);
       setError(null);
       setCountdown(null);
-      setFaceDetectionStatus('');
     }
     
     return () => {
       stopCamera();
     };
-  }, [isOpen, isModelLoaded, isModelLoading, loadModels]);
+  }, [isOpen]);
 
   const startCamera = async () => {
     try {
@@ -129,7 +119,6 @@ export default function FaceRegistrationModal({
   const retakePhoto = () => {
     setCapturedImage(null);
     setError(null);
-    setFaceDetectionStatus('');
   };
 
   const submitPhoto = async () => {
@@ -144,26 +133,6 @@ export default function FaceRegistrationModal({
       // Extract base64 data (remove data URL prefix)
       const base64Data = capturedImage.replace(/^data:image\/\w+;base64,/, '');
       
-      // Try to extract face embedding using face-api.js
-      let faceDescriptor: number[] | undefined;
-      
-      if (isModelLoaded) {
-        setFaceDetectionStatus('Analyzing face...');
-        const embeddingResult = await getFaceEmbedding(capturedImage);
-        
-        if (embeddingResult) {
-          faceDescriptor = embeddingResult.embedding;
-          setFaceDetectionStatus('Face detected ✓');
-          console.log('[FaceReg] Face embedding extracted, 128-dim vector');
-        } else {
-          setFaceDetectionStatus('No face detected, saving image only');
-          console.warn('[FaceReg] No face detected in image');
-        }
-      } else {
-        setFaceDetectionStatus('Face models loading...');
-        console.warn('[FaceReg] Face models not loaded, saving without embedding');
-      }
-      
       const response = await fetch('/api/faces', {
         method: 'POST',
         headers: {
@@ -176,7 +145,6 @@ export default function FaceRegistrationModal({
           personName: userName,
           relationship: 'Account Owner',
           isOwner: true,
-          faceDescriptor, // Include embedding if available
         }),
       });
       
@@ -192,7 +160,6 @@ export default function FaceRegistrationModal({
       setError('Failed to register face. Please try again.');
     } finally {
       setIsSubmitting(false);
-      setFaceDetectionStatus('');
     }
   };
 
@@ -212,15 +179,15 @@ export default function FaceRegistrationModal({
     <Modal 
       isOpen={isOpen} 
       onClose={handleClose} 
-      title={isNewAccount ? `Welcome, ${userName}!` : 'Face Registration'} 
+      title={isNewAccount ? `Welcome, ${userName}!` : 'Photo Registration'} 
       size="sm"
     >
       <div className="-mt-2">
         {/* Subtitle */}
         <p className="text-white/50 text-xs text-center mb-3">
           {isNewAccount 
-            ? 'Quick face scan for recognition'
-            : 'Register your face for MIRA'
+            ? 'Take a profile photo'
+            : 'Register your photo for MIRA'
           }
         </p>
 
@@ -270,19 +237,15 @@ export default function FaceRegistrationModal({
         {/* Hidden canvas for capture */}
         <canvas ref={canvasRef} className="hidden" />
 
-        {/* Status messages - compact inline */}
-        {(error || faceDetectionStatus || (isModelLoading && !capturedImage)) && (
-          <div className={`mb-3 px-3 py-2 rounded-lg text-xs text-center ${
-            error ? 'bg-red-500/20 text-red-400' :
-            faceDetectionStatus ? 'bg-purple-500/20 text-purple-300' :
-            'bg-blue-500/20 text-blue-300'
-          }`}>
-            {error || faceDetectionStatus || 'Loading face models...'}
+        {/* Error message */}
+        {error && (
+          <div className="mb-3 px-3 py-2 rounded-lg text-xs text-center bg-red-500/20 text-red-400">
+            {error}
           </div>
         )}
 
-        {/* Instruction - only when camera ready and no other status */}
-        {!capturedImage && isCameraReady && !isModelLoading && !error && !faceDetectionStatus && (
+        {/* Instruction - only when camera ready and no error */}
+        {!capturedImage && isCameraReady && !error && (
           <p className="text-white/40 text-xs text-center mb-3">
             Position face in oval, then capture
           </p>

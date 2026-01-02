@@ -5,21 +5,24 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 interface UseLiveSpeechOptions {
   onTranscription?: (text: string, isFinal: boolean) => void;
   onInterimResult?: (text: string) => void;
+  onWordDetected?: (word: string) => void; // NEW: Real-time word callback
   language?: string;
   continuous?: boolean;
 }
 
-// Deepgram configuration for ultra-low latency
+// Deepgram configuration for ULTRA-LOW LATENCY word-by-word streaming
 const DEEPGRAM_CONFIG = {
-  model: 'nova-2', // Fast and accurate
+  model: 'nova-2-general', // Fastest model
   language: 'en-US',
-  smart_format: true,
+  smart_format: false, // Disable for speed
+  punctuate: true,
   interim_results: true,
-  utterance_end_ms: 1000, // End utterance detection
-  vad_events: true, // Voice activity detection
-  endpointing: 300, // 300ms silence = end of speech (fast!)
+  utterance_end_ms: 800, // Faster utterance detection
+  vad_events: true, // Voice activity detection  
+  endpointing: 200, // 200ms silence = end of speech (very fast!)
   encoding: 'linear16',
   sample_rate: 16000,
+  channels: 1,
 };
 
 // Extend Window interface for SpeechRecognition
@@ -80,6 +83,7 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
   const {
     onTranscription,
     onInterimResult,
+    onWordDetected,
     language = 'en-US',
     continuous = true,
   } = options;
@@ -102,8 +106,9 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const onTranscriptionRef = useRef(onTranscription);
   const onInterimResultRef = useRef(onInterimResult);
+  const onWordDetectedRef = useRef(onWordDetected);
   const isListeningRef = useRef(false);
-  const shouldBeListeningRef = useRef(false); // Track intent to listen (for reconnection)
+  const shouldBeListeningRef = useRef(false);
   const restartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
   const maxReconnectAttempts = 10;
@@ -113,10 +118,11 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
   const animationFrameRef = useRef<number | null>(null);
   const initRecognitionRef = useRef<(() => SpeechRecognition | null) | null>(null);
   
-  // Sentence accumulation refs - wait for complete sentences before sending
-  const accumulatedTextRef = useRef<string>('');
-  const sentenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const SENTENCE_WAIT_MS = 1500; // Wait 1.5 seconds of silence before considering sentence complete
+  // Real-time word tracking
+  const lastWordsRef = useRef<string[]>([]);
+  const finalTextRef = useRef<string>('');
+  const utteranceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const UTTERANCE_COMPLETE_MS = 600; // 600ms silence = utterance complete
   
   // Deepgram refs
   const deepgramSocketRef = useRef<WebSocket | null>(null);
@@ -165,6 +171,10 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
   useEffect(() => {
     onInterimResultRef.current = onInterimResult;
   }, [onInterimResult]);
+
+  useEffect(() => {
+    onWordDetectedRef.current = onWordDetected;
+  }, [onWordDetected]);
 
   // Audio level monitoring
   const startAudioMonitoring = useCallback(async () => {
@@ -293,38 +303,36 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
       }
 
       if (interim) {
-        setInterimTranscript(accumulatedTextRef.current + interim);
+        setInterimTranscript(finalTextRef.current + interim);
         if (onInterimResultRef.current) {
-          onInterimResultRef.current(accumulatedTextRef.current + interim);
+          onInterimResultRef.current(finalTextRef.current + interim);
         }
       }
 
       if (final) {
-        // Accumulate final text instead of sending immediately
-        accumulatedTextRef.current += (accumulatedTextRef.current ? ' ' : '') + final.trim();
-        setInterimTranscript(accumulatedTextRef.current);
+        // Accumulate final text
+        finalTextRef.current += (finalTextRef.current ? ' ' : '') + final.trim();
+        setInterimTranscript(finalTextRef.current);
         
         // Reset reconnect attempts on successful transcription
         reconnectAttemptsRef.current = 0;
         
         // Clear any existing timeout
-        if (sentenceTimeoutRef.current) {
-          clearTimeout(sentenceTimeoutRef.current);
+        if (utteranceTimeoutRef.current) {
+          clearTimeout(utteranceTimeoutRef.current);
         }
         
-        // Check if sentence seems complete (ends with punctuation or is long enough)
-        const text = accumulatedTextRef.current.trim();
+        // Check if sentence seems complete
+        const text = finalTextRef.current.trim();
         const endsWithPunctuation = /[.!?]$/.test(text);
-        const isLongEnough = text.split(' ').length >= 8; // At least 8 words
         
-        // If sentence seems complete, send after a shorter delay
-        // Otherwise wait for the full timeout
-        const waitTime = endsWithPunctuation ? 800 : SENTENCE_WAIT_MS;
+        // Shorter wait time for Web Speech API too
+        const waitTime = endsWithPunctuation ? 500 : UTTERANCE_COMPLETE_MS;
         
-        sentenceTimeoutRef.current = setTimeout(() => {
-          if (accumulatedTextRef.current.trim() && onTranscriptionRef.current) {
-            onTranscriptionRef.current(accumulatedTextRef.current.trim(), true);
-            accumulatedTextRef.current = '';
+        utteranceTimeoutRef.current = setTimeout(() => {
+          if (finalTextRef.current.trim() && onTranscriptionRef.current) {
+            onTranscriptionRef.current(finalTextRef.current.trim(), true);
+            finalTextRef.current = '';
             setInterimTranscript('');
           }
         }, waitTime);
@@ -409,32 +417,37 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
     if (!deepgramApiKeyRef.current) return false;
     
     try {
-      // Get microphone stream
+      // Get microphone stream with optimal settings for STT
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
           autoGainControl: true,
           sampleRate: DEEPGRAM_CONFIG.sample_rate,
+          channelCount: 1,
         }
       });
       streamRef.current = stream;
 
-      // Build WebSocket URL with config
+      // Build WebSocket URL with ultra-low latency config
       const params = new URLSearchParams({
         model: DEEPGRAM_CONFIG.model,
         language: language || DEEPGRAM_CONFIG.language,
-        smart_format: String(DEEPGRAM_CONFIG.smart_format),
+        punctuate: String(DEEPGRAM_CONFIG.punctuate),
         interim_results: String(DEEPGRAM_CONFIG.interim_results),
         utterance_end_ms: String(DEEPGRAM_CONFIG.utterance_end_ms),
         vad_events: String(DEEPGRAM_CONFIG.vad_events),
         endpointing: String(DEEPGRAM_CONFIG.endpointing),
         encoding: DEEPGRAM_CONFIG.encoding,
         sample_rate: String(DEEPGRAM_CONFIG.sample_rate),
+        channels: String(DEEPGRAM_CONFIG.channels),
       });
 
+      // Deepgram WebSocket with token authentication
       const wsUrl = `wss://api.deepgram.com/v1/listen?${params.toString()}`;
-      const socket = new WebSocket(wsUrl, ['token', deepgramApiKeyRef.current]);
+      
+      // Use subprotocol auth (Deepgram's method for browsers)
+      const socket = new WebSocket(wsUrl, ['token', deepgramApiKeyRef.current!]);
       deepgramSocketRef.current = socket;
 
       socket.onopen = () => {
@@ -500,51 +513,69 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
           const data = JSON.parse(event.data);
           
           if (data.type === 'Results' && data.channel?.alternatives?.[0]) {
-            const transcript = data.channel.alternatives[0].transcript;
+            const transcript = data.channel.alternatives[0].transcript?.trim();
             const isFinal = data.is_final;
+            const words = data.channel.alternatives[0].words || [];
             
             if (transcript) {
+              // REAL-TIME: Detect new words and fire callback immediately
+              if (words.length > 0 && onWordDetectedRef.current) {
+                const currentWords = words.map((w: { word: string }) => w.word);
+                // Find new words that weren't in the last result
+                const newWords = currentWords.filter((w: string) => !lastWordsRef.current.includes(w));
+                newWords.forEach((word: string) => {
+                  onWordDetectedRef.current?.(word);
+                });
+                if (!isFinal) {
+                  lastWordsRef.current = currentWords;
+                }
+              }
+              
               if (isFinal) {
-                // Accumulate final text instead of sending immediately
-                accumulatedTextRef.current += (accumulatedTextRef.current ? ' ' : '') + transcript.trim();
-                setInterimTranscript(accumulatedTextRef.current);
+                // Final result - add to accumulated text
+                finalTextRef.current += (finalTextRef.current ? ' ' : '') + transcript;
+                lastWordsRef.current = []; // Reset word tracking
                 
-                // Clear any existing timeout
-                if (sentenceTimeoutRef.current) {
-                  clearTimeout(sentenceTimeoutRef.current);
+                // Update display immediately
+                setInterimTranscript(finalTextRef.current);
+                
+                // Reset utterance timeout
+                if (utteranceTimeoutRef.current) {
+                  clearTimeout(utteranceTimeoutRef.current);
                 }
                 
-                // Check if sentence seems complete
-                const text = accumulatedTextRef.current.trim();
-                const endsWithPunctuation = /[.!?]$/.test(text);
-                const waitTime = endsWithPunctuation ? 800 : SENTENCE_WAIT_MS;
-                
-                sentenceTimeoutRef.current = setTimeout(() => {
-                  if (accumulatedTextRef.current.trim() && onTranscriptionRef.current) {
-                    onTranscriptionRef.current(accumulatedTextRef.current.trim(), true);
-                    accumulatedTextRef.current = '';
+                // Short timeout to send complete utterance
+                utteranceTimeoutRef.current = setTimeout(() => {
+                  if (finalTextRef.current.trim() && onTranscriptionRef.current) {
+                    onTranscriptionRef.current(finalTextRef.current.trim(), true);
+                    finalTextRef.current = '';
                     setInterimTranscript('');
                   }
-                }, waitTime);
+                }, UTTERANCE_COMPLETE_MS);
               } else {
-                setInterimTranscript(accumulatedTextRef.current + (accumulatedTextRef.current ? ' ' : '') + transcript);
+                // Interim result - show immediately for real-time feedback
+                const displayText = finalTextRef.current + (finalTextRef.current ? ' ' : '') + transcript;
+                setInterimTranscript(displayText);
+                
                 if (onInterimResultRef.current) {
-                  onInterimResultRef.current(accumulatedTextRef.current + (accumulatedTextRef.current ? ' ' : '') + transcript);
+                  onInterimResultRef.current(displayText);
                 }
               }
             }
           } else if (data.type === 'UtteranceEnd') {
-            // End of speech detected - wait before sending accumulated text
-            if (sentenceTimeoutRef.current) {
-              clearTimeout(sentenceTimeoutRef.current);
+            // User stopped speaking - send accumulated text immediately
+            if (utteranceTimeoutRef.current) {
+              clearTimeout(utteranceTimeoutRef.current);
             }
-            sentenceTimeoutRef.current = setTimeout(() => {
-              if (accumulatedTextRef.current.trim() && onTranscriptionRef.current) {
-                onTranscriptionRef.current(accumulatedTextRef.current.trim(), true);
-                accumulatedTextRef.current = '';
+            // Shorter delay for utterance end
+            setTimeout(() => {
+              if (finalTextRef.current.trim() && onTranscriptionRef.current) {
+                onTranscriptionRef.current(finalTextRef.current.trim(), true);
+                finalTextRef.current = '';
+                lastWordsRef.current = [];
                 setInterimTranscript('');
               }
-            }, SENTENCE_WAIT_MS);
+            }, 300);
           }
         } catch (error) {
           console.error('Error parsing Deepgram response:', error);
@@ -553,6 +584,8 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
 
       socket.onerror = (error) => {
         console.error('Deepgram WebSocket error:', error);
+        // Fall back to Web Speech API
+        setUseDeepgram(false);
       };
 
       socket.onclose = (event) => {
@@ -575,6 +608,16 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
   }, [language]);
 
   const stopDeepgramListening = useCallback(() => {
+    // Clear timeouts
+    if (utteranceTimeoutRef.current) {
+      clearTimeout(utteranceTimeoutRef.current);
+      utteranceTimeoutRef.current = null;
+    }
+    
+    // Reset text refs
+    finalTextRef.current = '';
+    lastWordsRef.current = [];
+    
     // Close WebSocket
     if (deepgramSocketRef.current) {
       try {
@@ -683,16 +726,17 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
     setIsListening(false);
     setInterimTranscript('');
     
-    // Clear sentence accumulation
-    if (sentenceTimeoutRef.current) {
-      clearTimeout(sentenceTimeoutRef.current);
-      sentenceTimeoutRef.current = null;
+    // Clear utterance timeout
+    if (utteranceTimeoutRef.current) {
+      clearTimeout(utteranceTimeoutRef.current);
+      utteranceTimeoutRef.current = null;
     }
     // Send any accumulated text before stopping
-    if (accumulatedTextRef.current.trim() && onTranscriptionRef.current) {
-      onTranscriptionRef.current(accumulatedTextRef.current.trim(), true);
+    if (finalTextRef.current.trim() && onTranscriptionRef.current) {
+      onTranscriptionRef.current(finalTextRef.current.trim(), true);
     }
-    accumulatedTextRef.current = '';
+    finalTextRef.current = '';
+    lastWordsRef.current = [];
 
     if (restartTimeoutRef.current) {
       clearTimeout(restartTimeoutRef.current);

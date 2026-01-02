@@ -1,5 +1,4 @@
-// Gesture Detection Library
-// Real-time hand gesture recognition using MediaPipe Hands
+// Gesture Service Library
+// Gesture types and utility functions
 
 export * from './gestureService';
-export * from './useGestureDetection';

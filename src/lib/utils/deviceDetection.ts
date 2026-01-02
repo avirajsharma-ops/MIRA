@@ -77,24 +77,6 @@ export function isAndroidDevice(): boolean {
 }
 
 /**
- * Check if face detection should be enabled
- * Disabled on mobile devices due to performance and battery concerns
- */
-export function shouldEnableFaceDetection(): boolean {
-  const device = getDeviceInfo();
-  // Only enable face detection on desktop
-  return device.isDesktop;
-}
-
-/**
- * Check if camera should be auto-started
- * Only on desktop for face detection
- */
-export function shouldAutoStartCamera(): boolean {
-  return shouldEnableFaceDetection();
-}
-
-/**
  * Get optimal capture interval based on device
  */
 export function getOptimalCaptureInterval(): number {

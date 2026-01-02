@@ -6,34 +6,31 @@ import Conversation from '@/models/Conversation';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
 import mongoose from 'mongoose';
 import { getRecentTranscriptEntries } from '@/lib/transcription/transcriptionService';
+import { unifiedSmartChat } from '@/lib/ai/gemini-chat';
 
-// Check if message is simple and doesn't need debate
-function checkSimpleMessage(message: string): boolean {
+// Check if message is simple and doesn't need heavy processing
+function isSimpleMessage(message: string): boolean {
   const lower = message.toLowerCase().trim();
   
-  // Remove agent mentions for checking (including common transcription errors)
+  // Remove agent mentions for checking
   const cleaned = lower.replace(/\b(hey |hi )?(mi|ra|mira|meera|mera|maya|myra)\b/gi, '').trim();
   
   const simplePatterns = [
     /^(hi|hey|hello|yo|sup|hola|howdy|hii+)[!?.,\s]*$/i,
     /^(good\s*(morning|afternoon|evening|night))[!?.,\s]*$/i,
-    /^(how\s*are\s*you|what'?s\s*up|how'?s\s*it\s*going|how\s*do\s*you\s*do|kaise\s*ho)[!?.,\s]*$/i,
-    /^(thanks?|thank\s*you|thx|ty|shukriya|dhanyawad)[!?.,\s]*$/i,
-    /^(bye|goodbye|see\s*you|later|cya|bye\s*bye|alvida)[!?.,\s]*$/i,
-    /^(ok|okay|sure|yes|no|yeah|nope|yep|nah|yup|haan|nahi)[!?.,\s]*$/i,
-    /^(cool|nice|great|awesome|perfect|good|fine|alright|accha|theek)[!?.,\s]*$/i,
-    /^\[gesture\]/i,
-    /^nothing[!?.,\s]*$/i,
+    /^(how\s*are\s*you|what'?s\s*up|how'?s\s*it\s*going)[!?.,\s]*$/i,
+    /^(thanks?|thank\s*you|thx|ty)[!?.,\s]*$/i,
+    /^(bye|goodbye|see\s*you|later|cya)[!?.,\s]*$/i,
+    /^(ok|okay|sure|yes|no|yeah|nope|yep|nah)[!?.,\s]*$/i,
+    /^(cool|nice|great|awesome|perfect|good|fine)[!?.,\s]*$/i,
     /^(lol|haha|lmao|rofl)[!?.,\s]*$/i,
     /^(namaste|namaskar)[!?.,\s]*$/i,
   ];
   
-  // Check patterns on cleaned message
   if (simplePatterns.some(p => p.test(cleaned) || p.test(lower))) {
     return true;
   }
   
-  // Also check if original message is very short after cleaning (likely just wake word + greeting)
   if (cleaned.length < 3) {
     return true;
   }
@@ -133,37 +130,37 @@ export async function POST(request: NextRequest) {
     }
 
     // Check if this is a simple message - skip heavy context for fast response
-    const isSimpleMessage = checkSimpleMessage(message);
+    const simpleMsg = isSimpleMessage(message);
 
-    // Get context (skip memory fetching for simple messages - they don't need it)
+    // FAST PATH: For simple messages, skip all context fetching
     const contextEngine = new ContextEngine(payload.userId);
-    const memories = isSimpleMessage ? [] : await contextEngine.getRelevantMemories(message);
-
-    // Get recent transcript entries for background conversation context
-    // Skip for simple messages to reduce latency
+    
+    // Run context fetching in PARALLEL for speed (only for non-simple messages)
+    let memories: any[] = [];
     let recentTranscriptContext: string[] = [];
-    if (sessionId && !isSimpleMessage) {
-      try {
-        const recentEntries = await getRecentTranscriptEntries(payload.userId, sessionId, 15);
-        if (recentEntries.length > 0) {
-          // Format transcript entries as context (include both directed and non-directed)
-          recentTranscriptContext = recentEntries.map(entry => {
-            const speakerLabel = entry.speaker.type === 'mira' 
-              ? entry.speaker.name 
-              : (entry.speaker.type === 'user' ? 'User' : entry.speaker.name);
-            const directedMarker = entry.isDirectedAtMira ? '' : ' (background)';
-            return `${speakerLabel}${directedMarker}: ${entry.content}`;
-          });
-        }
-      } catch (err) {
-        console.error('Error fetching transcript context:', err);
+    
+    if (!simpleMsg && sessionId) {
+      // Parallel fetch - much faster than sequential
+      const [memoriesResult, transcriptResult] = await Promise.all([
+        contextEngine.getRelevantMemoriesFast(message, 5).catch(() => []),
+        getRecentTranscriptEntries(payload.userId, sessionId, 20).catch(() => []),
+      ]);
+      
+      memories = memoriesResult;
+      if (transcriptResult.length > 0) {
+        recentTranscriptContext = transcriptResult.map(entry => {
+          const speakerLabel = entry.speaker.type === 'mira' 
+            ? entry.speaker.name 
+            : (entry.speaker.type === 'user' ? 'User' : entry.speaker.name);
+          return `${speakerLabel}: ${entry.content}`;
+        });
       }
     }
 
     // Build agent context with location and time awareness
     const agentContext = {
       memories,
-      recentMessages: conversation.messages.slice(-10).map((m: { role: string; content: string }) => ({
+      recentMessages: conversation.messages.slice(-15).map((m: { role: string; content: string }) => ({
         role: m.role,
         content: m.content,
       })),
@@ -197,11 +194,12 @@ export async function POST(request: NextRequest) {
     // Detect if user is addressing a specific agent
     const mentionedAgent = forceAgent || detectAgentMention(message);
 
-    // Check for face save intent (skip for simple messages)
-    if (!isSimpleMessage) {
+    // Check for face save intent ONLY if message contains face-related keywords
+    const faceSaveKeywords = /\b(save|remember|this is|meet|name is|called)\b.*\b(face|person|him|her|them|photo)\b|\b(face|person|him|her|them)\b.*\b(save|remember|name)\b/i;
+    if (!simpleMsg && visualContext?.currentFrame && faceSaveKeywords.test(message)) {
       const faceSaveResult = await agent.handleFaceSaveIntent(
         message, 
-        visualContext?.currentFrame // base64 image from camera
+        visualContext.currentFrame
       );
       
       if (faceSaveResult.saved || faceSaveResult.message) {
@@ -241,62 +239,57 @@ export async function POST(request: NextRequest) {
     let response;
     let debateMessages: { agent: string; content: string; emotion?: string }[] = [];
 
+    // Build context string for unified chat
+    const contextParts: string[] = [];
+    
+    // Add time/location
+    const timeInfo = dateTime?.formattedDateTime || new Date().toLocaleString();
+    contextParts.push(`Time: ${timeInfo}`);
+    contextParts.push(`User: ${payload.name}`);
+    
+    if (location?.city) {
+      contextParts.push(`Location: ${location.city}`);
+    }
+    
+    // Add recent conversation (last 8 messages for speed + context)
+    if (conversation.messages.length > 0) {
+      const recentMsgs = conversation.messages.slice(-8).map((m: { role: string; content: string }) => 
+        `${m.role === 'user' ? 'U' : m.role.toUpperCase()}: ${m.content.substring(0, 150)}`
+      );
+      contextParts.push(`Recent:\n${recentMsgs.join('\n')}`);
+    }
+    
+    // Add memories if available (already limited to 5)
+    if (memories.length > 0) {
+      contextParts.push(`Memories: ${memories.slice(0, 3).map(m => m.content.substring(0, 100)).join('; ')}`);
+    }
+    
+    const contextString = contextParts.join('\n');
+
+    // Check if user explicitly mentioned an agent
     if (mentionedAgent === 'mi') {
-      // User specifically wants MI
+      // User specifically wants MI - use direct call for speed
       response = await agent.getAgentResponse('mi', message);
     } else if (mentionedAgent === 'ra') {
       // User specifically wants RA
       response = await agent.getAgentResponse('ra', message);
-    } else if (mentionedAgent === 'mira' && !isSimpleMessage) {
-      // User wants both to discuss - but ONLY for complex messages
-      // Simple messages like "hey mira" should just get a single response
-      const debateResult = await agent.conductDebate(message);
-      debateMessages = debateResult.messages;
-      response = {
-        agent: debateResult.finalAgent,
-        content: debateResult.finalResponse,
-        consensus: debateResult.consensus,
-      };
-    } else if (isSimpleMessage || mentionedAgent === 'mira') {
-      // Simple message OR mira greeting - just have MI respond warmly
-      response = await agent.getAgentResponse('mi', message);
     } else {
-      // Use intermediator to decide which agent should respond
-      const routedAgent = await agent.routeToAgent(message);
+      // === UNIFIED SMART CHAT - Single AI call handles routing + response ===
+      const unifiedResult = await unifiedSmartChat(
+        message,
+        contextString,
+        conversation.messages.slice(-6).map((m: { role: string; content: string }) => ({
+          role: m.role === 'user' ? 'user' as const : 'assistant' as const,
+          content: m.content.substring(0, 200),
+        }))
+      );
       
-      if (routedAgent === 'both') {
-        // Complex topic needing both perspectives - dynamic debate
-        const debateResult = await agent.conductDebate(message);
-        debateMessages = debateResult.messages;
-        response = {
-          agent: debateResult.finalAgent,
-          content: debateResult.finalResponse,
-          consensus: debateResult.consensus,
-        };
-      } else {
-        // Single agent response based on sentiment
-        response = await agent.getAgentResponse(routedAgent, message);
-        
-        // Check if the response analysis suggests a debate is needed
-        if (response.shouldDebate) {
-          console.log('=== DEBATE TRIGGERED ===');
-          console.log('Message:', message);
-          console.log('Initial agent:', routedAgent);
-          console.log('shouldDebate:', response.shouldDebate);
-          
-          const debateResult = await agent.conductDebate(message);
-          console.log('Debate messages count:', debateResult.messages.length);
-          console.log('Debate consensus:', debateResult.consensus);
-          
-          debateMessages = debateResult.messages;
-          response = {
-            agent: debateResult.finalAgent,
-            content: debateResult.finalResponse,
-            consensus: debateResult.consensus,
-            shouldDebate: true,
-          };
-        }
-      }
+      // Direct response - skip debate for speed (debates are slow)
+      response = {
+        agent: unifiedResult.agent,
+        content: unifiedResult.content,
+        emotion: unifiedResult.emotion,
+      };
     }
 
     // Store user message
@@ -304,14 +297,6 @@ export async function POST(request: NextRequest) {
       role: 'user',
       content: message,
       timestamp: new Date(),
-      visualContext: visualContext
-        ? {
-            hasCamera: !!visualContext.cameraDescription,
-            hasScreen: !!visualContext.screenDescription,
-            detectedFaces: visualContext.detectedFaces || [],
-            screenDescription: visualContext.screenDescription,
-          }
-        : undefined,
     });
 
     // Store debate messages if any
@@ -345,9 +330,11 @@ export async function POST(request: NextRequest) {
 
     await conversation.save();
 
-    // Extract and store any memories from this exchange
-    const conversationText = `User: ${message}\nResponse: ${response.content}`;
-    await contextEngine.extractAndStoreMemories(conversationText, conversation._id.toString());
+    // Extract memories in background (fire and forget - don't block response)
+    if (!simpleMsg) {
+      const conversationText = `User: ${message}\nResponse: ${response.content}`;
+      contextEngine.extractAndStoreMemories(conversationText, conversation._id.toString()).catch(() => {});
+    }
 
     return NextResponse.json({
       conversationId: conversation._id,

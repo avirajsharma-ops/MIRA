@@ -271,7 +271,7 @@ export async function getTranscriptById(
 export async function getRecentTranscriptEntries(
   userId: string,
   sessionId: string,
-  limit: number = 15
+  limit: number = 50
 ): Promise<ITranscriptEntry[]> {
   await connectToDatabase();
   

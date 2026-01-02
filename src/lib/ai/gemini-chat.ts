@@ -532,3 +532,161 @@ export default {
   detectFaceSaveIntent,
   getFallbackFromOpenAI,
 };
+
+// ============================================
+// UNIFIED SMART CHAT - Single call, no routing overhead
+// ============================================
+
+export interface UnifiedResponse {
+  agent: 'mi' | 'ra' | 'mira';
+  content: string;
+  emotion?: string;
+  needsDebate: boolean;
+  debateTopic?: string;
+  detectedLanguage?: string;
+}
+
+// Single unified prompt that handles routing internally
+const UNIFIED_MIRA_PROMPT = `You are MIRA (मीरा), dual-personality AI:
+
+**मी (Mee)** - Warm, empathetic: greetings, feelings, support, casual chat
+**रा (Raa)** - Logical, analytical: facts, technical, math, code, analysis
+
+RESPONSE FORMAT - Start with:
+[MI] - emotional/friendly | [RA] - logical/factual | [DEBATE] - major life decisions only
+
+RULES:
+1. Start with [MI], [RA], or [DEBATE]
+2. Keep responses SHORT (1-2 sentences)
+3. Natural conversation - no bullets
+4. Remember earlier topics when relevant
+
+LANGUAGE: Hindi words in देवनागरी, English in Roman. Never Roman Hindi.`;
+
+export async function unifiedSmartChat(
+  userMessage: string,
+  contextInfo: string,
+  conversationHistory: { role: 'user' | 'assistant'; content: string }[] = []
+): Promise<UnifiedResponse> {
+  if (!GEMINI_API_KEY) {
+    // Fallback response
+    return {
+      agent: 'mi',
+      content: "I'm here! How can I help you?",
+      needsDebate: false,
+    };
+  }
+
+  try {
+    // Detect language
+    const inputLanguage = detectLanguage(userMessage);
+    const hasDevanagari = /[\u0900-\u097F]/.test(userMessage);
+    const hasEnglish = /[a-zA-Z]{2,}/.test(userMessage);
+    const isHinglish = (inputLanguage === 'hi' || hasDevanagari) && hasEnglish;
+    
+    let langInstruction = '';
+    if (inputLanguage === 'hi' || hasDevanagari) {
+      if (isHinglish || !hasDevanagari) {
+        langInstruction = `\nHINGLISH MODE: English words Roman, Hindi words देवनागरी ONLY. Example: "Main आज खुश हूँ!"`;
+      } else {
+        langInstruction = `\nHINDI MODE: Respond in Devanagari only.`;
+      }
+    }
+
+    // Truncate context to prevent slow processing
+    const truncatedContext = contextInfo.length > 1500 ? contextInfo.substring(0, 1500) + '...' : contextInfo;
+
+    const fullPrompt = `${UNIFIED_MIRA_PROMPT}${langInstruction}\n\nContext:\n${truncatedContext}`;
+
+    const geminiHistory = convertToGeminiFormat(conversationHistory);
+    
+    const contents = [
+      ...geminiHistory,
+      { role: 'user' as const, parts: [{ text: userMessage }] }
+    ];
+
+    const response = await fetch(GEMINI_CHAT_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': GEMINI_API_KEY
+      },
+      body: JSON.stringify({
+        contents,
+        systemInstruction: { parts: [{ text: fullPrompt }] },
+        generationConfig: {
+          temperature: 0.8,
+          maxOutputTokens: 150,
+          topP: 0.9,
+          topK: 20
+        },
+        safetySettings: [
+          { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
+          { category: 'HARM_CATEGORY_HATE_SPEECH', threshold: 'BLOCK_ONLY_HIGH' },
+          { category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT', threshold: 'BLOCK_ONLY_HIGH' },
+          { category: 'HARM_CATEGORY_DANGEROUS_CONTENT', threshold: 'BLOCK_ONLY_HIGH' }
+        ]
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error('Gemini API error');
+    }
+
+    const data = await response.json();
+    let text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+    
+    // Parse the response tag
+    let agent: 'mi' | 'ra' | 'mira' = 'mi';
+    let needsDebate = false;
+    
+    if (text.startsWith('[MI]')) {
+      agent = 'mi';
+      text = text.replace('[MI]', '').trim();
+    } else if (text.startsWith('[RA]')) {
+      agent = 'ra';
+      text = text.replace('[RA]', '').trim();
+    } else if (text.startsWith('[DEBATE]')) {
+      agent = 'mira';
+      needsDebate = true;
+      text = text.replace('[DEBATE]', '').trim();
+    }
+    
+    // Detect emotion for MI responses
+    const emotion = agent === 'mi' ? detectEmotionFromText(text) : undefined;
+
+    return {
+      agent,
+      content: text,
+      emotion,
+      needsDebate,
+      debateTopic: needsDebate ? userMessage : undefined,
+      detectedLanguage: inputLanguage,
+    };
+  } catch (error) {
+    console.error('Unified chat error:', error);
+    return {
+      agent: 'mi',
+      content: "I'm here! How can I help you?",
+      needsDebate: false,
+    };
+  }
+}
+
+function detectEmotionFromText(content: string): string {
+  const emotions: { [key: string]: string[] } = {
+    caring: ['care', 'support', 'here for you', 'understand'],
+    excited: ['excited', 'wonderful', 'amazing', 'great', '!'],
+    concerned: ['worried', 'concern', 'careful', 'important'],
+    warm: ['warm', 'love', 'appreciate', 'grateful'],
+    thoughtful: ['consider', 'think', 'reflect', 'ponder'],
+  };
+
+  const lower = content.toLowerCase();
+  for (const [emotion, keywords] of Object.entries(emotions)) {
+    if (keywords.some(k => lower.includes(k))) {
+      return emotion;
+    }
+  }
+  return 'friendly';
+}

@@ -1,9 +1,9 @@
 'use client';
 
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
-import { useMediaCapture, useAudioPlayer, useFaceDetection, type KnownFace, type FaceDetectionResult } from '@/hooks';
+import { useMediaCapture, useAudioPlayer } from '@/hooks';
 import { useLiveSpeech } from '@/hooks/useLiveSpeech';
-import { isMobileDevice, shouldEnableFaceDetection } from '@/lib/utils/deviceDetection';
+import { isMobileDevice } from '@/lib/utils/deviceDetection';
 // MediaPipe gesture detection disabled due to WASM compatibility issues
 // import { useGestureDetection } from '@/lib/gesture/useGestureDetection';
 import { 
@@ -29,8 +29,6 @@ interface Message {
 interface VisualContext {
   cameraDescription?: string;
   screenDescription?: string;
-  detectedFaces?: string[];
-  currentFrame?: string; // Current camera frame as base64 for face recognition
 }
 
 interface LocationContext {
@@ -299,6 +297,7 @@ interface MIRAContextType {
   messages: Message[];
   conversationId: string | null;
   isLoading: boolean;
+  isThinking: boolean; // True when AI is processing (plays thinking sound)
   sendMessage: (text: string) => Promise<void>;
   clearConversation: () => void;
 
@@ -392,23 +391,8 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   const [gestureEnabled, setGestureEnabled] = useState(true);
   const gestureProcessingRef = useRef(false);
   
-  // Person context for gestures (from face recognition)
+  // Person context for gestures
   const [currentPerson, setCurrentPerson] = useState<{ name?: string; context?: string } | null>(null);
-  const currentPersonRef = useRef<string | null>(null); // Ref to track current person without triggering re-renders
-  
-  // Unknown face detection state
-  const [pendingUnknownFace, setPendingUnknownFace] = useState<{
-    imageBase64: string;
-    embedding: number[];
-  } | null>(null);
-  const pendingUnknownFaceRef = useRef<boolean>(false); // Track if we have a pending face without triggering re-renders
-  const unknownFacePromptedRef = useRef(false);
-  const lastUnknownFaceTimeRef = useRef<number>(0);
-  const knownPeopleCountRef = useRef<number | null>(null);
-  const awaitingFaceInfoRef = useRef(false);
-  
-  // Track who we've greeted in this session to avoid repeated greetings
-  const greetedPeopleRef = useRef<Set<string>>(new Set());
   
   // Location and DateTime state
   const [location, setLocation] = useState<LocationContext | null>(null);
@@ -537,22 +521,26 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
-  // Face detection using face-api.js (client-side)
-  const {
-    isModelLoaded: isFaceModelLoaded,
-    detectFaces,
-    updateKnownFaces,
-  } = useFaceDetection();
+  // Ref for interruption handler (defined later but needed by useAudioPlayer)
+  const handleInterruptionRef = useRef<((interruptionText: string, lastSpokenText: string) => void) | null>(null);
 
   // Audio player with TTS audio level for voice distortion
   const {
     isPlaying: isSpeaking,
+    isThinking,
     currentAgent: speakingAgent,
     ttsAudioLevel,
     playAudio,
     playAudioAndWait,
     stopAudio,
-  } = useAudioPlayer();
+    playThinkingSound,
+    stopThinkingSound,
+    interruptAudio,
+  } = useAudioPlayer({
+    onInterrupted: (interruptionText, lastSpokenText) => {
+      handleInterruptionRef.current?.(interruptionText, lastSpokenText);
+    },
+  });
 
   // Keep refs in sync with state values (for face detection callback)
   useEffect(() => {
@@ -659,6 +647,9 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     }
   }, [gestureEnabled, isSpeaking, isLoading, currentPerson, saveTranscriptEntry, playAudio]);
 
+  // Track interrupted context for continuation
+  const interruptedContextRef = useRef<{ lastAIText: string; userInterruption: string } | null>(null);
+
   // Live Speech Recognition - always transcribes, only responds when addressed
   const handleTranscription = useCallback(async (text: string, isFinal: boolean) => {
     if (!isFinal || !text.trim()) return;
@@ -667,6 +658,20 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     const directed = isDirectedAtMira(text);
     await saveTranscriptEntry(text, 'user', user?.name || 'User', directed);
     
+    // Check if user is interrupting while AI is speaking
+    if (isSpeakingRef.current && directed) {
+      console.log('[Interrupt] User interrupted AI with:', text);
+      // Stop AI speech and capture interruption context
+      interruptAudio(text);
+      
+      // Store the interruption for context continuation
+      interruptedContextRef.current = {
+        lastAIText: '', // Will be set by onInterrupted callback
+        userInterruption: text,
+      };
+      return; // Don't process as normal message - will be handled by interruption flow
+    }
+    
     // Only send to MIRA if addressed
     if (directed && sendMessageRef.current) {
       console.log('Message directed at MIRA:', text);
@@ -674,7 +679,27 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     } else {
       console.log('Background transcript (not for MIRA):', text);
     }
-  }, [saveTranscriptEntry, user?.name]);
+  }, [saveTranscriptEntry, user?.name, interruptAudio]);
+
+  // Handle interruption callback - continue with added context
+  const handleInterruption = useCallback(async (interruptionText: string, lastSpokenText: string) => {
+    console.log('[Interrupt] Processing interruption:', { interruptionText, lastSpokenText: lastSpokenText.substring(0, 50) + '...' });
+    
+    // Build continuation message with context
+    const continuationMessage = `[INTERRUPTION CONTEXT: I was saying "${lastSpokenText.substring(0, 200)}..." but the user interrupted with: "${interruptionText}". Please acknowledge their input and continue appropriately.]`;
+    
+    if (sendMessageRef.current) {
+      // Small delay to ensure clean state
+      setTimeout(() => {
+        sendMessageRef.current?.(continuationMessage);
+      }, 300);
+    }
+  }, []);
+
+  // Keep interruption handler ref updated
+  useEffect(() => {
+    handleInterruptionRef.current = handleInterruption;
+  }, [handleInterruption]);
 
   const {
     isListening,
@@ -714,145 +739,20 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   });
   */
 
-  // Media capture with face recognition using face-api.js (client-side, no API calls)
-  // DISABLED ON MOBILE - face detection only runs on desktop
-  // Using refs where possible to minimize state changes that could affect STT
-  const lastDetectedFacesRef = useRef<string[]>([]);
-  
+  // Media capture - simplified without face detection
   const handleCameraFrame = useCallback(async (imageBase64: string) => {
-    // Skip entirely on mobile devices
+    // Skip on mobile devices
     if (isMobileDevice()) {
       return;
     }
     
-    // PRIORITY: Skip all vision processing when user is waiting for a response
-    // This ensures the AI response path has maximum priority
+    // Skip processing when user is waiting for a response
     if (isProcessingMessageRef.current) {
-      return; // Don't even store frames during message processing to minimize interference
-    }
-    
-    // Skip face detection if models not loaded yet
-    if (!isFaceModelLoaded) {
       return;
     }
     
-    try {
-      // Use face-api.js for client-side face detection
-      const result = await detectFaces(imageBase64);
-      
-      if (!result) {
-        return;
-      }
-      
-      // Update visual context only if faces have changed (prevents unnecessary re-renders)
-      const newDetectedFaces = result.detectedFaces.map(f => `Face: ${f.expression.dominant} expression`);
-      const facesChanged = JSON.stringify(newDetectedFaces) !== JSON.stringify(lastDetectedFacesRef.current);
-      
-      if (facesChanged) {
-        lastDetectedFacesRef.current = newDetectedFaces;
-        setVisualContext(prev => ({
-          ...prev,
-          detectedFaces: newDetectedFaces,
-        }));
-      }
-      
-      // Handle recognized faces
-      if (result.recognizedFaces.length > 0) {
-        const person = result.recognizedFaces[0];
-        console.log(`[Face] Recognized: ${person.personName} (confidence: ${(person.confidence * 100).toFixed(1)}%)`);
-        
-        // Only update state if the person has changed (prevents unnecessary re-renders)
-        if (currentPersonRef.current !== person.personName) {
-          currentPersonRef.current = person.personName;
-          setCurrentPerson({
-            name: person.personName,
-            context: person.relationship,
-          });
-        }
-        
-        // Clear unknown face state if we recognized someone (only if needed)
-        unknownFacePromptedRef.current = false;
-        awaitingFaceInfoRef.current = false;
-        if (pendingUnknownFaceRef.current) {
-          pendingUnknownFaceRef.current = false;
-          setPendingUnknownFace(null);
-        }
-        
-        // Update last seen in database (non-blocking)
-        const token = localStorage.getItem('mira_token');
-        if (token) {
-          fetch('/api/faces', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({
-              action: 'update-last-seen',
-              personId: person.personId,
-            }),
-          }).catch(() => {}); // Ignore errors for background update
-        }
-        
-        // Check for greetings (first time in session) - use refs for instant access
-        if (!greetedPeopleRef.current.has(person.personName) && sendMessageRef.current && !isSpeakingRef.current && !isLoadingRef.current) {
-          greetedPeopleRef.current.add(person.personName);
-          
-          // Get time-based greeting
-          const hour = new Date().getHours();
-          let timeGreeting = 'Hello';
-          if (hour >= 5 && hour < 12) timeGreeting = 'Good morning';
-          else if (hour >= 12 && hour < 17) timeGreeting = 'Good afternoon';
-          else if (hour >= 17 && hour < 21) timeGreeting = 'Good evening';
-          
-          const greetingPrompt = `[SYSTEM: "${person.personName}" (${person.relationship || 'known person'}) has just appeared. Greet them warmly using "${timeGreeting}". Be friendly and natural. Don't mention "camera" or "detected" - just greet them naturally. Keep it brief.]`;
-          
-          console.log(`[Face] Triggering greeting for ${person.personName}`);
-          sendMessageRef.current(greetingPrompt);
-        }
-      }
-      
-      // Handle unknown faces - use refs for instant access
-      const now = Date.now();
-      const cooldownMs = 30000; // 30 second cooldown between prompts
-      
-      if (
-        result.unknownFaces.length > 0 &&
-        result.recognizedFaces.length === 0 &&
-        !unknownFacePromptedRef.current &&
-        !awaitingFaceInfoRef.current &&
-        !isSpeakingRef.current &&
-        !isLoadingRef.current &&
-        (now - lastUnknownFaceTimeRef.current) > cooldownMs
-      ) {
-        const unknownFace = result.unknownFaces[0];
-        
-        // Store the unknown face data with embedding for later saving
-        pendingUnknownFaceRef.current = true;
-        setPendingUnknownFace({
-          imageBase64,
-          embedding: Array.isArray(unknownFace.embedding) 
-            ? unknownFace.embedding as number[]
-            : Array.from(unknownFace.embedding),
-        });
-        
-        unknownFacePromptedRef.current = true;
-        lastUnknownFaceTimeRef.current = now;
-        awaitingFaceInfoRef.current = true;
-        
-        console.log('[Face] Unknown face detected, prompting for introduction');
-        
-        // Trigger MIRA to ask who this person is
-        if (sendMessageRef.current) {
-          const introPrompt = `[SYSTEM: An unknown person has appeared. Expression: ${unknownFace.expression.dominant}. Please warmly introduce yourself and ask who they are so you can remember them. Be friendly and natural - don't mention "camera" or "image", just act like you're meeting them for the first time. Ask for their name and optionally their relationship to the user (friend, family, etc).]`;
-          
-          sendMessageRef.current(introPrompt);
-        }
-      }
-    } catch (error) {
-      console.error('Face detection error:', error);
-    }
-  }, [isFaceModelLoaded, detectFaces]); // Removed isSpeaking, isLoading - using refs instead
+    // Camera frames available for future use (gesture detection, etc.)
+  }, []);
 
   const handleScreenFrame = useCallback(async (imageBase64: string) => {
     try {
@@ -897,75 +797,15 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   const autoStartMedia = useCallback(() => {
     if (!mediaAutoStartedRef.current) {
       mediaAutoStartedRef.current = true;
-      const isMobile = isMobileDevice();
       
       // Small delay to ensure component is fully mounted
       setTimeout(() => {
-        // Start camera on both desktop and mobile for face detection
-        if (shouldEnableFaceDetection()) {
-          startCamera();
-          console.log('[Media] Camera started (face detection enabled)');
-        } else {
-          console.log('[Media] Camera disabled (face detection not available)');
-        }
-        
         // Always start voice recording
         startVoiceRecording();
         console.log('[Media] Voice recording started');
       }, 500);
     }
-  }, [startCamera, startVoiceRecording]);
-
-  // Load known faces from database for face recognition
-  const loadKnownFaces = useCallback(async () => {
-    try {
-      const token = localStorage.getItem('mira_token');
-      if (!token) {
-        console.log('[Face] No token, skipping loadKnownFaces');
-        return;
-      }
-
-      console.log('[Face] Loading known faces from database...');
-      
-      const response = await fetch('/api/faces?embeddings=true', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      if (response.ok) {
-        const { faces } = await response.json();
-        
-        console.log(`[Face] API returned ${faces.length} face records`);
-        
-        // Convert to KnownFace format for face-api.js
-        const knownFaces: KnownFace[] = faces
-          .filter((f: { embedding?: number[] }) => {
-            const hasEmbedding = f.embedding && f.embedding.length === 128;
-            if (!hasEmbedding) {
-              console.log(`[Face] Skipping face without valid embedding`);
-            }
-            return hasEmbedding;
-          })
-          .map((f: { personId: string; personName: string; relationship: string; embedding: number[]; isOwner: boolean }) => ({
-            personId: f.personId,
-            personName: f.personName,
-            relationship: f.relationship,
-            embedding: f.embedding,
-            isOwner: f.isOwner,
-          }));
-
-        updateKnownFaces(knownFaces);
-        console.log(`[Face] Loaded ${knownFaces.length} known faces with valid embeddings`);
-        
-        if (knownFaces.length > 0) {
-          console.log(`[Face] Known people: ${knownFaces.map(f => f.personName).join(', ')}`);
-        }
-      } else {
-        console.error('[Face] Failed to load faces:', response.status);
-      }
-    } catch (error) {
-      console.error('[Face] Error loading known faces:', error);
-    }
-  }, [updateKnownFaces]);
+  }, [startVoiceRecording]);
 
   // Auth functions
   const login = useCallback(async (email: string, password: string): Promise<boolean> => {
@@ -982,7 +822,6 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         setUser(user);
         setIsAuthenticated(true);
         autoStartMedia();
-        loadKnownFaces(); // Load known faces after login
         return true;
       }
       return false;
@@ -1026,21 +865,6 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     stopAudio();
   }, [stopAudio]);
 
-  // Timeout for unknown face introduction - reset after 60 seconds if no response
-  useEffect(() => {
-    if (awaitingFaceInfoRef.current && pendingUnknownFace) {
-      const timeout = setTimeout(() => {
-        console.log('[Face] Timeout waiting for introduction, resetting state');
-        awaitingFaceInfoRef.current = false;
-        setPendingUnknownFace(null);
-        // Allow re-prompting after longer cooldown
-        lastUnknownFaceTimeRef.current = Date.now();
-      }, 60000); // 60 second timeout
-      
-      return () => clearTimeout(timeout);
-    }
-  }, [pendingUnknownFace]);
-
   // Check auth on mount
   useEffect(() => {
     const checkAuth = async () => {
@@ -1060,21 +884,10 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
           setUser(user);
           setIsAuthenticated(true);
           
-          const isMobile = isMobileDevice();
-          
-          // Only load known faces if face detection is enabled (desktop)
-          if (!isMobile && shouldEnableFaceDetection()) {
-            loadKnownFaces(); // Load known faces for recognition
-          }
-          
           // Auto-start media on existing session
           if (!mediaAutoStartedRef.current) {
             mediaAutoStartedRef.current = true;
             setTimeout(() => {
-              // Only start camera on desktop
-              if (!isMobile && shouldEnableFaceDetection()) {
-                startCamera();
-              }
               // Only start voice if speech recognition is supported
               if (isSpeechSupported) {
                 startVoiceRecording();
@@ -1163,136 +976,12 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     isProcessingMessageRef.current = true;
     setIsLoading(true);
 
-    // Check if this is a system message for unknown face prompt (don't show to user)
-    const isSystemPrompt = text.startsWith('[SYSTEM:');
+    // Check if this is a system message or interruption context (don't show to user or play thinking)
+    const isSystemPrompt = text.startsWith('[SYSTEM:') || text.startsWith('[INTERRUPTION CONTEXT:');
     
-    // Check if user is responding to our face introduction question
-    const isIntroductionResponse = awaitingFaceInfoRef.current && !isSystemPrompt;
-    
-    if (isIntroductionResponse && pendingUnknownFace) {
-      // Try to extract name from the user's response
-      // More comprehensive patterns for name extraction
-      const namePatterns = [
-        // "I'm John", "I am John", "My name is John"
-        /(?:i(?:'?m| am)|my name is|call me|it(?:'?s| is)|this is|i go by)\s+([A-Za-z][a-zA-Z]+)/i,
-        // "Name's John", "Name is John"
-        /name(?:'?s| is)?\s+([A-Za-z][a-zA-Z]+)/i,
-        // "John here", "John speaking"
-        /([A-Za-z][a-zA-Z]+)\s+(?:here|speaking)/i,
-        // Just a name at the start with punctuation: "John.", "John!", "John,"
-        /^([A-Za-z][a-zA-Z]+)[.,!]?\s*$/i,
-        // Name at start followed by more text: "John, nice to meet you"
-        /^([A-Za-z][a-zA-Z]+)(?:\s*[,.]|\s+(?:nice|good|hey|hi|hello|pleased))/i,
-        // "Hey, I'm John" or "Hi, it's John"
-        /(?:hey|hi|hello)[,.]?\s*(?:i(?:'?m| am)|it(?:'?s| is))?\s*([A-Za-z][a-zA-Z]+)/i,
-        // Hindi patterns: "Mera naam John hai", "Main John hoon"
-        /(?:mera naam|main)\s+([A-Za-z][a-zA-Z]+)/i,
-      ];
-      
-      let extractedName: string | null = null;
-      for (const pattern of namePatterns) {
-        const match = text.match(pattern);
-        if (match && match[1]) {
-          // Filter out common words that aren't names
-          const potentialName = match[1].trim();
-          const commonWords = ['hey', 'hi', 'hello', 'nice', 'good', 'well', 'just', 'here', 'there', 'yeah', 'yes', 'no', 'ok', 'okay', 'sure', 'thanks', 'thank', 'please', 'mira', 'mi', 'ra'];
-          if (!commonWords.includes(potentialName.toLowerCase()) && potentialName.length >= 2) {
-            extractedName = potentialName.charAt(0).toUpperCase() + potentialName.slice(1).toLowerCase();
-            break;
-          }
-        }
-      }
-      
-      // Extract relationship if mentioned
-      const relationshipPatterns = [
-        /(?:i(?:'?m| am) (?:a |the )?|i(?:'?m| am) your )?(friend|family|brother|sister|mother|father|mom|dad|wife|husband|partner|colleague|coworker|boss|son|daughter|roommate|neighbor)/i,
-      ];
-      
-      let extractedRelationship = 'friend';
-      for (const pattern of relationshipPatterns) {
-        const match = text.match(pattern);
-        if (match && match[1]) {
-          extractedRelationship = match[1].toLowerCase();
-          break;
-        }
-      }
-      
-      if (extractedName) {
-        console.log(`[Face] Extracted name: ${extractedName}, relationship: ${extractedRelationship}`);
-        
-        // Save the person with face embedding for recognition
-        try {
-          const token = localStorage.getItem('mira_token');
-          const saveResponse = await fetch('/api/faces', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({
-              action: 'register',
-              personName: extractedName,
-              imageBase64: pendingUnknownFace.imageBase64,
-              relationship: extractedRelationship,
-              faceDescriptor: pendingUnknownFace.embedding, // 128-dim embedding from face-api.js
-            }),
-          });
-          
-          if (saveResponse.ok) {
-            const { faceData } = await saveResponse.json();
-            console.log(`[Face] Successfully saved ${extractedName} with face embedding`);
-            
-            // Clear the pending state
-            setPendingUnknownFace(null);
-            awaitingFaceInfoRef.current = false;
-            unknownFacePromptedRef.current = false;
-            
-            // Update current person context
-            setCurrentPerson({
-              name: extractedName,
-              context: extractedRelationship,
-            });
-            
-            // Reload known faces to include the new person
-            loadKnownFaces();
-            
-            // Generate a confirmation response
-            const confirmationMsg = `Nice to meet you, ${extractedName}! I'll remember your face from now on. Next time I see you, I'll know it's you! 😊`;
-            
-            // Add confirmation message to UI
-            const confirmMessage: Message = {
-              id: `${Date.now()}-face-confirm`,
-              role: 'mi',
-              content: confirmationMsg,
-              timestamp: new Date(),
-              emotion: 'happy',
-            };
-            setMessages(prev => [...prev, confirmMessage]);
-            
-            // Play the confirmation audio
-            await playAudio(confirmationMsg, 'mi');
-            
-            // Return early - don't process as normal message since we handled it
-            isProcessingMessageRef.current = false;
-            setIsLoading(false);
-            return;
-          } else {
-            const errorData = await saveResponse.json();
-            console.error('[Face] Failed to save person:', errorData.error);
-            // If it's a duplicate, still acknowledge
-            if (errorData.error?.includes('already exists') || errorData.message?.includes('updated')) {
-              awaitingFaceInfoRef.current = false;
-              setPendingUnknownFace(null);
-              loadKnownFaces(); // Reload in case embedding was updated
-            }
-          }
-        } catch (error) {
-          console.error('[Face] Error saving person:', error);
-        }
-      } else {
-        // Couldn't extract name, will retry next time
-        console.log('[Face] Could not extract name from response, keeping awaiting state');
-      }
+    // Play thinking sound while processing (not for system messages)
+    if (!isSystemPrompt) {
+      playThinkingSound();
     }
 
     // Add user message (skip if it's a system prompt)
@@ -1349,6 +1038,10 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
 
       if (response.ok) {
         const data = await response.json();
+        
+        // Stop thinking sound - we have a response
+        stopThinkingSound();
+        
         console.log('[SendMessage] Response data:', { 
           hasDebate: !!data.debate?.length, 
           debateCount: data.debate?.length || 0,
@@ -1457,6 +1150,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       }
     } catch (error) {
       console.error('[SendMessage] Error:', error);
+      stopThinkingSound(); // Stop thinking on error
       const errorMessage: Message = {
         id: `${Date.now()}-error`,
         role: 'system',
@@ -1469,7 +1163,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       setIsLoading(false);
       console.log('[SendMessage] isLoading set to false');
     }
-  }, [conversationId, visualContext, isLoading, playAudio, saveTranscriptEntry, pendingUnknownFace]);
+  }, [conversationId, visualContext, isLoading, playAudio, saveTranscriptEntry, location, dateTime, playThinkingSound, stopThinkingSound]);
 
   // Keep sendMessageRef in sync
   useEffect(() => {
@@ -1569,6 +1263,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     messages,
     conversationId,
     isLoading,
+    isThinking,
     sendMessage,
     clearConversation,
 

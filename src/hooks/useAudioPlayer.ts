@@ -7,23 +7,38 @@ type AgentType = 'mi' | 'ra' | 'mira';
 interface UseAudioPlayerOptions {
   onSpeakingStart?: (agent: AgentType) => void;
   onSpeakingEnd?: (agent: AgentType) => void;
+  onInterrupted?: (interruptionText: string, lastSpokenText: string) => void;
 }
 
+// Thinking sounds - short "hmm" variations
+const THINKING_SOUNDS = [
+  'hmm',
+  'let me think',
+  'mmm',
+];
+
 export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
-  const { onSpeakingStart, onSpeakingEnd } = options;
+  const { onSpeakingStart, onSpeakingEnd, onInterrupted } = options;
 
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isThinking, setIsThinking] = useState(false);
   const [currentAgent, setCurrentAgent] = useState<AgentType | null>(null);
   const [queue, setQueue] = useState<{ text: string; agent: AgentType }[]>([]);
   const [ttsAudioLevel, setTtsAudioLevel] = useState(0);
   
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const thinkingAudioRef = useRef<HTMLAudioElement | null>(null);
   const isPlayingRef = useRef(false);
   const currentAudioUrlRef = useRef<string | null>(null);
   const playPromiseRef = useRef<Promise<void> | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const lastSpokenTextRef = useRef<string>('');
+  const onInterruptedRef = useRef(onInterrupted);
+  
+  // Keep callback ref updated
+  onInterruptedRef.current = onInterrupted;
 
   // Cleanup audio level monitoring
   const cleanupAudioAnalysis = useCallback(() => {
@@ -129,6 +144,16 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
       setQueue(prev => [...prev, { text, agent }]);
       return;
     }
+
+    // Stop thinking sound when starting to speak
+    if (thinkingAudioRef.current) {
+      thinkingAudioRef.current.pause();
+      thinkingAudioRef.current = null;
+      setIsThinking(false);
+    }
+
+    // Track what's being spoken (for interruption context)
+    lastSpokenTextRef.current = text;
 
     // For MIRA responses, use MI's voice (no overlapping voices)
     const voiceToUse = agent === 'mira' ? 'mi' : agent;
@@ -249,6 +274,81 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
     setQueue([]);
   }, [cleanupAudio]);
 
+  // Interrupt current audio with user speech - captures what was said and last AI text
+  const interruptAudio = useCallback(async (interruptionText: string) => {
+    if (!isPlayingRef.current) return;
+    
+    const lastSpoken = lastSpokenTextRef.current;
+    
+    // Stop the current audio
+    await stopAudio();
+    
+    // Notify about the interruption
+    if (onInterruptedRef.current && interruptionText.trim()) {
+      onInterruptedRef.current(interruptionText.trim(), lastSpoken);
+    }
+  }, [stopAudio]);
+
+  // Play a short thinking sound while AI processes
+  const playThinkingSound = useCallback(async () => {
+    // Don't play if already playing something
+    if (isPlayingRef.current) return;
+    
+    setIsThinking(true);
+    
+    try {
+      const token = localStorage.getItem('mira_token');
+      const thinkingText = THINKING_SOUNDS[Math.floor(Math.random() * THINKING_SOUNDS.length)];
+      
+      const response = await fetch('/api/tts/stream', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ text: thinkingText, voice: 'mi' }),
+      });
+
+      if (!response.ok) {
+        setIsThinking(false);
+        return;
+      }
+
+      const audioBlob = await response.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+
+      const audio = new Audio();
+      thinkingAudioRef.current = audio;
+      
+      audio.onended = () => {
+        setIsThinking(false);
+        URL.revokeObjectURL(audioUrl);
+        thinkingAudioRef.current = null;
+      };
+      
+      audio.onerror = () => {
+        setIsThinking(false);
+        URL.revokeObjectURL(audioUrl);
+        thinkingAudioRef.current = null;
+      };
+
+      audio.src = audioUrl;
+      audio.volume = 0.6; // Slightly quieter for thinking sound
+      await audio.play();
+    } catch {
+      setIsThinking(false);
+    }
+  }, []);
+
+  // Stop thinking sound (e.g., when response is ready)
+  const stopThinkingSound = useCallback(() => {
+    if (thinkingAudioRef.current) {
+      thinkingAudioRef.current.pause();
+      thinkingAudioRef.current = null;
+    }
+    setIsThinking(false);
+  }, []);
+
   // Play audio and wait for it to complete (useful for sequential playback like debates)
   const playAudioAndWait = useCallback(async (text: string, agent: AgentType): Promise<void> => {
     if (!text) return;
@@ -285,6 +385,7 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
 
   return {
     isPlaying,
+    isThinking,
     currentAgent,
     queue,
     ttsAudioLevel,
@@ -292,6 +393,9 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
     playAudioAndWait,
     stopAudio,
     playDebateSequence,
+    playThinkingSound,
+    stopThinkingSound,
+    interruptAudio,
   };
 }
 
