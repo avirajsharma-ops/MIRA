@@ -284,12 +284,35 @@ export async function POST(request: NextRequest) {
         }))
       );
       
-      // Direct response - skip debate for speed (debates are slow)
-      response = {
-        agent: unifiedResult.agent,
-        content: unifiedResult.content,
-        emotion: unifiedResult.emotion,
-      };
+      // Check if debate is needed (AI detected a dilemma/decision question)
+      if (unifiedResult.needsDebate && unifiedResult.debateTopic) {
+        console.log('[Chat] Debate triggered for:', unifiedResult.debateTopic);
+        
+        // Conduct debate between MI and RA
+        const debateResult = await agent.conductDebate(unifiedResult.debateTopic);
+        
+        // Add debate messages (MI and RA discussing)
+        debateMessages = debateResult.messages.map(msg => ({
+          agent: msg.agent,
+          content: msg.content,
+          emotion: msg.emotion,
+        }));
+        
+        // Final response is the consensus
+        response = {
+          agent: 'mira' as const,
+          content: debateResult.consensus,
+          emotion: 'thoughtful',
+          consensus: true,
+        };
+      } else {
+        // Direct response - no debate needed
+        response = {
+          agent: unifiedResult.agent,
+          content: unifiedResult.content,
+          emotion: unifiedResult.emotion,
+        };
+      }
     }
 
     // Store user message

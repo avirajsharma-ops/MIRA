@@ -537,6 +537,14 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     stopThinkingSound,
     interruptAudio,
   } = useAudioPlayer({
+    onSpeakingStart: (_agent, text) => {
+      // Track what AI is saying for echo detection
+      lastAISpokenRef.current = text;
+    },
+    onSpeakingEnd: () => {
+      // Clear echo tracking when AI stops speaking
+      lastAISpokenRef.current = '';
+    },
     onInterrupted: (interruptionText, lastSpokenText) => {
       handleInterruptionRef.current?.(interruptionText, lastSpokenText);
     },
@@ -650,12 +658,58 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   // Track interrupted context for continuation
   const interruptedContextRef = useRef<{ lastAIText: string; userInterruption: string } | null>(null);
 
+  // Ref to track what AI is currently saying (for echo detection)
+  const lastAISpokenRef = useRef<string>('');
+  
+  // Check if transcription is echo from AI speakers (similarity check)
+  const isEchoFromSpeakers = useCallback((text: string): boolean => {
+    const spoken = lastAISpokenRef.current.toLowerCase();
+    if (!spoken || spoken.length < 10) return false;
+    
+    const transcribed = text.toLowerCase().trim();
+    if (transcribed.length < 5) return true; // Very short = likely noise/echo
+    
+    // Check if the transcription is a substring of what AI is saying
+    if (spoken.includes(transcribed)) {
+      console.log('[Echo] Detected echo - transcription found in AI speech');
+      return true;
+    }
+    
+    // Check word overlap - if >60% of words match AI speech, it's echo
+    const transcribedWords = transcribed.split(/\s+/).filter(w => w.length > 2);
+    const spokenWords = spoken.split(/\s+/).filter(w => w.length > 2);
+    
+    if (transcribedWords.length < 2) return false; // Too short to analyze
+    
+    let matchCount = 0;
+    for (const word of transcribedWords) {
+      if (spokenWords.some(sw => sw.includes(word) || word.includes(sw))) {
+        matchCount++;
+      }
+    }
+    
+    const overlapRatio = matchCount / transcribedWords.length;
+    if (overlapRatio > 0.5) {
+      console.log('[Echo] Detected echo - word overlap:', (overlapRatio * 100).toFixed(0) + '%');
+      return true;
+    }
+    
+    return false;
+  }, []);
+
   // Live Speech Recognition - always transcribes, only responds when addressed
   const handleTranscription = useCallback(async (text: string, isFinal: boolean) => {
     if (!isFinal || !text.trim()) return;
     
-    // Always save the transcript in background
     const directed = isDirectedAtMira(text);
+    
+    // Echo suppression - ignore if AI is speaking and transcription matches AI speech
+    if (isSpeakingRef.current && isEchoFromSpeakers(text)) {
+      console.log('[Echo] Suppressing echo from speakers:', text.substring(0, 50) + '...');
+      return; // Ignore echo
+    }
+    
+    // Always save the transcript in background (if not echo)
     await saveTranscriptEntry(text, 'user', user?.name || 'User', directed);
     
     // Check if user is interrupting while AI is speaking
@@ -679,7 +733,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     } else {
       console.log('Background transcript (not for MIRA):', text);
     }
-  }, [saveTranscriptEntry, user?.name, interruptAudio]);
+  }, [saveTranscriptEntry, user?.name, interruptAudio, isEchoFromSpeakers]);
 
   // Handle interruption callback - continue with added context
   const handleInterruption = useCallback(async (interruptionText: string, lastSpokenText: string) => {

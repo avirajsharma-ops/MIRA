@@ -5,7 +5,7 @@ import { useState, useCallback, useRef } from 'react';
 type AgentType = 'mi' | 'ra' | 'mira';
 
 interface UseAudioPlayerOptions {
-  onSpeakingStart?: (agent: AgentType) => void;
+  onSpeakingStart?: (agent: AgentType, text: string) => void;
   onSpeakingEnd?: (agent: AgentType) => void;
   onInterrupted?: (interruptionText: string, lastSpokenText: string) => void;
 }
@@ -161,7 +161,7 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
     isPlayingRef.current = true;
     setIsPlaying(true);
     setCurrentAgent(agent);
-    onSpeakingStart?.(agent);
+    onSpeakingStart?.(agent, text); // Pass text for echo detection
 
     try {
       // Stop any previous audio first to prevent AbortError

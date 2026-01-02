@@ -546,22 +546,55 @@ export interface UnifiedResponse {
   detectedLanguage?: string;
 }
 
-// Single unified prompt that handles routing internally
-const UNIFIED_MIRA_PROMPT = `You are MIRA (मीरा), dual-personality AI:
+// Improved prompt with clear routing logic and dynamic debate detection
+const UNIFIED_MIRA_PROMPT = `You are MIRA (मीरा), a dual-personality AI assistant. You MUST correctly route each message to the right personality.
 
-**मी (Mee)** - Warm, empathetic: greetings, feelings, support, casual chat
-**रा (Raa)** - Logical, analytical: facts, technical, math, code, analysis
+## TWO DISTINCT PERSONALITIES:
 
-RESPONSE FORMAT - Start with:
-[MI] - emotional/friendly | [RA] - logical/factual | [DEBATE] - major life decisions only
+**मी (MI)** - The EMOTIONAL/SOCIAL brain:
+- Greetings, small talk, casual conversation
+- Emotional support, feelings, relationships
+- Personal stories, empathy, encouragement
+- Creative discussions, opinions on art/music/movies
+- When user shares feelings or needs comfort
 
-RULES:
-1. Start with [MI], [RA], or [DEBATE]
-2. Keep responses SHORT (1-2 sentences)
-3. Natural conversation - no bullets
-4. Remember earlier topics when relevant
+**रा (RA)** - The LOGICAL/ANALYTICAL brain:
+- Facts, definitions, explanations
+- Technical questions (code, math, science)
+- How-to guides, tutorials, instructions
+- Analysis, comparisons, research
+- Problem-solving, debugging, troubleshooting
+- Any question seeking factual/objective information
 
-LANGUAGE: Hindi words in देवनागरी, English in Roman. Never Roman Hindi.`;
+## RESPONSE FORMAT - You MUST start with ONE of these tags:
+
+[MI] - Use for emotional/social/casual content
+[RA] - Use for logical/factual/technical content  
+[DEBATE] - Use ONLY when the question involves:
+  • A difficult personal decision with significant consequences
+  • Ethical dilemmas with valid arguments on both sides
+  • Life-changing choices (career, relationships, major purchases)
+  • Complex tradeoffs where emotions AND logic both matter
+  • Questions explicitly asking "should I..." with real stakes
+
+## ROUTING EXAMPLES:
+- "Hi, how are you?" → [MI]
+- "I'm feeling sad today" → [MI]
+- "What is photosynthesis?" → [RA]
+- "How do I fix this bug?" → [RA]
+- "What's 25 * 4?" → [RA]
+- "Should I quit my job to start a business?" → [DEBATE]
+- "Should I tell my friend the truth even if it hurts?" → [DEBATE]
+- "Which laptop should I buy?" → [RA] (factual comparison, not debate)
+- "What's the weather?" → [RA]
+
+## RULES:
+1. ALWAYS start with [MI], [RA], or [DEBATE] - no exceptions
+2. Keep responses concise (1-3 sentences)
+3. Be natural and conversational
+4. [DEBATE] is RARE - only for genuinely complex personal decisions
+
+LANGUAGE: Hindi words in देवनागरी script, English in Roman. Never write Hindi in Roman script.`;
 
 export async function unifiedSmartChat(
   userMessage: string,
@@ -569,12 +602,7 @@ export async function unifiedSmartChat(
   conversationHistory: { role: 'user' | 'assistant'; content: string }[] = []
 ): Promise<UnifiedResponse> {
   if (!GEMINI_API_KEY) {
-    // Fallback response
-    return {
-      agent: 'mi',
-      content: "I'm here! How can I help you?",
-      needsDebate: false,
-    };
+    throw new Error('GEMINI_API_KEY not configured');
   }
 
   try {
@@ -615,10 +643,10 @@ export async function unifiedSmartChat(
         contents,
         systemInstruction: { parts: [{ text: fullPrompt }] },
         generationConfig: {
-          temperature: 0.8,
-          maxOutputTokens: 150,
+          temperature: 0.7,
+          maxOutputTokens: 200,
           topP: 0.9,
-          topK: 20
+          topK: 30
         },
         safetySettings: [
           { category: 'HARM_CATEGORY_HARASSMENT', threshold: 'BLOCK_ONLY_HIGH' },
@@ -636,24 +664,39 @@ export async function unifiedSmartChat(
     const data = await response.json();
     let text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
     
-    // Parse the response tag
-    let agent: 'mi' | 'ra' | 'mira' = 'mi';
+    // Parse the response tag - NO DEFAULT, must be explicit
+    let agent: 'mi' | 'ra' | 'mira';
     let needsDebate = false;
     
-    if (text.startsWith('[MI]')) {
-      agent = 'mi';
-      text = text.replace('[MI]', '').trim();
-    } else if (text.startsWith('[RA]')) {
-      agent = 'ra';
-      text = text.replace('[RA]', '').trim();
-    } else if (text.startsWith('[DEBATE]')) {
+    // Check for tags (case insensitive, with or without brackets)
+    const miMatch = text.match(/^\[?MI\]?[\s:-]*/i);
+    const raMatch = text.match(/^\[?RA\]?[\s:-]*/i);
+    const debateMatch = text.match(/^\[?DEBATE\]?[\s:-]*/i);
+    
+    if (debateMatch) {
       agent = 'mira';
       needsDebate = true;
-      text = text.replace('[DEBATE]', '').trim();
+      text = text.replace(debateMatch[0], '').trim();
+    } else if (raMatch) {
+      agent = 'ra';
+      text = text.replace(raMatch[0], '').trim();
+    } else if (miMatch) {
+      agent = 'mi';
+      text = text.replace(miMatch[0], '').trim();
+    } else {
+      // AI didn't follow format - analyze content to determine agent
+      agent = analyzeContentForAgent(userMessage, text);
+      console.log('[UnifiedChat] No tag found, analyzed as:', agent);
     }
     
     // Detect emotion for MI responses
     const emotion = agent === 'mi' ? detectEmotionFromText(text) : undefined;
+
+    console.log('[UnifiedChat] Routing decision:', { 
+      agent, 
+      needsDebate, 
+      messagePreview: userMessage.substring(0, 50) 
+    });
 
     return {
       agent,
@@ -665,12 +708,73 @@ export async function unifiedSmartChat(
     };
   } catch (error) {
     console.error('Unified chat error:', error);
+    // On error, make a simple routing decision based on message content
+    const fallbackAgent = analyzeContentForAgent(userMessage, '');
     return {
-      agent: 'mi',
-      content: "I'm here! How can I help you?",
+      agent: fallbackAgent,
+      content: fallbackAgent === 'ra' 
+        ? "I can help you with that. Could you provide more details?"
+        : "I'm here for you. What's on your mind?",
       needsDebate: false,
     };
   }
+}
+
+// Analyze message content to determine which agent should respond
+function analyzeContentForAgent(userMessage: string, responseText: string): 'mi' | 'ra' {
+  const msg = userMessage.toLowerCase();
+  
+  // Clear RA indicators (logical/factual/technical)
+  const raIndicators = [
+    /\b(what|how|why|when|where|which|explain|define|calculate|compute)\b.*\?/i,
+    /\b(code|program|function|bug|error|api|debug|fix)\b/i,
+    /\b(math|calculate|equation|formula|number|percent)\b/i,
+    /\b(science|physics|chemistry|biology|history|geography)\b/i,
+    /\b(compare|difference|versus|vs|better|best|pros|cons)\b/i,
+    /\b(how to|how do|how can|tutorial|guide|steps)\b/i,
+    /\b(technical|technology|software|hardware|computer)\b/i,
+    /\b(analyze|analysis|data|statistics|research)\b/i,
+    /\b(price|cost|money|budget|investment)\b/i,
+    /\d+\s*[\+\-\*\/\%]\s*\d+/, // Math expressions
+  ];
+  
+  // Clear MI indicators (emotional/social/casual)
+  const miIndicators = [
+    /^(hi|hey|hello|hii+|yo|sup|hola|namaste|namaskar)\b/i,
+    /\b(feel|feeling|felt|mood|emotion|happy|sad|angry|anxious|worried|stressed)\b/i,
+    /\b(love|hate|miss|care|friend|family|relationship)\b/i,
+    /\b(thank|thanks|appreciate|grateful)\b/i,
+    /\b(sorry|apologize|forgive)\b/i,
+    /\b(bye|goodbye|goodnight|see you|take care)\b/i,
+    /\b(how are you|what's up|how's it going)\b/i,
+    /\b(joke|funny|laugh|fun)\b/i,
+    /\b(opinion|think about|your view)\b/i,
+  ];
+  
+  let raScore = 0;
+  let miScore = 0;
+  
+  for (const pattern of raIndicators) {
+    if (pattern.test(msg)) raScore++;
+  }
+  
+  for (const pattern of miIndicators) {
+    if (pattern.test(msg)) miScore++;
+  }
+  
+  // If scores are equal or both zero, check message structure
+  if (raScore === miScore) {
+    // Questions with ? are usually seeking information (RA)
+    if (msg.includes('?') && msg.length > 15) {
+      return 'ra';
+    }
+    // Short messages without questions are usually casual (MI)
+    if (msg.length < 20 && !msg.includes('?')) {
+      return 'mi';
+    }
+  }
+  
+  return raScore > miScore ? 'ra' : 'mi';
 }
 
 function detectEmotionFromText(content: string): string {
