@@ -3,7 +3,11 @@
 import { useMIRA } from '@/context/MIRAContext';
 import FullScreenSpheres from './FullScreenSpheres';
 
-export default function AgentDisplay() {
+interface AgentDisplayProps {
+  showControls?: boolean;
+}
+
+export default function AgentDisplay({ showControls = true }: AgentDisplayProps) {
   const {
     speakingAgent,
     isSpeaking,
@@ -72,8 +76,8 @@ export default function AgentDisplay() {
       {/* Camera preview - HIDDEN but camera still runs for face detection */}
       {/* The camera stream is active for face-api.js processing but not shown to user */}
 
-      {/* Media controls - hidden on mobile */}
-      <div className="hidden sm:flex absolute bottom-2 sm:bottom-4 left-2 sm:left-4 gap-1.5 sm:gap-2 z-20 media-controls-mobile safe-area-bottom safe-area-left">
+      {/* Media controls - hidden on mobile and when showControls is false */}
+      <div className={`absolute bottom-2 sm:bottom-4 left-2 sm:left-4 gap-1.5 sm:gap-2 z-20 media-controls-mobile safe-area-bottom safe-area-left ui-collapsible ${showControls ? 'sm:flex ui-visible' : 'ui-hidden hidden'}`}>
         <button
           onClick={() => (isCameraActive ? stopCamera() : startCamera())}
           className={`px-2 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm transition-all min-h-[36px] ${

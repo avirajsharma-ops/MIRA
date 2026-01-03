@@ -4,6 +4,27 @@ import { useState, useEffect, useCallback } from 'react';
 import { MIRAProvider, useMIRA } from '@/context/MIRAContext';
 import { AuthScreen, AgentDisplay, PeopleLibraryModal, ChatHistoryModal, FaceRegistrationModal } from '@/components';
 
+// Detect if running inside an iframe
+function useIframeDetection() {
+  const [isInIframe, setIsInIframe] = useState(false);
+
+  useEffect(() => {
+    try {
+      setIsInIframe(window.self !== window.top);
+    } catch {
+      // If we can't access window.top due to cross-origin, we're definitely in an iframe
+      setIsInIframe(true);
+    }
+
+    // Apply iframe mode class to body
+    if (window.self !== window.top) {
+      document.body.classList.add('iframe-mode');
+    }
+  }, []);
+
+  return isInIframe;
+}
+
 function FloatingKeyboard() {
   const [isOpen, setIsOpen] = useState(false);
   const [text, setText] = useState('');
@@ -80,6 +101,8 @@ function MIRAApp() {
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showFaceRegistration, setShowFaceRegistration] = useState(false);
   const [hasCheckedOwnerFace, setHasCheckedOwnerFace] = useState(false);
+  const [showUI, setShowUI] = useState(false); // UI hidden by default
+  const isInIframe = useIframeDetection();
 
   // Check if owner face exists after authentication
   const checkOwnerFace = useCallback(async () => {
@@ -126,9 +149,28 @@ function MIRAApp() {
   }
 
   return (
-    <div className="min-h-screen bg-black">
-      {/* Header */}
-      <header className="fixed top-0 left-0 right-0 z-50 bg-black/80 backdrop-blur-md border-b border-white/10 safe-area-top">
+    <div className={`min-h-screen app-container ${isInIframe ? 'bg-transparent' : 'bg-black'}`}>
+      {/* UI Toggle Button - Always visible */}
+      <button
+        onClick={() => setShowUI(!showUI)}
+        className="fixed top-3 right-3 z-[60] p-2 bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/20 rounded-full text-white/70 hover:text-white transition-all ui-toggle-btn"
+        title={showUI ? 'Hide UI' : 'Show UI'}
+      >
+        {showUI ? (
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24" />
+            <line x1="1" y1="1" x2="23" y2="23" />
+          </svg>
+        ) : (
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+        )}
+      </button>
+
+      {/* Header - Collapsible */}
+      <header className={`fixed top-0 left-0 right-0 z-50 bg-black/80 backdrop-blur-md border-b border-white/10 safe-area-top ui-collapsible ${showUI ? 'ui-visible' : 'ui-hidden'}`}>
         <div className="flex items-center justify-between px-3 sm:px-6 py-2 sm:py-3">
           <div className="flex items-center gap-2 sm:gap-4">
             <div className="flex items-center gap-2">
@@ -222,8 +264,8 @@ function MIRAApp() {
       </header>
 
       {/* Main content - Full width agent display */}
-      <main className="pt-14 sm:pt-16 h-screen">
-        <AgentDisplay />
+      <main className={`h-screen ${showUI ? 'pt-14 sm:pt-16' : 'pt-0'}`}>
+        <AgentDisplay showControls={showUI} />
       </main>
 
       {/* Floating keyboard button */}
