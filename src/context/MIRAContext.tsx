@@ -31,16 +31,6 @@ interface VisualContext {
   screenDescription?: string;
 }
 
-interface LocationContext {
-  latitude: number;
-  longitude: number;
-  city?: string;
-  region?: string;
-  country?: string;
-  timezone?: string;
-  accuracy?: number;
-}
-
 interface DateTimeContext {
   date: string; // YYYY-MM-DD
   time: string; // HH:MM:SS
@@ -333,11 +323,8 @@ interface MIRAContextType {
   setGestureEnabled: (enabled: boolean) => void;
   isHandsLoaded: boolean;
 
-  // Location & Time
-  location: LocationContext | null;
-  locationPermission: 'granted' | 'denied' | 'prompt' | 'unavailable';
+  // Time
   dateTime: DateTimeContext;
-  requestLocationPermission: () => Promise<boolean>;
 }
 
 const MIRAContext = createContext<MIRAContextType | null>(null);
@@ -394,97 +381,8 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   // Person context for gestures
   const [currentPerson, setCurrentPerson] = useState<{ name?: string; context?: string } | null>(null);
   
-  // Location and DateTime state
-  const [location, setLocation] = useState<LocationContext | null>(null);
-  const [locationPermission, setLocationPermission] = useState<'granted' | 'denied' | 'prompt' | 'unavailable'>('prompt');
+  // DateTime state
   const [dateTime, setDateTime] = useState<DateTimeContext>(() => getCurrentDateTime());
-  const locationWatchIdRef = useRef<number | null>(null);
-
-  // Reverse geocode location to get city/country
-  const reverseGeocode = useCallback(async (lat: number, lon: number): Promise<Partial<LocationContext>> => {
-    try {
-      // Use OpenStreetMap Nominatim (free, no API key needed)
-      const response = await fetch(
-        `https://nominatim.openstreetmap.org/reverse?format=json&lat=${lat}&lon=${lon}&zoom=10`,
-        { headers: { 'User-Agent': 'MIRA-Assistant/1.0' } }
-      );
-      if (response.ok) {
-        const data = await response.json();
-        return {
-          city: data.address?.city || data.address?.town || data.address?.village || data.address?.municipality,
-          region: data.address?.state || data.address?.region,
-          country: data.address?.country,
-        };
-      }
-    } catch (error) {
-      console.log('[Location] Reverse geocoding failed:', error);
-    }
-    return {};
-  }, []);
-
-  // Request location permission and start tracking
-  const requestLocationPermission = useCallback(async (): Promise<boolean> => {
-    if (typeof navigator === 'undefined' || !navigator.geolocation) {
-      setLocationPermission('unavailable');
-      console.log('[Location] Geolocation not available');
-      return false;
-    }
-
-    return new Promise((resolve) => {
-      navigator.geolocation.getCurrentPosition(
-        async (position) => {
-          setLocationPermission('granted');
-          const { latitude, longitude, accuracy } = position.coords;
-          const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-          
-          // Get city/country info
-          const geoInfo = await reverseGeocode(latitude, longitude);
-          
-          const locationData: LocationContext = {
-            latitude,
-            longitude,
-            accuracy,
-            timezone,
-            ...geoInfo,
-          };
-          
-          setLocation(locationData);
-          console.log('[Location] Permission granted:', locationData);
-          
-          // Start watching position for updates
-          if (locationWatchIdRef.current === null) {
-            locationWatchIdRef.current = navigator.geolocation.watchPosition(
-              async (pos) => {
-                const newGeoInfo = await reverseGeocode(pos.coords.latitude, pos.coords.longitude);
-                setLocation({
-                  latitude: pos.coords.latitude,
-                  longitude: pos.coords.longitude,
-                  accuracy: pos.coords.accuracy,
-                  timezone,
-                  ...newGeoInfo,
-                });
-              },
-              () => {}, // Ignore watch errors
-              { enableHighAccuracy: false, timeout: 30000, maximumAge: 300000 } // Update every 5 mins max
-            );
-          }
-          
-          resolve(true);
-        },
-        (error) => {
-          if (error.code === error.PERMISSION_DENIED) {
-            setLocationPermission('denied');
-            console.log('[Location] Permission denied');
-          } else {
-            setLocationPermission('unavailable');
-            console.log('[Location] Error:', error.message);
-          }
-          resolve(false);
-        },
-        { enableHighAccuracy: false, timeout: 10000, maximumAge: 60000 }
-      );
-    });
-  }, [reverseGeocode]);
 
   // Update datetime every minute
   useEffect(() => {
@@ -499,26 +397,6 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     const interval = setInterval(updateDateTime, 60000);
     
     return () => clearInterval(interval);
-  }, []);
-
-  // Auto-request location when authenticated
-  useEffect(() => {
-    if (isAuthenticated && locationPermission === 'prompt') {
-      // Small delay to not overwhelm user with permission requests
-      const timer = setTimeout(() => {
-        requestLocationPermission();
-      }, 2000);
-      return () => clearTimeout(timer);
-    }
-  }, [isAuthenticated, locationPermission, requestLocationPermission]);
-
-  // Cleanup location watch on unmount
-  useEffect(() => {
-    return () => {
-      if (locationWatchIdRef.current !== null) {
-        navigator.geolocation.clearWatch(locationWatchIdRef.current);
-      }
-    };
   }, []);
 
   // Ref for interruption handler (defined later but needed by useAudioPlayer)
@@ -1052,17 +930,11 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     try {
       const token = localStorage.getItem('mira_token');
       
-      // Build context object with location and datetime
+      // Build context object with datetime
       const contextData = {
         visualContext: visualContext.cameraDescription || visualContext.screenDescription 
           ? visualContext 
           : undefined,
-        location: location ? {
-          city: location.city,
-          region: location.region,
-          country: location.country,
-          timezone: location.timezone,
-        } : undefined,
         dateTime: {
           ...dateTime,
           formattedDateTime: dateTime.formattedDateTime,
@@ -1070,7 +942,6 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       };
       
       console.log('[SendMessage] Calling /api/chat with context:', { 
-        hasLocation: !!location, 
         dateTime: dateTime.formattedDateTime 
       });
       
@@ -1217,7 +1088,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       setIsLoading(false);
       console.log('[SendMessage] isLoading set to false');
     }
-  }, [conversationId, visualContext, isLoading, playAudio, saveTranscriptEntry, location, dateTime, playThinkingSound, stopThinkingSound]);
+  }, [conversationId, visualContext, isLoading, playAudio, playAudioAndWait, saveTranscriptEntry, dateTime, playThinkingSound, stopThinkingSound]);
 
   // Keep sendMessageRef in sync
   useEffect(() => {
@@ -1351,11 +1222,8 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     setGestureEnabled,
     isHandsLoaded,
 
-    // Location & Time
-    location,
-    locationPermission,
+    // Time
     dateTime,
-    requestLocationPermission,
   };
 
   return <MIRAContext.Provider value={value}>{children}</MIRAContext.Provider>;

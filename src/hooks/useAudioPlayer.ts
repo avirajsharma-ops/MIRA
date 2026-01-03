@@ -35,6 +35,8 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const lastSpokenTextRef = useRef<string>('');
+  const lastPlayedTextRef = useRef<string>(''); // Prevent duplicate playback
+  const lastPlayedTimeRef = useRef<number>(0);
   const onInterruptedRef = useRef(onInterrupted);
   
   // Keep callback ref updated
@@ -139,9 +141,25 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
   const playAudio = useCallback(async (text: string, agent: AgentType) => {
     if (!text) return;
 
+    // Prevent duplicate playback of same text within 2 seconds
+    const now = Date.now();
+    if (text === lastPlayedTextRef.current && (now - lastPlayedTimeRef.current) < 2000) {
+      console.log('[Audio] Blocked duplicate playback of:', text.substring(0, 50) + '...');
+      return;
+    }
+    lastPlayedTextRef.current = text;
+    lastPlayedTimeRef.current = now;
+
     // Add to queue if already playing
     if (isPlayingRef.current) {
-      setQueue(prev => [...prev, { text, agent }]);
+      // Also check queue to prevent adding same text
+      setQueue(prev => {
+        if (prev.some(item => item.text === text)) {
+          console.log('[Audio] Blocked duplicate queue add:', text.substring(0, 50) + '...');
+          return prev;
+        }
+        return [...prev, { text, agent }];
+      });
       return;
     }
 

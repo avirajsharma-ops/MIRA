@@ -9,7 +9,6 @@
     "lint": "eslint"
   },
   "dependencies": {
-    "@deepgram/sdk": "^4.11.3",
     "axios": "^1.13.2",
     "bcryptjs": "^3.0.3",
     "jsonwebtoken": "^9.0.3",

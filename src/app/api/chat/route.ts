@@ -57,7 +57,6 @@ export async function POST(request: NextRequest) {
       message,
       conversationId,
       visualContext,
-      location,
       dateTime,
       forceAgent, // Optional: force a specific agent
       proactive, // Flag for proactive checks
@@ -157,7 +156,7 @@ export async function POST(request: NextRequest) {
       }
     }
 
-    // Build agent context with location and time awareness
+    // Build agent context with time awareness
     const agentContext = {
       memories,
       recentMessages: conversation.messages.slice(-15).map((m: { role: string; content: string }) => ({
@@ -167,8 +166,6 @@ export async function POST(request: NextRequest) {
       // Include recent transcript as ambient context
       recentTranscript: recentTranscriptContext,
       visualContext: visualContext || undefined,
-      // Location context
-      location: location || undefined,
       // DateTime context - use provided or generate fresh
       dateTime: dateTime || {
         date: new Date().toISOString().split('T')[0],
@@ -242,14 +239,10 @@ export async function POST(request: NextRequest) {
     // Build context string for unified chat
     const contextParts: string[] = [];
     
-    // Add time/location
+    // Add time info
     const timeInfo = dateTime?.formattedDateTime || new Date().toLocaleString();
     contextParts.push(`Time: ${timeInfo}`);
     contextParts.push(`User: ${payload.name}`);
-    
-    if (location?.city) {
-      contextParts.push(`Location: ${location.city}`);
-    }
     
     // Add recent conversation (last 8 messages for speed + context)
     if (conversation.messages.length > 0) {
