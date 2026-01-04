@@ -10,15 +10,15 @@ const nextConfig: NextConfig = {
     minimumCacheTTL: 60,
   },
   
-  // Security headers
+  // Security headers - Allow iframe embedding from talio.in domains and localhost
   async headers() {
     return [
       {
         source: '/(.*)',
         headers: [
           {
-            key: 'X-Frame-Options',
-            value: 'SAMEORIGIN',
+            key: 'Content-Security-Policy',
+            value: "frame-ancestors 'self' https://talio.in https://*.talio.in https://app.talio.in http://localhost:* http://127.0.0.1:*",
           },
           {
             key: 'X-Content-Type-Options',
