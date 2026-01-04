@@ -30,10 +30,6 @@ ENV NODE_ENV=production
 # These are needed because Next.js evaluates API routes at build time
 ENV MONGODB_URI="mongodb://placeholder:27017/placeholder"
 ENV OPENAI_API_KEY="placeholder"
-ENV ELEVENLABS_API_KEY="placeholder"
-ENV ELEVENLABS_VOICE_MI="placeholder"
-ENV ELEVENLABS_VOICE_RA="placeholder"
-ENV ELEVENLABS_MODEL="eleven_flash_v2_5"
 ENV JWT_SECRET="placeholder"
 ENV NEXTAUTH_SECRET="placeholder"
 ENV NEXTAUTH_URL="http://localhost:3000"

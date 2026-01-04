@@ -1,23 +1,22 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest } from 'next/server';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
 
-// ElevenLabs TTS - optimized for ultra-low latency
-// Using eleven_flash_v2_5 (~75ms) with streaming optimizations
+// OpenAI TTS - using multilingual voices (non-streaming fallback)
+// MI: Female voice (nova - warm, expressive)
+// RA: Male voice (onyx - deep, authoritative)
 
-// Preprocess text to replace MI/RA/MIRA with Hindi pronunciations for TTS
+// Preprocess text to replace MI/RA/MIRA with phonetic pronunciations for TTS
 function preprocessTextForTTS(text: string): string {
-  // Replace variations of MI, RA, MIRA with Hindi equivalents for proper pronunciation
-  // Using word boundaries to avoid replacing parts of other words
   let processed = text;
   
   // Replace MIRA first (before MI/RA to avoid partial replacements)
-  processed = processed.replace(/\bMIRA\b/gi, 'मीरा');
+  processed = processed.replace(/\bMIRA\b/gi, 'Meera');
   
-  // Replace MI (मी) - careful not to replace "mi" in middle of words
-  processed = processed.replace(/\bMI\b/gi, 'मी');
+  // Replace MI
+  processed = processed.replace(/\bMI\b/gi, 'Mee');
   
-  // Replace RA (रा)
-  processed = processed.replace(/\bRA\b/gi, 'रा');
+  // Replace RA
+  processed = processed.replace(/\bRA\b/gi, 'Raa');
   
   return processed;
 }
@@ -26,103 +25,95 @@ export async function POST(request: NextRequest) {
   try {
     const token = getTokenFromHeader(request.headers.get('authorization'));
     if (!token) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return new Response(JSON.stringify({ error: 'Unauthorized' }), { 
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
 
     const payload = verifyToken(token);
     if (!payload) {
-      return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
+      return new Response(JSON.stringify({ error: 'Invalid token' }), { 
+        status: 401,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
 
     const { text, voice } = await request.json();
 
     if (!text || !voice) {
-      return NextResponse.json(
-        { error: 'Text and voice are required' },
-        { status: 400 }
-      );
+      return new Response(JSON.stringify({ error: 'Text and voice are required' }), { 
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
 
     if (voice !== 'mi' && voice !== 'ra' && voice !== 'mira') {
-      return NextResponse.json(
-        { error: 'Voice must be "mi", "ra", or "mira"' },
-        { status: 400 }
-      );
+      return new Response(JSON.stringify({ error: 'Voice must be "mi", "ra", or "mira"' }), { 
+        status: 400,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
 
-    const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-    const ELEVENLABS_VOICE_MI = process.env.ELEVENLABS_VOICE_MI;
-    const ELEVENLABS_VOICE_RA = process.env.ELEVENLABS_VOICE_RA;
-    // Use Flash v2.5 for ultra-low latency (~75ms), fallback to turbo_v2_5 (~250ms)
-    const ELEVENLABS_MODEL = process.env.ELEVENLABS_MODEL || 'eleven_flash_v2_5';
+    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-    if (!ELEVENLABS_API_KEY) {
-      return NextResponse.json({ error: 'TTS not configured - missing API key' }, { status: 500 });
+    if (!OPENAI_API_KEY) {
+      return new Response(JSON.stringify({ error: 'TTS not configured - missing API key' }), { 
+        status: 500,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
 
-    if (!ELEVENLABS_VOICE_MI || !ELEVENLABS_VOICE_RA) {
-      return NextResponse.json({ error: 'TTS not configured - missing voice IDs' }, { status: 500 });
-    }
-
-    // ElevenLabs Voice IDs from environment variables
+    // OpenAI Voice mapping
+    // MI/MIRA: nova - soft, warm female voice (multilingual)
+    // RA: onyx - deep, smooth male voice (multilingual)
     const voiceMap: Record<string, string> = {
-      mi: ELEVENLABS_VOICE_MI,
-      ra: ELEVENLABS_VOICE_RA,
-      mira: ELEVENLABS_VOICE_MI,
+      mi: 'nova',
+      ra: 'onyx',
+      mira: 'nova',
     };
 
-    const selectedVoiceId = voiceMap[voice as 'mi' | 'ra' | 'mira'];
-
-    // Preprocess text to use Hindi names for MI/RA/MIRA
+    const selectedVoice = voiceMap[voice as 'mi' | 'ra' | 'mira'];
     const processedText = preprocessTextForTTS(text);
 
-    // Call ElevenLabs API with low-latency optimizations
-    // Using mp3_22050_32 for faster encoding (lower bitrate = faster)
-    const response = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${selectedVoiceId}?output_format=mp3_22050_32`,
-      {
-        method: 'POST',
-        headers: {
-          'Accept': 'audio/mpeg',
-          'Content-Type': 'application/json',
-          'xi-api-key': ELEVENLABS_API_KEY,
-        },
-        body: JSON.stringify({
-          text: processedText,
-          model_id: ELEVENLABS_MODEL,
-          voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.75,
-            style: 0.0,  // Disable style for faster processing
-            use_speaker_boost: false,  // Disable for lower latency
-          },
-        }),
-      }
-    );
+    // Call OpenAI TTS API
+    const response = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'tts-1',
+        input: processedText,
+        voice: selectedVoice,
+        response_format: 'mp3',
+        speed: 1.0,
+      }),
+    });
 
     if (!response.ok) {
       const error = await response.text();
-      console.error('ElevenLabs error:', error);
-      return NextResponse.json(
-        { error: 'Failed to generate speech' },
-        { status: response.status }
-      );
+      console.error('OpenAI TTS error:', error);
+      return new Response(JSON.stringify({ error: 'Failed to generate speech' }), { 
+        status: response.status,
+        headers: { 'Content-Type': 'application/json' }
+      });
     }
 
-    // Get the audio as array buffer
+    // Return the audio
     const audioBuffer = await response.arrayBuffer();
-
-    return new NextResponse(new Uint8Array(audioBuffer), {
+    return new Response(audioBuffer, {
       headers: {
         'Content-Type': 'audio/mpeg',
-        'Content-Length': audioBuffer.byteLength.toString(),
+        'Cache-Control': 'no-cache',
       },
     });
   } catch (error) {
     console.error('TTS error:', error);
-    return NextResponse.json(
-      { error: 'Failed to generate speech' },
-      { status: 500 }
-    );
+    return new Response(JSON.stringify({ error: 'Failed to generate speech' }), { 
+      status: 500,
+      headers: { 'Content-Type': 'application/json' }
+    });
   }
 }

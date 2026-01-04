@@ -1,12 +1,89 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { connectToDatabase } from '@/lib/mongodb';
 import { MIRAAgent, ContextEngine } from '@/lib/agents';
-import { detectAgentMention } from '@/lib/voice';
 import Conversation from '@/models/Conversation';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
 import mongoose from 'mongoose';
 import { getRecentTranscriptEntries } from '@/lib/transcription/transcriptionService';
 import { unifiedSmartChat } from '@/lib/ai/gemini-chat';
+import { analyzeImageWithGemini } from '@/lib/vision';
+
+// File attachment interface
+interface FileAttachment {
+  name: string;
+  type: string;
+  size: number;
+  data: string; // base64 encoded data
+}
+
+// Process file attachments and return context string
+async function processAttachments(attachments: FileAttachment[]): Promise<string> {
+  if (!attachments || attachments.length === 0) {
+    return '';
+  }
+
+  const results: string[] = [];
+
+  for (const attachment of attachments) {
+    try {
+      // Image files - analyze with Gemini Vision
+      if (attachment.type.startsWith('image/')) {
+        const analysis = await analyzeImageWithGemini(
+          attachment.data,
+          `This is an image file named "${attachment.name}" that the user uploaded for analysis.`
+        );
+        results.push(`[Image: ${attachment.name}]\n${analysis.description}\nObjects: ${analysis.objects?.join(', ') || 'none'}\nContext: ${analysis.context || ''}`);
+      }
+      // PDF files - extract text (simplified - just note it was attached)
+      else if (attachment.type === 'application/pdf') {
+        // For now, we note the PDF was attached. Full PDF parsing would require a library like pdf-parse
+        results.push(`[PDF Document: ${attachment.name}]\nThe user has attached a PDF file. Size: ${(attachment.size / 1024).toFixed(1)}KB`);
+      }
+      // Text files - decode and include content
+      else if (attachment.type.startsWith('text/') || 
+               ['application/json', 'application/javascript', 'application/typescript', 
+                'application/xml', 'application/x-yaml'].includes(attachment.type)) {
+        // Decode base64 text content
+        const textContent = Buffer.from(attachment.data.replace(/^data:[^;]+;base64,/, ''), 'base64').toString('utf-8');
+        // Limit text content to prevent token overflow
+        const truncatedContent = textContent.length > 5000 
+          ? textContent.substring(0, 5000) + '\n... (content truncated)'
+          : textContent;
+        results.push(`[File: ${attachment.name}]\n\`\`\`\n${truncatedContent}\n\`\`\``);
+      }
+      // Other files - just note they were attached
+      else {
+        results.push(`[Attachment: ${attachment.name}]\nFile type: ${attachment.type}, Size: ${(attachment.size / 1024).toFixed(1)}KB`);
+      }
+    } catch (error) {
+      console.error(`Error processing attachment ${attachment.name}:`, error);
+      results.push(`[Attachment: ${attachment.name}] (failed to process)`);
+    }
+  }
+
+  return results.length > 0 ? `\n--- User Attachments ---\n${results.join('\n\n')}\n--- End Attachments ---\n` : '';
+}
+
+// Detect if user is addressing a specific agent (MI, RA, or MIRA)
+function detectAgentMention(text: string): 'mi' | 'ra' | 'mira' | null {
+  const lower = text.toLowerCase();
+  
+  // Check for MIRA first (combination of MI+RA)
+  if (/\b(mira|meera|meira|myra)\b/i.test(lower)) {
+    return 'mira';
+  }
+  
+  // Check for specific agents
+  if (/\b(hey |hi )?(mi|mee|mי)\b/i.test(lower)) {
+    return 'mi';
+  }
+  
+  if (/\b(hey |hi )?(ra|raa|rah)\b/i.test(lower)) {
+    return 'ra';
+  }
+  
+  return null;
+}
 
 // Check if message is simple and doesn't need heavy processing
 function isSimpleMessage(message: string): boolean {
@@ -61,6 +138,7 @@ export async function POST(request: NextRequest) {
       forceAgent, // Optional: force a specific agent
       proactive, // Flag for proactive checks
       sessionId, // Session ID for transcript context
+      attachments, // File attachments (images, PDFs, text, etc.)
     } = await request.json();
 
     if (!message) {
@@ -236,6 +314,13 @@ export async function POST(request: NextRequest) {
     let response;
     let debateMessages: { agent: string; content: string; emotion?: string }[] = [];
 
+    // Process file attachments (images, PDFs, text files)
+    let attachmentContext = '';
+    if (attachments && attachments.length > 0) {
+      console.log('[Chat] Processing', attachments.length, 'attachment(s)');
+      attachmentContext = await processAttachments(attachments);
+    }
+
     // Build context string for unified chat
     const contextParts: string[] = [];
     
@@ -256,16 +341,26 @@ export async function POST(request: NextRequest) {
     if (memories.length > 0) {
       contextParts.push(`Memories: ${memories.slice(0, 3).map(m => m.content.substring(0, 100)).join('; ')}`);
     }
+
+    // Add attachment context if any
+    if (attachmentContext) {
+      contextParts.push(attachmentContext);
+    }
     
     const contextString = contextParts.join('\n');
+
+    // Build message with attachment context for direct calls
+    const messageWithAttachments = attachmentContext 
+      ? `${message}\n\n${attachmentContext}` 
+      : message;
 
     // Check if user explicitly mentioned an agent
     if (mentionedAgent === 'mi') {
       // User specifically wants MI - use direct call for speed
-      response = await agent.getAgentResponse('mi', message);
+      response = await agent.getAgentResponse('mi', messageWithAttachments);
     } else if (mentionedAgent === 'ra') {
       // User specifically wants RA
-      response = await agent.getAgentResponse('ra', message);
+      response = await agent.getAgentResponse('ra', messageWithAttachments);
     } else {
       // === UNIFIED SMART CHAT - Single AI call handles routing + response ===
       const unifiedResult = await unifiedSmartChat(

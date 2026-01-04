@@ -1,8 +1,9 @@
 import { NextRequest } from 'next/server';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
 
-// ElevenLabs TTS Streaming - optimized for ultra-low latency
-// Using eleven_flash_v2_5 (~75ms) with streaming for fastest response
+// OpenAI TTS - using multilingual voices
+// MI: Female voice (nova - warm, expressive)
+// RA: Male voice (onyx - deep, authoritative)
 
 // Preprocess text to replace MI/RA/MIRA with Hindi pronunciations for TTS
 function preprocessTextForTTS(text: string): string {
@@ -11,13 +12,13 @@ function preprocessTextForTTS(text: string): string {
   let processed = text;
   
   // Replace MIRA first (before MI/RA to avoid partial replacements)
-  processed = processed.replace(/\bMIRA\b/gi, 'मीरा');
+  processed = processed.replace(/\bMIRA\b/gi, 'Meera');
   
   // Replace MI (मी) - careful not to replace "mi" in middle of words
-  processed = processed.replace(/\bMI\b/gi, 'मी');
+  processed = processed.replace(/\bMI\b/gi, 'Mee');
   
   // Replace RA (रा)
-  processed = processed.replace(/\bRA\b/gi, 'रा');
+  processed = processed.replace(/\bRA\b/gi, 'Raa');
   
   return processed;
 }
@@ -56,66 +57,49 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
-    const ELEVENLABS_VOICE_MI = process.env.ELEVENLABS_VOICE_MI;
-    const ELEVENLABS_VOICE_RA = process.env.ELEVENLABS_VOICE_RA;
-    // Use Flash v2.5 for ultra-low latency (~75ms), fallback to turbo_v2_5 (~250ms)
-    const ELEVENLABS_MODEL = process.env.ELEVENLABS_MODEL || 'eleven_flash_v2_5';
+    const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-    if (!ELEVENLABS_API_KEY) {
+    if (!OPENAI_API_KEY) {
       return new Response(JSON.stringify({ error: 'TTS not configured - missing API key' }), { 
         status: 500,
         headers: { 'Content-Type': 'application/json' }
       });
     }
 
-    if (!ELEVENLABS_VOICE_MI || !ELEVENLABS_VOICE_RA) {
-      return new Response(JSON.stringify({ error: 'TTS not configured - missing voice IDs' }), { 
-        status: 500,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-
-    // ElevenLabs Voice IDs from environment variables
+    // OpenAI Voice mapping
+    // MI/MIRA: nova - soft, warm female voice (multilingual)
+    // RA: onyx - deep, smooth male voice (multilingual)
     const voiceMap: Record<string, string> = {
-      mi: ELEVENLABS_VOICE_MI,
-      ra: ELEVENLABS_VOICE_RA,
-      mira: ELEVENLABS_VOICE_MI,
+      mi: 'nova',      // Female - warm, conversational
+      ra: 'onyx',      // Male - deep, authoritative
+      mira: 'nova',    // Same as MI
     };
 
-    const selectedVoiceId = voiceMap[voice as 'mi' | 'ra' | 'mira'];
+    const selectedVoice = voiceMap[voice as 'mi' | 'ra' | 'mira'];
 
-    // Preprocess text to use Hindi names for MI/RA/MIRA
+    // Preprocess text for better pronunciation
     const processedText = preprocessTextForTTS(text);
 
-    // Call ElevenLabs streaming API with low-latency optimizations
-    // Using mp3_22050_32 for faster encoding
-    const response = await fetch(
-      `https://api.elevenlabs.io/v1/text-to-speech/${selectedVoiceId}/stream?output_format=mp3_22050_32`,
-      {
-        method: 'POST',
-        headers: {
-          'Accept': 'audio/mpeg',
-          'Content-Type': 'application/json',
-          'xi-api-key': ELEVENLABS_API_KEY,
-        },
-        body: JSON.stringify({
-          text: processedText,
-          model_id: ELEVENLABS_MODEL,
-          voice_settings: {
-            stability: 0.5,
-            similarity_boost: 0.75,
-            style: 0.0,  // Disable style for faster processing
-            use_speaker_boost: false,  // Disable for lower latency
-          },
-        }),
-      }
-    );
+    // Call OpenAI TTS API
+    const response = await fetch('https://api.openai.com/v1/audio/speech', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: 'tts-1',  // Use tts-1 for lower latency (tts-1-hd for higher quality)
+        input: processedText,
+        voice: selectedVoice,
+        response_format: 'mp3',
+        speed: 1.0,  // Normal speed
+      }),
+    });
 
     if (!response.ok) {
       const error = await response.text();
-      console.error('ElevenLabs stream error:', error);
-      return new Response(JSON.stringify({ error: 'Failed to stream speech' }), { 
+      console.error('OpenAI TTS error:', error);
+      return new Response(JSON.stringify({ error: 'Failed to generate speech' }), { 
         status: response.status,
         headers: { 'Content-Type': 'application/json' }
       });
@@ -125,13 +109,12 @@ export async function POST(request: NextRequest) {
     return new Response(response.body, {
       headers: {
         'Content-Type': 'audio/mpeg',
-        'Transfer-Encoding': 'chunked',
         'Cache-Control': 'no-cache',
       },
     });
   } catch (error) {
     console.error('TTS stream error:', error);
-    return new Response(JSON.stringify({ error: 'Failed to stream speech' }), { 
+    return new Response(JSON.stringify({ error: 'Failed to generate speech' }), { 
       status: 500,
       headers: { 'Content-Type': 'application/json' }
     });

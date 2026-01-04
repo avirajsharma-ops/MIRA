@@ -1,6 +1,44 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { transcribeAudio } from '@/lib/voice';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
+
+// OpenAI Whisper transcription
+async function transcribeAudio(audioBuffer: Buffer, language?: string): Promise<{ text: string; detectedLanguage: string }> {
+  const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
+  
+  if (!OPENAI_API_KEY) {
+    throw new Error('OpenAI API key not configured');
+  }
+
+  const formData = new FormData();
+  // Convert Buffer to Uint8Array for Blob compatibility
+  const audioBlob = new Blob([new Uint8Array(audioBuffer)], { type: 'audio/webm' });
+  formData.append('file', audioBlob, 'audio.webm');
+  formData.append('model', 'whisper-1');
+  
+  if (language) {
+    formData.append('language', language);
+  }
+
+  const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: formData,
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    console.error('Whisper API error:', error);
+    throw new Error('Transcription failed');
+  }
+
+  const result = await response.json();
+  return {
+    text: result.text,
+    detectedLanguage: language || 'auto',
+  };
+}
 
 export async function POST(request: NextRequest) {
   try {

@@ -228,9 +228,25 @@ Only include truly important, persistent information worth remembering.`;
         max_tokens: 500,
       });
 
-      const parsed = JSON.parse(
-        response.choices[0]?.message?.content?.replace(/```json\n?|\n?```/g, '') || '{"memories":[]}'
-      );
+      // Clean the response content - handle various JSON wrapper formats
+      let jsonContent = response.choices[0]?.message?.content || '{"memories":[]}';
+      // Remove markdown code blocks
+      jsonContent = jsonContent.replace(/```json\s*/gi, '').replace(/```\s*/g, '');
+      // Trim whitespace
+      jsonContent = jsonContent.trim();
+      // Try to find JSON object if there's extra text
+      const jsonMatch = jsonContent.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        jsonContent = jsonMatch[0];
+      }
+
+      let parsed;
+      try {
+        parsed = JSON.parse(jsonContent);
+      } catch {
+        console.warn('Failed to parse memory extraction response, using empty array');
+        parsed = { memories: [] };
+      }
 
       const storedMemories: IMemory[] = [];
 

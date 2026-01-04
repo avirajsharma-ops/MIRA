@@ -31,6 +31,13 @@ interface VisualContext {
   screenDescription?: string;
 }
 
+export interface FileAttachment {
+  name: string;
+  type: string; // MIME type
+  size: number;
+  data: string; // base64 encoded data
+}
+
 interface DateTimeContext {
   date: string; // YYYY-MM-DD
   time: string; // HH:MM:SS
@@ -288,7 +295,7 @@ interface MIRAContextType {
   conversationId: string | null;
   isLoading: boolean;
   isThinking: boolean; // True when AI is processing (plays thinking sound)
-  sendMessage: (text: string) => Promise<void>;
+  sendMessage: (text: string, attachments?: FileAttachment[]) => Promise<void>;
   clearConversation: () => void;
 
   // Voice
@@ -397,6 +404,49 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     const interval = setInterval(updateDateTime, 60000);
     
     return () => clearInterval(interval);
+  }, []);
+
+  // Helper function to transform content for TTS - summarizes code blocks and structured outputs
+  const transformForTTS = useCallback((content: string): string => {
+    // Check for code blocks
+    const codeBlockRegex = /```(\w+)?\n?([\s\S]*?)```/g;
+    const hasCodeBlocks = codeBlockRegex.test(content);
+    
+    // Check for numbered/bulleted lists (3+ items)
+    const listRegex = /(?:^|\n)((?:[\d]+\.|[-•*])\s+.+(?:\n(?:[\d]+\.|[-•*])\s+.+){2,})/gm;
+    const hasLists = listRegex.test(content);
+    
+    if (!hasCodeBlocks && !hasLists) {
+      return content; // No special content, return as-is
+    }
+    
+    let ttsContent = content;
+    
+    // Replace code blocks with spoken summary
+    if (hasCodeBlocks) {
+      ttsContent = ttsContent.replace(/```(\w+)?\n?([\s\S]*?)```/g, (match, language) => {
+        const lang = language || 'code';
+        return `I've written some ${lang} code for you. You can see it in the outputs panel.`;
+      });
+    }
+    
+    // Replace long lists with summary
+    if (hasLists) {
+      ttsContent = ttsContent.replace(/(?:^|\n)((?:[\d]+\.|[-•*])\s+.+(?:\n(?:[\d]+\.|[-•*])\s+.+){2,})/gm, (match) => {
+        const itemCount = (match.match(/(?:^|\n)[\d]+\.|[-•*]\s+/g) || []).length;
+        return `\nI've listed ${itemCount} items for you in the outputs panel.`;
+      });
+    }
+    
+    // Clean up multiple spaces/newlines
+    ttsContent = ttsContent.replace(/\n{3,}/g, '\n\n').trim();
+    
+    // If the entire content was just code/lists, add a helpful note
+    if (ttsContent.length < 50 && (hasCodeBlocks || hasLists)) {
+      ttsContent += ' Let me know if you have any questions about it!';
+    }
+    
+    return ttsContent;
   }, []);
 
   // Ref for interruption handler (defined later but needed by useAudioPlayer)
@@ -518,8 +568,8 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         const agentNameMap: Record<string, string> = { 'mi': 'MI', 'ra': 'RA', 'mira': 'MIRA' };
         saveTranscriptEntry(data.response, 'mira', agentNameMap[data.agent] || data.agent.toUpperCase(), true);
         
-        // Play audio response
-        await playAudio(data.response, data.agent as AgentType);
+        // Play audio response (transform code/outputs for TTS)
+        await playAudio(transformForTTS(data.response), data.agent as AgentType);
         
         // Mark gesture as used
         markGestureUsed(gesture.gesture);
@@ -531,7 +581,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       // Clear current gesture after a delay
       setTimeout(() => setCurrentGesture(null), 2000);
     }
-  }, [gestureEnabled, isSpeaking, isLoading, currentPerson, saveTranscriptEntry, playAudio]);
+  }, [gestureEnabled, isSpeaking, isLoading, currentPerson, saveTranscriptEntry, playAudio, transformForTTS]);
 
   // Track interrupted context for continuation
   const interruptedContextRef = useRef<{ lastAIText: string; userInterruption: string } | null>(null);
@@ -735,9 +785,13 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         // Always start voice recording
         startVoiceRecording();
         console.log('[Media] Voice recording started');
+        
+        // Also start camera by default for face detection
+        startCamera();
+        console.log('[Media] Camera started');
       }, 500);
     }
-  }, [startVoiceRecording]);
+  }, [startVoiceRecording, startCamera]);
 
   // Auth functions
   const login = useCallback(async (email: string, password: string): Promise<boolean> => {
@@ -894,14 +948,14 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   */
 
   // Send message
-  const sendMessage = useCallback(async (text: string) => {
+  const sendMessage = useCallback(async (text: string, attachments?: FileAttachment[]) => {
     // Prevent duplicate sends
-    if (!text.trim() || isLoading) {
+    if ((!text.trim() && !attachments?.length) || isLoading) {
       console.log('[SendMessage] Blocked - empty or loading:', { text: text.trim(), isLoading });
       return;
     }
 
-    console.log('[SendMessage] Starting:', text);
+    console.log('[SendMessage] Starting:', text, attachments?.length ? `with ${attachments.length} attachments` : '');
     lastActivityRef.current = new Date();
     
     // PRIORITY: Set processing flag IMMEDIATELY to pause all background tasks
@@ -955,6 +1009,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
           message: text,
           conversationId,
           sessionId: sessionIdRef.current,
+          attachments: attachments || [],
           ...contextData,
         }),
       });
@@ -1006,7 +1061,8 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
             
             // Play audio for this debate message and WAIT for it to complete
             // This ensures spheres stay separated throughout the entire debate
-            await playAudioAndWait(msg.content, msg.agent as AgentType);
+            // Transform code/outputs for TTS so AI summarizes instead of reading code
+            await playAudioAndWait(transformForTTS(msg.content), msg.agent as AgentType);
             
             // Small pause between debate turns for natural flow
             await new Promise(resolve => setTimeout(resolve, 300));
@@ -1065,8 +1121,9 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         }
 
         // Play final response audio - when consensus, this is MIRA speaking (spheres merge)
+        // Transform code/outputs for TTS so AI summarizes instead of reading code verbatim
         console.log('[SendMessage] Playing final response from:', data.response.agent);
-        await playAudio(data.response.content, data.response.agent as AgentType);
+        await playAudio(transformForTTS(data.response.content), data.response.agent as AgentType);
         console.log('[SendMessage] Complete!');
       } else {
         const errorText = await response.text();
@@ -1088,7 +1145,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       setIsLoading(false);
       console.log('[SendMessage] isLoading set to false');
     }
-  }, [conversationId, visualContext, isLoading, playAudio, playAudioAndWait, saveTranscriptEntry, dateTime, playThinkingSound, stopThinkingSound]);
+  }, [conversationId, visualContext, isLoading, playAudio, playAudioAndWait, saveTranscriptEntry, dateTime, playThinkingSound, stopThinkingSound, transformForTTS]);
 
   // Keep sendMessageRef in sync
   useEffect(() => {
