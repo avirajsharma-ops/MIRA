@@ -17,15 +17,53 @@ body {
   font-family: var(--font-inter), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
-/* Iframe mode - transparent background with backdrop blur */
+/* Iframe mode - transparent background with white overlay and backdrop blur */
 body.iframe-mode {
   background: transparent !important;
 }
 
 body.iframe-mode .app-container {
-  background: transparent !important;
+  background: rgba(255, 255, 255, 0.1) !important;
   backdrop-filter: blur(8px);
   -webkit-backdrop-filter: blur(8px);
+}
+
+body.iframe-mode .auth-container {
+  background: rgba(255, 255, 255, 0.1) !important;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* Iframe mode - adapt UI for light backgrounds */
+body.iframe-mode .floating-keyboard-input {
+  background: rgba(0, 0, 0, 0.7) !important;
+  border-color: rgba(0, 0, 0, 0.3) !important;
+  color: white !important;
+}
+
+body.iframe-mode .floating-keyboard-btn {
+  background: rgba(0, 0, 0, 0.6) !important;
+  border-color: rgba(0, 0, 0, 0.3) !important;
+  color: white !important;
+}
+
+body.iframe-mode .floating-keyboard-btn:hover {
+  background: rgba(0, 0, 0, 0.8) !important;
+}
+
+body.iframe-mode .ui-toggle-btn {
+  background: rgba(0, 0, 0, 0.6) !important;
+  border-color: rgba(0, 0, 0, 0.3) !important;
+  color: white !important;
+}
+
+body.iframe-mode .ui-toggle-btn:hover {
+  background: rgba(0, 0, 0, 0.8) !important;
+}
+
+body.iframe-mode .status-text {
+  color: rgba(0, 0, 0, 0.8) !important;
+  text-shadow: 0 0 10px rgba(255, 255, 255, 0.8);
 }
 
 /* UI toggle button animation */

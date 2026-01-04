@@ -1,7 +1,26 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useMIRA } from '@/context/MIRAContext';
+
+// Detect if running inside an iframe
+function useIframeDetection() {
+  const [isInIframe, setIsInIframe] = useState(false);
+
+  useEffect(() => {
+    try {
+      setIsInIframe(window.self !== window.top);
+    } catch {
+      setIsInIframe(true);
+    }
+
+    if (window.self !== window.top) {
+      document.body.classList.add('iframe-mode');
+    }
+  }, []);
+
+  return isInIframe;
+}
 
 export default function AuthScreen() {
   const { login, register } = useMIRA();
@@ -11,6 +30,7 @@ export default function AuthScreen() {
   const [name, setName] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const isInIframe = useIframeDetection();
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -41,23 +61,23 @@ export default function AuthScreen() {
   };
 
   return (
-    <div className="min-h-screen bg-black flex items-center justify-center p-4">
+    <div className={`min-h-screen flex items-center justify-center p-4 auth-container ${isInIframe ? 'bg-transparent' : 'bg-black'}`}>
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
           <div className="flex items-center justify-center gap-3 mb-2">
             <img src="/icons/favicon.png" alt="MIRA" className="w-14 h-14 rounded-xl" />
-            <h1 className="text-5xl font-bold text-white">
+            <h1 className={`text-5xl font-bold ${isInIframe ? 'text-black drop-shadow-lg' : 'text-white'}`}>
               MIRA
             </h1>
           </div>
-          <p className="text-white/50 mt-2">
+          <p className={`mt-2 ${isInIframe ? 'text-black/60' : 'text-white/50'}`}>
             Your Intelligent AI Companion
           </p>
         </div>
 
         {/* Form */}
-        <div className="bg-white/5 backdrop-blur-lg rounded-2xl p-8 border border-white/10 bg-black/40">
+        <div className={`backdrop-blur-lg rounded-2xl p-8 border ${isInIframe ? 'bg-black/60 border-black/20' : 'bg-white/5 border-white/10 bg-black/40'}`}>
           <h2 className="text-2xl font-semibold text-white mb-6">
             {isLogin ? 'Welcome Back' : 'Create Account'}
           </h2>
@@ -130,7 +150,7 @@ export default function AuthScreen() {
         </div>
 
         {/* Info */}
-        <div className="mt-8 text-center text-white/30 text-sm">
+        <div className={`mt-8 text-center text-sm ${isInIframe ? 'text-black/40' : 'text-white/30'}`}>
           <p>✨ Always here to help</p>
           <p>🎯 Smart, intuitive, and personal</p>
         </div>

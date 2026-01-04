@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 
 type AgentType = 'mi' | 'ra' | 'mira';
 
@@ -16,6 +16,57 @@ const THINKING_SOUNDS = [
   'let me think',
   'mmm',
 ];
+
+// iOS/Safari audio unlock - must be called on user interaction
+let audioUnlocked = false;
+let audioContext: AudioContext | null = null;
+
+function unlockAudioContext() {
+  if (audioUnlocked) return;
+  
+  try {
+    // Create and resume AudioContext
+    if (!audioContext) {
+      audioContext = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+    }
+    
+    if (audioContext.state === 'suspended') {
+      audioContext.resume();
+    }
+    
+    // Play a silent buffer to unlock audio on iOS
+    const buffer = audioContext.createBuffer(1, 1, 22050);
+    const source = audioContext.createBufferSource();
+    source.buffer = buffer;
+    source.connect(audioContext.destination);
+    source.start(0);
+    
+    // Also create and play a silent Audio element
+    const silentAudio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA');
+    silentAudio.volume = 0.01;
+    silentAudio.play().catch(() => {});
+    
+    audioUnlocked = true;
+    console.log('[Audio] iOS audio context unlocked');
+  } catch (e) {
+    console.log('[Audio] Failed to unlock audio context:', e);
+  }
+}
+
+// Initialize audio unlock on first user interaction (required for iOS/Safari)
+if (typeof window !== 'undefined') {
+  const unlockEvents = ['touchstart', 'touchend', 'mousedown', 'keydown', 'click'];
+  const handleUnlock = () => {
+    unlockAudioContext();
+    // Remove listeners after first interaction
+    unlockEvents.forEach(event => {
+      document.removeEventListener(event, handleUnlock, true);
+    });
+  };
+  unlockEvents.forEach(event => {
+    document.addEventListener(event, handleUnlock, true);
+  });
+}
 
 export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
   const { onSpeakingStart, onSpeakingEnd, onInterrupted } = options;
@@ -141,6 +192,9 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
   const playAudio = useCallback(async (text: string, agent: AgentType) => {
     if (!text) return;
 
+    // Ensure audio is unlocked on iOS/Safari
+    unlockAudioContext();
+
     // Prevent duplicate playback of same text within 2 seconds
     const now = Date.now();
     if (text === lastPlayedTextRef.current && (now - lastPlayedTimeRef.current) < 2000) {
@@ -206,6 +260,10 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
 
       const audio = new Audio();
       audioRef.current = audio;
+      
+      // iOS/Safari specific: Set attributes for better compatibility
+      audio.setAttribute('playsinline', 'true');
+      audio.setAttribute('webkit-playsinline', 'true');
 
       // Set up event handlers before setting src
       audio.onended = () => {
@@ -401,6 +459,11 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
     }
   }, [playAudio]);
 
+  // Manually initialize audio (call on user interaction for iOS)
+  const initAudio = useCallback(() => {
+    unlockAudioContext();
+  }, []);
+
   return {
     isPlaying,
     isThinking,
@@ -414,7 +477,11 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
     playThinkingSound,
     stopThinkingSound,
     interruptAudio,
+    initAudio,
   };
 }
+
+// Export the unlock function for manual initialization
+export { unlockAudioContext as initializeAudio };
 
 export default useAudioPlayer;

@@ -49,12 +49,12 @@ function FloatingKeyboard() {
             onChange={(e) => setText(e.target.value)}
             placeholder="Type a message..."
             autoFocus
-            className="w-[calc(100vw-7rem)] sm:w-80 max-w-80 px-4 py-3 bg-black/60 backdrop-blur-md border border-white/20 rounded-full text-white placeholder-white/40 focus:outline-none focus:border-purple-500/50 text-base"
+            className="floating-keyboard-input w-[calc(100vw-7rem)] sm:w-80 max-w-80 px-4 py-3 bg-black/60 backdrop-blur-md border border-white/20 rounded-full text-white placeholder-white/40 focus:outline-none focus:border-purple-500/50 text-base"
           />
           <button
             type="submit"
             disabled={isLoading || !text.trim()}
-            className="p-3 bg-white text-black rounded-full disabled:opacity-50 transition-opacity hover:bg-white/90 min-w-[44px] min-h-[44px] flex items-center justify-center"
+            className="floating-keyboard-btn p-3 bg-purple-600 text-white rounded-full disabled:opacity-50 transition-opacity hover:bg-purple-700 min-w-[44px] min-h-[44px] flex items-center justify-center"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M22 2L11 13" />
@@ -64,7 +64,7 @@ function FloatingKeyboard() {
           <button
             type="button"
             onClick={() => setIsOpen(false)}
-            className="p-3 bg-white/10 hover:bg-white/20 rounded-full text-white/70 transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center"
+            className="floating-keyboard-btn p-3 bg-black/40 hover:bg-black/60 rounded-full text-white/70 transition-colors min-w-[44px] min-h-[44px] flex items-center justify-center border border-white/10"
           >
             <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M18 6L6 18" />
@@ -75,7 +75,7 @@ function FloatingKeyboard() {
       ) : (
         <button
           onClick={() => setIsOpen(true)}
-          className="p-4 bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/20 rounded-full text-white/70 hover:text-white transition-all shadow-lg hover:scale-105 min-w-[56px] min-h-[56px] flex items-center justify-center"
+          className="floating-keyboard-btn p-4 bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/20 rounded-full text-white/70 hover:text-white transition-all shadow-lg hover:scale-105 min-w-[56px] min-h-[56px] flex items-center justify-center"
           title="Type a message"
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
