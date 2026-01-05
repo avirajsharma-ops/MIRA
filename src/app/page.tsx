@@ -389,7 +389,7 @@ function MIRAApp() {
       {/* MIRA Getting Ready Loading Dialog */}
       {!isMicReady && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
-          <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-3xl px-8 py-6 shadow-2xl">
+          <div className="bg-black/60 backdrop-blur-xl border border-white/20 rounded-3xl px-8 py-6 shadow-2xl">
             <div className="flex flex-col items-center gap-4">
               <div className="relative">
                 <div className="w-12 h-12 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 animate-pulse" />
