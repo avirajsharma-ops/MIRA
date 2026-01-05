@@ -307,7 +307,7 @@ function FloatingKeyboard() {
 }
 
 function MIRAApp() {
-  const { isAuthenticated, isAuthLoading, user, logout, clearConversation, enableProactive, setEnableProactive, isRecording, isCameraActive, messages } = useMIRA();
+  const { isAuthenticated, isAuthLoading, user, logout, clearConversation, enableProactive, setEnableProactive, isRecording, isCameraActive, messages, isMicReady } = useMIRA();
   const [showPeopleModal, setShowPeopleModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showFaceRegistration, setShowFaceRegistration] = useState(false);
@@ -386,6 +386,21 @@ function MIRAApp() {
 
   return (
     <div className={`min-h-screen app-container ${isInIframe ? 'bg-transparent' : 'bg-black'}`}>
+      {/* MIRA Getting Ready Loading Dialog */}
+      {!isMicReady && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
+          <div className="bg-white/10 backdrop-blur-xl border border-white/20 rounded-3xl px-8 py-6 shadow-2xl">
+            <div className="flex flex-col items-center gap-4">
+              <div className="relative">
+                <div className="w-12 h-12 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 animate-pulse" />
+                <div className="absolute inset-0 w-12 h-12 rounded-full border-2 border-white/30 animate-spin" style={{ borderTopColor: 'transparent' }} />
+              </div>
+              <div className="text-white/90 font-medium text-lg">MIRA is getting ready...</div>
+              <div className="text-white/50 text-sm">Setting up voice connection</div>
+            </div>
+          </div>
+        </div>
+      )}
       {/* Top center toggle buttons */}
       <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-2">
         {/* UI Toggle Button */}

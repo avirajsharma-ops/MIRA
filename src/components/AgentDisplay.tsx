@@ -21,15 +21,14 @@ export default function AgentDisplay({ showControls = true }: AgentDisplayProps)
     stopCamera,
     startScreenCapture,
     stopScreenCapture,
-    isDebating,
   } = useMIRA();
 
-  // Determine display mode - combined by default, separate only during active debate
-  // Spheres stay merged normally, only split when MI and RA are actively debating
-  const mode = isDebating ? 'separate' : 'combined';
+  // Display mode - always combined now (unified agent, no more debate separation)
+  const mode = 'combined';
   
   // Get audio level for sphere animation
-  const effectiveAudioLevel = isRecording || isSpeaking ? audioLevel : 0;
+  // Pass audio when recording (user speaking) or AI is speaking
+  const effectiveAudioLevel = isRecording || isListening || isSpeaking ? audioLevel : 0;
 
   // AI is "thinking" when loading but not yet speaking
   const isThinking = isLoading && !isSpeaking;

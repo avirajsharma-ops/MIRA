@@ -312,7 +312,6 @@ export async function POST(request: NextRequest) {
     }
 
     let response;
-    let debateMessages: { agent: string; content: string; emotion?: string }[] = [];
 
     // Process file attachments (images, PDFs, text files)
     let attachmentContext = '';
@@ -372,42 +371,12 @@ export async function POST(request: NextRequest) {
         }))
       );
       
-      // Check if debate is needed (AI detected a dilemma/decision question)
-      if (unifiedResult.needsDebate && unifiedResult.debateTopic) {
-        console.log('[Chat] Debate triggered for:', unifiedResult.debateTopic);
-        
-        // Conduct debate between MI and RA
-        const debateResult = await agent.conductDebate(unifiedResult.debateTopic);
-        
-        console.log('[Chat] Debate completed:', {
-          messageCount: debateResult.messages.length,
-          consensus: debateResult.consensus,
-          finalAgent: debateResult.finalAgent,
-          finalResponsePreview: debateResult.finalResponse?.substring(0, 50)
-        });
-        
-        // Add debate messages (MI and RA discussing)
-        debateMessages = debateResult.messages.map(msg => ({
-          agent: msg.agent,
-          content: msg.content,
-          emotion: msg.emotion,
-        }));
-        
-        // Final response from the debate (synthesized answer)
-        response = {
-          agent: debateResult.finalAgent || 'mira',
-          content: debateResult.finalResponse || 'Based on our discussion, I think we can help you with this.',
-          emotion: 'thoughtful',
-          consensus: debateResult.consensus,
-        };
-      } else {
-        // Direct response - no debate needed
-        response = {
-          agent: unifiedResult.agent,
-          content: unifiedResult.content,
-          emotion: unifiedResult.emotion,
-        };
-      }
+      // Direct response from unified agent (no more debate system)
+      response = {
+        agent: unifiedResult.agent,
+        content: unifiedResult.content,
+        emotion: unifiedResult.emotion,
+      };
     }
 
     // Store user message
@@ -416,17 +385,6 @@ export async function POST(request: NextRequest) {
       content: message,
       timestamp: new Date(),
     });
-
-    // Store debate messages if any
-    for (const debateMsg of debateMessages) {
-      conversation.messages.push({
-        role: debateMsg.agent as 'mi' | 'ra',
-        content: debateMsg.content,
-        timestamp: new Date(),
-        isDebate: true,
-        emotion: debateMsg.emotion,
-      });
-    }
 
     // Store final response
     conversation.messages.push({
@@ -441,10 +399,6 @@ export async function POST(request: NextRequest) {
     conversation.metadata.userMessages += 1;
     if (response.agent === 'mi') conversation.metadata.miMessages += 1;
     if (response.agent === 'ra') conversation.metadata.raMessages += 1;
-    if (debateMessages.length > 0) conversation.metadata.debateCount += 1;
-    if ('consensus' in response && response.consensus) {
-      conversation.metadata.consensusReached += 1;
-    }
 
     await conversation.save();
 
@@ -461,8 +415,6 @@ export async function POST(request: NextRequest) {
         content: response.content,
         emotion: 'emotion' in response ? response.emotion : undefined,
       },
-      debate: debateMessages.length > 0 ? debateMessages : undefined,
-      consensus: 'consensus' in response ? response.consensus : undefined,
     });
   } catch (error) {
     console.error('Chat error:', error);

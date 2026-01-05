@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
 
-// OpenAI Whisper transcription
+// OpenAI Whisper transcription with improved settings
 async function transcribeAudio(audioBuffer: Buffer, language?: string): Promise<{ text: string; detectedLanguage: string }> {
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
   
@@ -15,9 +15,18 @@ async function transcribeAudio(audioBuffer: Buffer, language?: string): Promise<
   formData.append('file', audioBlob, 'audio.webm');
   formData.append('model', 'whisper-1');
   
+  // Add response format for faster processing
+  formData.append('response_format', 'json');
+  
+  // Add prompt to help with accuracy for common phrases
+  formData.append('prompt', 'MIRA, MI, RA, Meera, hey mira, hi mira');
+  
   if (language) {
     formData.append('language', language);
   }
+
+  // Add temperature for more deterministic results
+  formData.append('temperature', '0.0');
 
   const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {
     method: 'POST',
@@ -29,7 +38,7 @@ async function transcribeAudio(audioBuffer: Buffer, language?: string): Promise<
 
   if (!response.ok) {
     const error = await response.text();
-    console.error('Whisper API error:', error);
+    console.error('[Transcribe] Whisper API error:', error);
     throw new Error('Transcription failed');
   }
 
@@ -41,6 +50,8 @@ async function transcribeAudio(audioBuffer: Buffer, language?: string): Promise<
 }
 
 export async function POST(request: NextRequest) {
+  const startTime = Date.now();
+  
   try {
     const token = getTokenFromHeader(request.headers.get('authorization'));
     if (!token) {
@@ -66,15 +77,21 @@ export async function POST(request: NextRequest) {
     const arrayBuffer = await audioFile.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
 
+    // Log audio size for debugging
+    console.log(`[Transcribe] Processing audio: ${buffer.length} bytes`);
+
     // Pass language hint if provided, otherwise let Whisper auto-detect
     const result = await transcribeAudio(buffer, preferredLanguage || undefined);
+    
+    const duration = Date.now() - startTime;
+    console.log(`[Transcribe] Completed in ${duration}ms: "${result.text.substring(0, 50)}..."`);
 
     return NextResponse.json({
       text: result.text,
       detectedLanguage: result.detectedLanguage,
     });
   } catch (error) {
-    console.error('Transcription error:', error);
+    console.error('[Transcribe] Error:', error);
     return NextResponse.json(
       { error: 'Failed to transcribe audio' },
       { status: 500 }

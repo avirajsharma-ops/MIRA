@@ -63,8 +63,11 @@ const isMobileDevice = (): boolean => {
   return /Android|iPhone|iPad|iPod|MIRAAndroid/i.test(ua);
 };
 
-// Utterance completion delay (ms)
-const UTTERANCE_COMPLETE_MS = 600;
+// Utterance completion delay (ms) - balanced for natural speech
+const UTTERANCE_COMPLETE_MS = 800; // Increased for more natural pauses
+const SENTENCE_END_MS = 500; // Shorter for complete sentences
+const MOBILE_RESTART_DELAY = 50;
+const DESKTOP_RESTART_DELAY = 100;
 
 export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
   const {
@@ -94,16 +97,18 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
   const shouldBeListeningRef = useRef(false);
   const restartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
-  const maxReconnectAttempts = 10;
+  const maxReconnectAttempts = 15; // Increased from 10
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   const initRecognitionRef = useRef<(() => SpeechRecognition | null) | null>(null);
   
-  // Text accumulation
+  // Text accumulation with improved handling
   const finalTextRef = useRef<string>('');
   const utteranceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastResultTimeRef = useRef<number>(Date.now());
+  const speechStartTimeRef = useRef<number>(0);
 
   // Re-check support on mount
   useEffect(() => {
@@ -119,7 +124,7 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
     onInterimResultRef.current = onInterimResult;
   }, [onInterimResult]);
 
-  // Audio level monitoring
+  // Audio level monitoring with improved sensitivity
   const startAudioMonitoring = useCallback(async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -137,7 +142,7 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
       const source = audioContext.createMediaStreamSource(stream);
       const analyser = audioContext.createAnalyser();
       analyser.fftSize = 256;
-      analyser.smoothingTimeConstant = 0.3;
+      analyser.smoothingTimeConstant = 0.2; // Faster response
       source.connect(analyser);
       analyserRef.current = analyser;
 
@@ -153,7 +158,7 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
           sum += amplitude * amplitude;
         }
         const rms = Math.sqrt(sum / dataArray.length);
-        const level = Math.min(1, rms * 4);
+        const level = Math.min(1, rms * 5); // Amplified for better visualization
         setAudioLevel(level);
 
         if (isListeningRef.current) {
@@ -163,7 +168,7 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
 
       checkLevel();
     } catch (error) {
-      console.error('Error starting audio monitoring:', error);
+      console.error('[LiveSpeech] Error starting audio monitoring:', error);
     }
   }, []);
 
@@ -183,7 +188,7 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
     setAudioLevel(0);
   }, []);
 
-  // Helper to restart recognition
+  // Helper to restart recognition with faster recovery
   const restartRecognition = useCallback(() => {
     if (!isListeningRef.current) return;
     
@@ -195,6 +200,7 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
     if (recognitionRef.current) {
       try {
         recognitionRef.current.start();
+        console.log('[LiveSpeech] Recognition restarted');
         return;
       } catch {
         // Failed to start, will reinitialize below
@@ -206,6 +212,7 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
       if (recognitionRef.current) {
         try {
           recognitionRef.current.start();
+          console.log('[LiveSpeech] Recognition reinitialized and started');
         } catch {
           // Ignore - will retry on next attempt
         }
@@ -213,7 +220,7 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
     }
   }, []);
 
-  // Initialize speech recognition
+  // Initialize speech recognition with improved settings
   const initRecognition = useCallback(() => {
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (!SpeechRecognition) return null;
@@ -221,24 +228,38 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
     const recognition = new SpeechRecognition();
     recognition.continuous = continuous;
     recognition.interimResults = true;
-    recognition.maxAlternatives = 1;
+    recognition.maxAlternatives = 3; // Increased for better accuracy
     recognition.lang = language;
 
     recognition.onstart = () => {
       setIsListening(true);
       isListeningRef.current = true;
+      speechStartTimeRef.current = Date.now();
+      console.log('[LiveSpeech] Recognition started');
     };
 
     recognition.onresult = (event: SpeechRecognitionEvent) => {
       let interim = '';
       let final = '';
+      lastResultTimeRef.current = Date.now();
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
-        const transcript = event.results[i][0].transcript;
+        // Get the best transcript (highest confidence)
+        let bestTranscript = event.results[i][0].transcript;
+        let bestConfidence = event.results[i][0].confidence;
+        
+        // Check alternatives for better matches
+        for (let j = 1; j < event.results[i].length; j++) {
+          if (event.results[i][j].confidence > bestConfidence) {
+            bestTranscript = event.results[i][j].transcript;
+            bestConfidence = event.results[i][j].confidence;
+          }
+        }
+        
         if (event.results[i].isFinal) {
-          final += transcript;
+          final += bestTranscript;
         } else {
-          interim += transcript;
+          interim += bestTranscript;
         }
       }
 
@@ -265,12 +286,14 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
         // Check if sentence seems complete
         const text = finalTextRef.current.trim();
         const endsWithPunctuation = /[.!?]$/.test(text);
+        const hasQuestion = /\?/.test(text);
         
-        // Shorter wait for complete sentences
-        const waitTime = endsWithPunctuation ? 400 : UTTERANCE_COMPLETE_MS;
+        // Shorter wait for complete sentences or questions
+        const waitTime = endsWithPunctuation || hasQuestion ? SENTENCE_END_MS : UTTERANCE_COMPLETE_MS;
         
         utteranceTimeoutRef.current = setTimeout(() => {
           if (finalTextRef.current.trim() && onTranscriptionRef.current) {
+            console.log('[LiveSpeech] Final transcription:', finalTextRef.current.trim());
             onTranscriptionRef.current(finalTextRef.current.trim(), true);
             finalTextRef.current = '';
             setInterimTranscript('');
@@ -282,10 +305,10 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
     recognition.onerror = (event) => {
       const error = event.error;
       
-      // "no-speech" is common - just means silence
+      // "no-speech" is common - just means silence, restart quickly
       if (error === 'no-speech') {
         if (shouldBeListeningRef.current) {
-          const delay = isMobile ? 10 : 50;
+          const delay = isMobile ? MOBILE_RESTART_DELAY : DESKTOP_RESTART_DELAY;
           restartTimeoutRef.current = setTimeout(() => {
             restartRecognition();
           }, delay);
@@ -303,23 +326,30 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
         return;
       }
 
-      console.warn('Speech recognition error:', error);
+      console.warn('[LiveSpeech] Recognition error:', error);
 
-      // Restart on recoverable errors
+      // Restart on recoverable errors with faster recovery
       if (shouldBeListeningRef.current && ['network', 'audio-capture', 'not-allowed', 'service-not-allowed'].includes(error)) {
         reconnectAttemptsRef.current++;
         
         if (reconnectAttemptsRef.current <= maxReconnectAttempts) {
-          const baseDelay = isMobile ? 200 : 500;
-          const delay = Math.min(baseDelay * Math.pow(1.5, reconnectAttemptsRef.current - 1), isMobile ? 5000 : 30000);
-          console.log(`[Speech] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current})`);
+          // Faster exponential backoff
+          const baseDelay = isMobile ? 100 : 300;
+          const delay = Math.min(baseDelay * Math.pow(1.3, reconnectAttemptsRef.current - 1), isMobile ? 3000 : 10000);
+          console.log(`[LiveSpeech] Reconnecting in ${delay}ms (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`);
           
           restartTimeoutRef.current = setTimeout(() => {
             restartRecognition();
           }, delay);
         } else {
-          console.error('[Speech] Max reconnect attempts reached');
+          console.error('[LiveSpeech] Max reconnect attempts reached, resetting...');
           reconnectAttemptsRef.current = 0;
+          // Try one more time after a longer delay
+          restartTimeoutRef.current = setTimeout(() => {
+            if (shouldBeListeningRef.current) {
+              restartRecognition();
+            }
+          }, 5000);
         }
       }
     };
@@ -327,7 +357,7 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
     recognition.onend = () => {
       // Auto-restart if still supposed to be listening
       if (shouldBeListeningRef.current) {
-        const delay = isMobile ? 10 : 50;
+        const delay = isMobile ? MOBILE_RESTART_DELAY : DESKTOP_RESTART_DELAY;
         restartTimeoutRef.current = setTimeout(() => {
           restartRecognition();
         }, delay);
@@ -353,10 +383,10 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
       return;
     }
 
-    console.log('[Speech] Starting native STT...', { isMobile });
+    console.log('[LiveSpeech] Starting native STT...', { isMobile });
 
     if (!isSupported) {
-      console.warn('Web Speech API not supported in this browser.');
+      console.warn('[LiveSpeech] Web Speech API not supported in this browser.');
       return;
     }
 
@@ -370,18 +400,18 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
         isListeningRef.current = true;
         recognitionRef.current.start();
         startAudioMonitoring();
-        console.log('[Speech] Native STT started');
+        console.log('[LiveSpeech] Native STT started successfully');
       } catch (error) {
-        console.error('Error starting speech recognition:', error);
+        console.error('[LiveSpeech] Error starting speech recognition:', error);
         isListeningRef.current = false;
         
-        // On mobile, retry after a delay
+        // On mobile, retry after a shorter delay
         if (isMobile && shouldBeListeningRef.current) {
           setTimeout(() => {
             if (shouldBeListeningRef.current) {
               startListening();
             }
-          }, 1000);
+          }, 500);
         }
       }
     }
@@ -389,7 +419,7 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
 
   // Stop listening
   const stopListening = useCallback(() => {
-    console.log('[Speech] Stopping...');
+    console.log('[LiveSpeech] Stopping...');
     shouldBeListeningRef.current = false;
     isListeningRef.current = false;
     reconnectAttemptsRef.current = 0;
@@ -402,6 +432,7 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
       utteranceTimeoutRef.current = null;
     }
     if (finalTextRef.current.trim() && onTranscriptionRef.current) {
+      console.log('[LiveSpeech] Sending final text on stop:', finalTextRef.current.trim());
       onTranscriptionRef.current(finalTextRef.current.trim(), true);
     }
     finalTextRef.current = '';
@@ -429,7 +460,7 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
         if (shouldBeListeningRef.current && !isListeningRef.current) {
-          console.log('[Speech] App visible, restarting...');
+          console.log('[LiveSpeech] App visible, restarting...');
           setTimeout(() => {
             if (shouldBeListeningRef.current && !isListeningRef.current) {
               if (recognitionRef.current) {
@@ -437,7 +468,7 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
               }
               startListening();
             }
-          }, 300);
+          }, 200); // Faster recovery
         }
       }
     };
@@ -448,7 +479,7 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
     };
   }, [startListening]);
 
-  // Handle window focus
+  // Handle window focus with faster recovery
   useEffect(() => {
     if (typeof window === 'undefined') return;
 
@@ -456,9 +487,10 @@ export function useLiveSpeech(options: UseLiveSpeechOptions = {}) {
       if (shouldBeListeningRef.current && !isListeningRef.current) {
         setTimeout(() => {
           if (shouldBeListeningRef.current && !isListeningRef.current) {
+            console.log('[LiveSpeech] Window focus, restarting...');
             startListening();
           }
-        }, 200);
+        }, 100); // Faster recovery
       }
     };
 

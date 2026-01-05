@@ -120,10 +120,12 @@ export default function FullScreenSpheres({
     if (dimensions.width === 0) return;
 
     const particles: Particle[] = [];
-    const particleCount = 5000; // More particles for larger screen
+    // Reduced particle count by 30% for better performance on low-end devices
+    const particleCount = 3500;
     const radius = getSphereRadius();
     const centers = getSphereCenters();
-    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1;
+    // Use lower DPR for better performance (cap at 1.5)
+    const dpr = typeof window !== 'undefined' ? Math.min(window.devicePixelRatio || 1, 1.5) : 1;
 
     for (let i = 0; i < particleCount; i++) {
       // Fibonacci sphere distribution
@@ -160,8 +162,9 @@ export default function FullScreenSpheres({
         vx: 0,
         vy: 0,
         vz: 0,
-        size: Math.random() * 2 + 1,
-        alpha: Math.random() * 0.6 + 0.4,
+        // Slightly smaller particles for performance
+        size: Math.random() * 1.5 + 0.8,
+        alpha: Math.random() * 0.5 + 0.3,
         colorType,
         sphereBaseX: sphereX,
         sphereBaseY: sphereY,
@@ -188,7 +191,8 @@ export default function FullScreenSpheres({
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
 
-    const dpr = window.devicePixelRatio || 1;
+    // Cap DPR for better performance on high-density displays
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     const width = dimensions.width * dpr;
     const height = dimensions.height * dpr;
     const cx = width / 2;
@@ -199,8 +203,10 @@ export default function FullScreenSpheres({
 
     const time = Date.now() * 0.001;
     const currentAudioLevel = audioLevelRef.current;
-    // ONLY react to audio when AI is speaking, not user voice - use refs for continuous animation
-    const aiSpeaking = isSpeakingRef.current;
+    // Dynamically detect if AI is speaking based on audio level (not state)
+    // This fixes the issue where state changes before audio finishes playing
+    const AUDIO_THRESHOLD = 0.05;
+    const aiSpeaking = currentAudioLevel > AUDIO_THRESHOLD;
     const aiThinking = isThinkingRef.current;
     const currentMode = modeRef.current;
     const centers = getSphereCenters();
@@ -448,7 +454,8 @@ export default function FullScreenSpheres({
     const canvas = canvasRef.current;
     if (!canvas || dimensions.width === 0) return;
 
-    const dpr = window.devicePixelRatio || 1;
+    // Cap DPR for better performance
+    const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
     canvas.width = dimensions.width * dpr;
     canvas.height = dimensions.height * dpr;
 
@@ -473,7 +480,8 @@ export default function FullScreenSpheres({
       // Update canvas size without reinitializing particles - they will adapt via physics
       const canvas = canvasRef.current;
       if (canvas) {
-        const dpr = window.devicePixelRatio || 1;
+        // Cap DPR for better performance
+        const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
         canvas.width = dimensions.width * dpr;
         canvas.height = dimensions.height * dpr;
       }

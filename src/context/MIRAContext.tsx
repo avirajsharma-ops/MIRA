@@ -1,8 +1,8 @@
 'use client';
 
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
-import { useMediaCapture, useAudioPlayer } from '@/hooks';
-import { useLiveSpeech } from '@/hooks/useLiveSpeech';
+import { useMediaCapture } from '@/hooks';
+import { useRealtime } from '@/hooks/useRealtime';
 import { isMobileDevice } from '@/lib/utils/deviceDetection';
 // MediaPipe gesture detection disabled due to WASM compatibility issues
 // import { useGestureDetection } from '@/lib/gesture/useGestureDetection';
@@ -60,7 +60,7 @@ const MIRA_KEYWORDS = [
   'maya', 'maira', 'mara', 'moira', 'mia',
   'miri', 'mire', 'mere', 'miro',
   'meara', 'miara', 'mirra', 'mierra',
-  // Hindi transcription variations
+  // Hindi transcription variations (romanized)
   'meeraa', 'meraa', 'meerha', 'mirha',
   // With "hey/hi" prefix variations  
   'hey meera', 'hey mera', 'hey myra', 'hi meera', 'hi mera',
@@ -69,6 +69,11 @@ const MIRA_KEYWORDS = [
   'me', 'mee', 'my',
   // Common speech-to-text errors for "RA"  
   'raa', 'rah', 'raw',
+  // HINDI DEVANAGARI WAKE WORDS (for Hindi transcriptions)
+  'मीरा', 'मिरा', 'मेरा', 'मीर', 'मिर',
+  'मी', 'रा', 'मीं', 'री',
+  'हे मीरा', 'हाय मीरा', 'अरे मीरा', 'ओके मीरा',
+  'हे मी', 'हे रा', 'अरे मी', 'अरे रा',
 ];
 
 // Fuzzy matching: Calculate simple edit distance (Levenshtein)
@@ -235,15 +240,23 @@ function isDirectedAtMira(text: string): boolean {
   }
   
   const lower = text.toLowerCase().trim();
+  const originalText = text.trim(); // Keep original for Hindi matching
   const words = lower.split(/\s+/);
   
-  // 1. Exact keyword match
+  // 1. Exact keyword match (handles both Roman and Devanagari)
   const hasExactMatch = MIRA_KEYWORDS.some(keyword => {
-    if (lower.startsWith(keyword + ' ') || lower.startsWith(keyword + ',')) return true;
-    if (/^(hey|hi|hello|ok|okay)\s+/.test(lower) && lower.includes(keyword)) return true;
-    if (lower.endsWith(keyword) || lower.endsWith(keyword + '?') || lower.endsWith(keyword + '!')) return true;
-    const keywordRegex = new RegExp(`\\b${keyword}\\b`, 'i');
-    return keywordRegex.test(lower);
+    // For Roman keywords, use lowercase comparison
+    if (/[a-z]/.test(keyword)) {
+      if (lower.startsWith(keyword + ' ') || lower.startsWith(keyword + ',')) return true;
+      if (/^(hey|hi|hello|ok|okay)\s+/.test(lower) && lower.includes(keyword)) return true;
+      if (lower.endsWith(keyword) || lower.endsWith(keyword + '?') || lower.endsWith(keyword + '!')) return true;
+      const keywordRegex = new RegExp(`\\b${keyword}\\b`, 'i');
+      return keywordRegex.test(lower);
+    } else {
+      // For Devanagari keywords, use original text (case doesn't apply)
+      if (originalText.includes(keyword)) return true;
+    }
+    return false;
   });
   
   if (hasExactMatch) return true;
@@ -307,7 +320,7 @@ interface MIRAContextType {
   stopRecording: () => void;
   isSpeaking: boolean;
   speakingAgent: AgentType | null;
-  isDebating: boolean; // True when MI and RA are having a debate
+  isMicReady: boolean; // True when WebRTC is connected and mic is available
 
   // Media
   isCameraActive: boolean;
@@ -354,7 +367,6 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  const [isDebating, setIsDebating] = useState(false);
   
   // Ref for instant access to loading state (avoids stale closures)
   const isProcessingMessageRef = useRef(false);
@@ -449,34 +461,145 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     return ttsContent;
   }, []);
 
-  // Ref for interruption handler (defined later but needed by useAudioPlayer)
-  const handleInterruptionRef = useRef<((interruptionText: string, lastSpokenText: string) => void) | null>(null);
+  // isThinking state for AI processing indicator
+  const [isThinking, setIsThinking] = useState(false);
+  
+  // Track current speaking agent
+  const [speakingAgent, setSpeakingAgent] = useState<AgentType | null>(null);
+  
+  // Track last AI response text
+  const lastResponseTextRef = useRef<string>('');
+  
+  // TTS audio level for sphere reactivity (from WebRTC output)
+  const [ttsAudioLevel, setTtsAudioLevel] = useState(0);
 
-  // Audio player with TTS audio level for voice distortion
+  // ========== WebRTC Realtime API (Hybrid Mode) ==========
+  // Handles BOTH speech-to-text AND text-to-speech via WebRTC
+  // In hybrid mode: transcribes user speech, then we call /api/chat, then injectResponse to speak
+  
+  const handleRealtimeTranscript = useCallback((text: string, isFinal: boolean) => {
+    if (!isFinal || !text.trim()) return;
+    
+    console.log('[Realtime] User transcript:', text);
+    
+    const directed = isDirectedAtMira(text);
+    
+    // Always save the transcript in background
+    saveTranscriptEntry(text, 'user', user?.name || 'User', directed);
+    
+    // Only send to MIRA if addressed
+    // Note: WebRTC handles echo cancellation and interruptions automatically
+    if (directed && sendMessageRef.current) {
+      console.log('Message directed at MIRA:', text);
+      sendMessageRef.current(text);
+    } else {
+      console.log('Background transcript (not for MIRA):', text);
+    }
+  }, []);
+  
+  const handleRealtimeResponse = useCallback((text: string) => {
+    console.log('[Realtime] AI response:', text);
+    lastResponseTextRef.current = text;
+  }, []);
+  
+  const handleRealtimeError = useCallback((error: string) => {
+    console.error('[Realtime] Error:', error);
+  }, []);
+  
+  const handleRealtimeStateChange = useCallback((state: 'disconnected' | 'connecting' | 'connected' | 'speaking' | 'listening') => {
+    console.log('[Realtime] State change:', state);
+  }, []);
+  
+  // Initialize Realtime hook in HYBRID mode
   const {
-    isPlaying: isSpeaking,
-    isThinking,
-    currentAgent: speakingAgent,
-    ttsAudioLevel,
-    playAudio,
-    playAudioAndWait,
-    stopAudio,
-    playThinkingSound,
-    stopThinkingSound,
-    interruptAudio,
-  } = useAudioPlayer({
-    onSpeakingStart: (_agent, text) => {
-      // Track what AI is saying for echo detection
-      lastAISpokenRef.current = text;
-    },
-    onSpeakingEnd: () => {
-      // Clear echo tracking when AI stops speaking
-      lastAISpokenRef.current = '';
-    },
-    onInterrupted: (interruptionText, lastSpokenText) => {
-      handleInterruptionRef.current?.(interruptionText, lastSpokenText);
-    },
+    state: realtimeState,
+    connect: connectRealtime,
+    disconnect: disconnectRealtime,
+    injectResponse: realtimeInjectResponse,
+    cancelResponse: realtimeCancelResponse,
+    updateInstructions: realtimeUpdateInstructions,
+    isConnected: realtimeConnected,
+    isSpeaking,
+    isListening,
+    transcript: realtimeTranscript,
+    inputAudioLevel: micAudioLevel,
+    outputAudioLevel: realtimeOutputLevel,
+  } = useRealtime({
+    hybridMode: true, // CRITICAL: Don't auto-respond, we handle /api/chat
+    voice: 'mi', // Default voice
+    onTranscript: handleRealtimeTranscript,
+    onAudioResponse: handleRealtimeResponse,
+    onError: handleRealtimeError,
+    onStateChange: handleRealtimeStateChange,
   });
+  
+  // Update TTS audio level from WebRTC output
+  useEffect(() => {
+    setTtsAudioLevel(realtimeOutputLevel);
+  }, [realtimeOutputLevel]);
+  
+  // Helper function to speak via WebRTC (replaces playAudio)
+  const playAudio = useCallback(async (text: string, agent: AgentType) => {
+    // Auto-connect if not connected
+    if (!realtimeConnected) {
+      console.log('[Realtime] Not connected, connecting first...');
+      await connectRealtime();
+      // Wait a bit for connection to establish
+      await new Promise(resolve => setTimeout(resolve, 1000));
+    }
+    
+    console.log('[Realtime] Speaking as', agent, ':', text.substring(0, 50) + '...');
+    setSpeakingAgent(agent);
+    lastResponseTextRef.current = text;
+    
+    // Inject the response for WebRTC to speak
+    realtimeInjectResponse(text, agent);
+  }, [realtimeConnected, connectRealtime, realtimeInjectResponse]);
+  
+  // playAudioAndWait - speaks and waits for completion
+  const playAudioAndWait = useCallback(async (text: string, agent: AgentType): Promise<void> => {
+    return new Promise(async (resolve) => {
+      // Auto-connect if not connected
+      if (!realtimeConnected) {
+        console.log('[Realtime] Not connected, connecting first...');
+        await connectRealtime();
+        // Wait a bit for connection to establish
+        await new Promise(r => setTimeout(r, 1000));
+      }
+      
+      console.log('[Realtime] Speaking (wait) as', agent, ':', text.substring(0, 50) + '...');
+      setSpeakingAgent(agent);
+      lastResponseTextRef.current = text;
+      
+      // Inject the response
+      realtimeInjectResponse(text, agent);
+      
+      // Estimate speech duration based on text length (~150 words per minute = 400ms per word)
+      const wordCount = text.split(/\s+/).length;
+      const estimatedDuration = Math.max(2000, wordCount * 400); // Minimum 2 seconds
+      
+      // Wait for estimated duration
+      setTimeout(() => {
+        resolve();
+      }, estimatedDuration);
+    });
+  }, [realtimeConnected, connectRealtime, realtimeInjectResponse]);
+  
+  // Stop audio - cancel WebRTC response
+  const stopAudio = useCallback(() => {
+    realtimeCancelResponse();
+    setSpeakingAgent(null);
+    lastResponseTextRef.current = '';
+  }, [realtimeCancelResponse]);
+  
+  // Thinking sound removed - was causing blocking issues
+  const playThinkingSound = useCallback(() => {
+    // No-op - thinking sound removed
+  }, []);
+  
+  const stopThinkingSound = useCallback(() => {
+    // No-op - thinking sound removed
+  }, []);
 
   // Keep refs in sync with state values (for face detection callback)
   useEffect(() => {
@@ -583,125 +706,29 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     }
   }, [gestureEnabled, isSpeaking, isLoading, currentPerson, saveTranscriptEntry, playAudio, transformForTTS]);
 
-  // Track interrupted context for continuation
-  const interruptedContextRef = useRef<{ lastAIText: string; userInterruption: string } | null>(null);
+  // Note: Echo cancellation and interruption handling are managed by WebRTC automatically
 
-  // Ref to track what AI is currently saying (for echo detection)
-  const lastAISpokenRef = useRef<string>('');
-  
-  // Check if transcription is echo from AI speakers (similarity check)
-  const isEchoFromSpeakers = useCallback((text: string): boolean => {
-    const spoken = lastAISpokenRef.current.toLowerCase();
-    if (!spoken || spoken.length < 10) return false;
-    
-    const transcribed = text.toLowerCase().trim();
-    if (transcribed.length < 5) return true; // Very short = likely noise/echo
-    
-    // Check if the transcription is a substring of what AI is saying
-    if (spoken.includes(transcribed)) {
-      console.log('[Echo] Detected echo - transcription found in AI speech');
-      return true;
-    }
-    
-    // Check word overlap - if >60% of words match AI speech, it's echo
-    const transcribedWords = transcribed.split(/\s+/).filter(w => w.length > 2);
-    const spokenWords = spoken.split(/\s+/).filter(w => w.length > 2);
-    
-    if (transcribedWords.length < 2) return false; // Too short to analyze
-    
-    let matchCount = 0;
-    for (const word of transcribedWords) {
-      if (spokenWords.some(sw => sw.includes(word) || word.includes(sw))) {
-        matchCount++;
-      }
-    }
-    
-    const overlapRatio = matchCount / transcribedWords.length;
-    if (overlapRatio > 0.5) {
-      console.log('[Echo] Detected echo - word overlap:', (overlapRatio * 100).toFixed(0) + '%');
-      return true;
-    }
-    
-    return false;
-  }, []);
-
-  // Live Speech Recognition - always transcribes, only responds when addressed
-  const handleTranscription = useCallback(async (text: string, isFinal: boolean) => {
-    if (!isFinal || !text.trim()) return;
-    
-    const directed = isDirectedAtMira(text);
-    
-    // Echo suppression - ignore if AI is speaking and transcription matches AI speech
-    if (isSpeakingRef.current && isEchoFromSpeakers(text)) {
-      console.log('[Echo] Suppressing echo from speakers:', text.substring(0, 50) + '...');
-      return; // Ignore echo
-    }
-    
-    // Always save the transcript in background (if not echo)
-    await saveTranscriptEntry(text, 'user', user?.name || 'User', directed);
-    
-    // Check if user is interrupting while AI is speaking
-    if (isSpeakingRef.current && directed) {
-      console.log('[Interrupt] User interrupted AI with:', text);
-      // Stop AI speech and capture interruption context
-      interruptAudio(text);
-      
-      // Store the interruption for context continuation
-      interruptedContextRef.current = {
-        lastAIText: '', // Will be set by onInterrupted callback
-        userInterruption: text,
-      };
-      return; // Don't process as normal message - will be handled by interruption flow
-    }
-    
-    // Only send to MIRA if addressed
-    if (directed && sendMessageRef.current) {
-      console.log('Message directed at MIRA:', text);
-      await sendMessageRef.current(text);
-    } else {
-      console.log('Background transcript (not for MIRA):', text);
-    }
-  }, [saveTranscriptEntry, user?.name, interruptAudio, isEchoFromSpeakers]);
-
-  // Handle interruption callback - continue with added context
-  const handleInterruption = useCallback(async (interruptionText: string, lastSpokenText: string) => {
-    console.log('[Interrupt] Processing interruption:', { interruptionText, lastSpokenText: lastSpokenText.substring(0, 50) + '...' });
-    
-    // Build continuation message with context
-    const continuationMessage = `[INTERRUPTION CONTEXT: I was saying "${lastSpokenText.substring(0, 200)}..." but the user interrupted with: "${interruptionText}". Please acknowledge their input and continue appropriately.]`;
-    
-    if (sendMessageRef.current) {
-      // Small delay to ensure clean state
-      setTimeout(() => {
-        sendMessageRef.current?.(continuationMessage);
-      }, 300);
-    }
-  }, []);
-
-  // Keep interruption handler ref updated
-  useEffect(() => {
-    handleInterruptionRef.current = handleInterruption;
-  }, [handleInterruption]);
-
-  const {
-    isListening,
-    isSupported: isSpeechSupported,
-    interimTranscript,
-    audioLevel: micAudioLevel,
-    startListening: startVoiceRecording,
-    stopListening: stopVoiceRecording,
-  } = useLiveSpeech({ 
-    onTranscription: handleTranscription,
-    continuous: true,
-    language: 'en-US', // Will auto-detect other languages too
-  });
-
-  // Use TTS audio level when AI is speaking, mic audio level otherwise
-  const audioLevel = isSpeaking ? ttsAudioLevel : micAudioLevel;
+  // Audio level for sphere animation - ONLY use device output audio (ttsAudioLevel)
+  // This prevents spheres from reacting to external sounds picked up by mic
+  // Spheres should only react when MIRA is speaking, not to ambient noise
+  const audioLevel = ttsAudioLevel;
 
   // Alias for backward compatibility
   const isRecording = isListening;
-  const isProcessing = false; // No processing delay with live STT
+  const isProcessing = false; // No processing delay with WebRTC STT
+  
+  // Voice recording controls - connect/disconnect WebRTC
+  const startVoiceRecording = useCallback(() => {
+    if (!realtimeConnected) {
+      console.log('[Voice] Connecting WebRTC for voice...');
+      connectRealtime();
+    }
+  }, [realtimeConnected, connectRealtime]);
+  
+  const stopVoiceRecording = useCallback(() => {
+    // Don't actually disconnect - just log
+    console.log('[Voice] stopVoiceRecording called (WebRTC stays connected)');
+  }, []);
 
   // MediaPipe gesture detection disabled - using Gemini Vision API instead
   // The hook causes WASM loading errors in Next.js
@@ -874,10 +901,8 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
           if (!mediaAutoStartedRef.current) {
             mediaAutoStartedRef.current = true;
             setTimeout(() => {
-              // Only start voice if speech recognition is supported
-              if (isSpeechSupported) {
-                startVoiceRecording();
-              }
+              // Start WebRTC voice connection
+              startVoiceRecording();
             }, 500);
           }
         } else {
@@ -962,8 +987,8 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     isProcessingMessageRef.current = true;
     setIsLoading(true);
 
-    // Check if this is a system message or interruption context (don't show to user or play thinking)
-    const isSystemPrompt = text.startsWith('[SYSTEM:') || text.startsWith('[INTERRUPTION CONTEXT:');
+    // Check if this is a system message (don't show to user or play thinking)
+    const isSystemPrompt = text.startsWith('[SYSTEM:');
     
     // Play thinking sound while processing (not for system messages)
     if (!isSystemPrompt) {
@@ -1023,53 +1048,10 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         stopThinkingSound();
         
         console.log('[SendMessage] Response data:', { 
-          hasDebate: !!data.debate?.length, 
-          debateCount: data.debate?.length || 0,
           agent: data.response?.agent,
-          consensus: data.consensus 
         });
         
         setConversationId(data.conversationId);
-
-        // Add and play debate messages if any - user hears the whole discussion
-        if (data.debate && data.debate.length > 0) {
-          // Spheres separate during debate
-          setIsDebating(true);
-          console.log('[SendMessage] Starting debate playback, messages:', data.debate.length);
-          
-          // Play each debate message with audio so user hears the discussion
-          // Use playAudioAndWait to ensure each message completes before the next
-          for (let index = 0; index < data.debate.length; index++) {
-            const msg = data.debate[index] as { agent: string; content: string; emotion?: string };
-            
-            console.log(`[SendMessage] Debate message ${index + 1}/${data.debate.length}:`, msg.agent);
-            
-            // Add message to UI
-            const debateMessage: Message = {
-              id: `${Date.now()}-debate-${index}`,
-              role: msg.agent as Message['role'],
-              content: msg.content,
-              timestamp: new Date(),
-              isDebate: true,
-              emotion: msg.emotion,
-            };
-            setMessages(prev => [...prev, debateMessage]);
-            
-            // Save debate message to transcript - use English names for UI display
-            const agentNameMap: Record<string, string> = { 'mi': 'MI', 'ra': 'RA', 'mira': 'MIRA' };
-            saveTranscriptEntry(msg.content, 'mira', agentNameMap[msg.agent] || msg.agent.toUpperCase(), true);
-            
-            // Play audio for this debate message and WAIT for it to complete
-            // This ensures spheres stay separated throughout the entire debate
-            // Transform code/outputs for TTS so AI summarizes instead of reading code
-            await playAudioAndWait(transformForTTS(msg.content), msg.agent as AgentType);
-            
-            // Small pause between debate turns for natural flow
-            await new Promise(resolve => setTimeout(resolve, 300));
-          }
-          
-          console.log('[SendMessage] Debate playback complete, delivering final response');
-        }
 
         // Add final response
         const responseMessage: Message = {
@@ -1078,7 +1060,6 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
           content: data.response.content,
           timestamp: new Date(),
           emotion: data.response.emotion,
-          isConsensus: data.consensus, // Mark if this is a consensus response
         };
         setMessages(prev => [...prev, responseMessage]);
         
@@ -1113,14 +1094,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
           setMiraAskedFollowUp(false);
         }
 
-        // Spheres merge back ONLY when final agreed-upon response starts playing
-        // This happens right before the final audio plays, so the merge animation
-        // accompanies the unified MIRA response
-        if (data.debate && data.debate.length > 0) {
-          setIsDebating(false);
-        }
-
-        // Play final response audio - when consensus, this is MIRA speaking (spheres merge)
+        // Play final response audio
         // Transform code/outputs for TTS so AI summarizes instead of reading code verbatim
         console.log('[SendMessage] Playing final response from:', data.response.agent);
         await playAudio(transformForTTS(data.response.content), data.response.agent as AgentType);
@@ -1157,38 +1131,21 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     setConversationId(null);
   }, []);
 
-  // Recording controls (pause when AI is speaking)
+  // Recording controls (WebRTC handles VAD automatically)
   const startRecording = useCallback(() => {
-    if (!isSpeaking && !isLoading) {
-      startVoiceRecording();
+    if (!realtimeConnected && !isLoading) {
+      connectRealtime();
     }
-  }, [isSpeaking, isLoading, startVoiceRecording]);
+  }, [realtimeConnected, isLoading, connectRealtime]);
 
   const stopRecording = useCallback(() => {
-    stopVoiceRecording();
-  }, [stopVoiceRecording]);
+    // With WebRTC, we don't stop - VAD handles listening automatically
+    // User can explicitly disconnect if needed
+    console.log('[Recording] stopRecording called (WebRTC VAD handles automatically)');
+  }, []);
 
-  // Auto-pause listening when AI is speaking to prevent feedback loop
-  useEffect(() => {
-    if (isSpeaking && isListening) {
-      console.log('AI speaking, pausing voice listener');
-      stopVoiceRecording();
-    }
-  }, [isSpeaking, isListening, stopVoiceRecording]);
-
-  // Auto-resume listening after AI stops speaking (with cooldown)
-  useEffect(() => {
-    if (!isSpeaking && !isListening && isAuthenticated && mediaAutoStartedRef.current && !isLoading) {
-      const cooldownTimer = setTimeout(() => {
-        if (!isSpeaking && !isLoading) {
-          console.log('AI done speaking, resuming voice listener');
-          startVoiceRecording();
-        }
-      }, 1000); // 1 second cooldown to prevent echo pickup
-      
-      return () => clearTimeout(cooldownTimer);
-    }
-  }, [isSpeaking, isListening, isAuthenticated, isLoading, startVoiceRecording]);
+  // WebRTC handles echo cancellation and VAD automatically, no need for manual pause/resume
+  // The auto-pause/resume logic is removed since WebRTC manages this internally
 
   // Proactive behavior - AI initiates conversation
   useEffect(() => {
@@ -1256,9 +1213,11 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     audioLevel,
     startRecording,
     stopRecording,
-      isSpeaking,
-      speakingAgent,
-      isDebating,    // Media
+    isSpeaking,
+    speakingAgent,
+    isMicReady: realtimeConnected,
+
+    // Media
     isCameraActive,
     isScreenActive,
     cameraStream,
