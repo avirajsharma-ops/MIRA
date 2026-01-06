@@ -103,71 +103,51 @@ You seamlessly blend two distinct personalities:
 - If given visual context (camera/screen), incorporate it naturally
 - Be aware of the current time/date for relevant responses`;
 
-    // Create ephemeral client secret from OpenAI (new endpoint)
-    const response = await fetch('https://api.openai.com/v1/realtime/client_secrets', {
+    // Create ephemeral session token from OpenAI Realtime API
+    const response = await fetch('https://api.openai.com/v1/realtime/sessions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        expires_after: {
-          anchor: 'created_at',
-          seconds: 600, // 10 minute expiration
+        model: 'gpt-4o-realtime-preview-2024-12-17',
+        voice: selectedVoice,
+        // Minimal instructions for TTS - the real AI logic happens via /api/chat
+        instructions: 'You are a voice interface. When given text to speak, speak it naturally with appropriate emotion. Match the language of the text (English or Hindi).',
+        input_audio_format: 'pcm16',
+        output_audio_format: 'pcm16',
+        input_audio_transcription: {
+          model: 'whisper-1',
         },
-        session: {
-          type: 'realtime',
-          model: 'gpt-4o-realtime-preview-2024-12-17',
-          // Minimal instructions for TTS - the real AI logic happens via /api/chat
-          instructions: 'You are a voice interface. When given text to speak, speak it naturally with appropriate emotion. Match the language of the text.',
-          audio: {
-            input: {
-              format: {
-                type: 'audio/pcm',
-                rate: 24000,
-              },
-              transcription: {
-                model: 'gpt-4o-transcribe',
-                language: 'en', // Force English transcription - prevents Urdu/Arabic script errors
-              },
-              turn_detection: {
-                type: 'server_vad',
-                threshold: 0.5,
-                prefix_padding_ms: 300,
-                silence_duration_ms: 500,
-                create_response: false, // CRITICAL: Don't auto-respond, we use /api/chat
-              },
-            },
-            output: {
-              format: {
-                type: 'audio/pcm',
-                rate: 24000,
-              },
-              voice: selectedVoice,
-            },
-          },
+        turn_detection: {
+          type: 'server_vad',
+          threshold: 0.5,
+          prefix_padding_ms: 300,
+          silence_duration_ms: 600, // Slightly longer for natural pauses
+          create_response: false, // CRITICAL: Don't auto-respond, we use /api/chat
         },
       }),
     });
 
     if (!response.ok) {
       const error = await response.text();
-      console.error('[Realtime Session] Failed to create client secret:', error);
+      console.error('[Realtime Session] Failed to create session:', error);
       return NextResponse.json(
-        { error: 'Failed to create realtime session' },
+        { error: 'Failed to create realtime session', details: error },
         { status: response.status }
       );
     }
 
     const sessionData = await response.json();
     
-    console.log('[Realtime Session] Created client secret for user:', payload.userId);
+    console.log('[Realtime Session] Created session for user:', payload.userId);
 
-    // Response format: { value: "ek_...", expires_at: ..., session: {...} }
+    // Response format: { id: "sess_...", client_secret: { value: "...", expires_at: ... }, ... }
     return NextResponse.json({
-      client_secret: sessionData.value, // Map 'value' to 'client_secret' for backward compatibility
-      session_id: sessionData.session?.id,
-      expires_at: sessionData.expires_at,
+      client_secret: sessionData.client_secret?.value || sessionData.client_secret,
+      session_id: sessionData.id,
+      expires_at: sessionData.client_secret?.expires_at,
       voice: selectedVoice,
     });
   } catch (error) {

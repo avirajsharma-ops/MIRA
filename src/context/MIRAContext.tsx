@@ -47,70 +47,63 @@ interface DateTimeContext {
   formattedDateTime: string; // Human readable
 }
 
-// MIRA trigger keywords for detecting when user is talking to MIRA
-// Including common transcription errors and phonetically similar words
-const MIRA_KEYWORDS = [
-  // Core names
-  'mira', 'mi', 'ra',
-  // Common greetings + name
-  'hey mira', 'hi mira', 'hello mira', 'ok mira', 'okay mira',
-  'hey mi', 'hi mi', 'hey ra', 'hi ra',
-  // Phonetically similar / common transcription errors
-  'meera', 'mera', 'meira', 'myra', 'miraa', 'mirah',
-  'maya', 'maira', 'mara', 'moira', 'mia',
-  'miri', 'mire', 'mere', 'miro',
-  'meara', 'miara', 'mirra', 'mierra',
-  // Hindi transcription variations (romanized)
-  'meeraa', 'meraa', 'meerha', 'mirha',
-  // With "hey/hi" prefix variations  
-  'hey meera', 'hey mera', 'hey myra', 'hi meera', 'hi mera',
-  'hey maya', 'hey mia', 'hi maya', 'hi mia',
-  // Common speech-to-text errors for "MI"
-  'me', 'mee', 'my',
-  // Common speech-to-text errors for "RA"  
-  'raa', 'rah', 'raw',
-  // HINDI DEVANAGARI WAKE WORDS (for Hindi transcriptions)
-  'मीरा', 'मिरा', 'मेरा', 'मीर', 'मिर',
-  'मी', 'रा', 'मीं', 'री',
-  'हे मीरा', 'हाय मीरा', 'अरे मीरा', 'ओके मीरा',
-  'हे मी', 'हे रा', 'अरे मी', 'अरे रा',
-];
+// MIRA trigger keywords - SIMPLIFIED and OPTIMIZED for speed
+// Core wake words only - let AI handle ambiguous cases
+const MIRA_WAKE_WORDS = new Set([
+  // Core names (lowercase for fast matching)
+  'mira', 'meera', 'mi', 'ra',
+  // Common phonetic variations
+  'myra', 'mera', 'maya', 'mia', 'miri',
+  // Hindi
+  'मीरा', 'मी', 'रा',
+]);
 
-// Fuzzy matching: Calculate simple edit distance (Levenshtein)
-function levenshteinDistance(a: string, b: string): number {
-  const matrix: number[][] = [];
+// Wake word prefixes for "hey X" detection
+const WAKE_PREFIXES = new Set(['hey', 'hi', 'hello', 'ok', 'okay', 'oi', 'yo']);
+
+// Fast check if text contains MIRA wake word
+function containsWakeWord(text: string): boolean {
+  const lower = text.toLowerCase().trim();
+  const words = lower.split(/\s+/);
   
-  for (let i = 0; i <= b.length; i++) {
-    matrix[i] = [i];
-  }
-  for (let j = 0; j <= a.length; j++) {
-    matrix[0][j] = j;
-  }
+  // Check first 4 words only for speed
+  const checkWords = words.slice(0, 4);
   
-  for (let i = 1; i <= b.length; i++) {
-    for (let j = 1; j <= a.length; j++) {
-      if (b.charAt(i - 1) === a.charAt(j - 1)) {
-        matrix[i][j] = matrix[i - 1][j - 1];
-      } else {
-        matrix[i][j] = Math.min(
-          matrix[i - 1][j - 1] + 1, // substitution
-          matrix[i][j - 1] + 1,     // insertion
-          matrix[i - 1][j] + 1      // deletion
-        );
-      }
+  // Direct wake word match
+  for (const word of checkWords) {
+    const cleanWord = word.replace(/[.,!?'"]/g, '');
+    if (MIRA_WAKE_WORDS.has(cleanWord)) {
+      return true;
     }
   }
   
-  return matrix[b.length][a.length];
-}
-
-// Check if a word is phonetically similar to MIRA/MI/RA
-function isFuzzyMatch(word: string, target: string, maxDistance: number = 2): boolean {
-  if (word.length < 2) return false;
-  const distance = levenshteinDistance(word.toLowerCase(), target.toLowerCase());
-  // Allow more distance for longer words
-  const allowedDistance = target.length <= 3 ? 1 : maxDistance;
-  return distance <= allowedDistance;
+  // "Hey MIRA" pattern - check if second word is wake word
+  if (checkWords.length >= 2 && WAKE_PREFIXES.has(checkWords[0])) {
+    const secondWord = checkWords[1].replace(/[.,!?'"]/g, '');
+    if (MIRA_WAKE_WORDS.has(secondWord)) {
+      return true;
+    }
+    // Fuzzy match for common transcription errors
+    if (secondWord.length >= 3 && secondWord.length <= 6) {
+      // Simple phonetic similarity check
+      const similar = ['mira', 'meera', 'myra', 'mera'].some(target => {
+        if (Math.abs(secondWord.length - target.length) > 2) return false;
+        let matches = 0;
+        for (let i = 0; i < Math.min(secondWord.length, target.length); i++) {
+          if (secondWord[i] === target[i]) matches++;
+        }
+        return matches >= target.length - 1;
+      });
+      if (similar) return true;
+    }
+  }
+  
+  // Check for Hindi wake words in original text
+  if (/मीरा|मी |रा |हे मीरा|हाय मीरा/.test(text)) {
+    return true;
+  }
+  
+  return false;
 }
 
 // Get current date/time context
@@ -138,157 +131,54 @@ function getCurrentDateTime(): DateTimeContext {
   };
 }
 
-// Track if MIRA recently asked a follow-up question (managed externally)
-let lastMiraQuestionTime = 0;
-let miraAskedFollowUp = false;
+// Follow-up state - managed as simple variables for speed
+let lastMiraResponseTime = 0;
+let miraAskedQuestion = false;
 
 // Export functions to update follow-up state
 export function setMiraAskedFollowUp(asked: boolean) {
-  miraAskedFollowUp = asked;
+  miraAskedQuestion = asked;
   if (asked) {
-    lastMiraQuestionTime = Date.now();
+    lastMiraResponseTime = Date.now();
   }
 }
 
-// Check if message is a follow-up response (no wake word needed within 45 seconds of MIRA's question)
+// SIMPLIFIED follow-up check - time-based with basic exclusions
 function isFollowUpResponse(text: string): boolean {
-  const timeSinceQuestion = Date.now() - lastMiraQuestionTime;
-  const followUpWindow = 45000; // 45 seconds to respond without wake word
-  
-  console.log('[FollowUp] Checking follow-up:', {
-    miraAskedFollowUp,
-    timeSinceQuestion,
-    withinWindow: timeSinceQuestion <= followUpWindow
-  });
-  
-  if (!miraAskedFollowUp || timeSinceQuestion > followUpWindow) {
+  // Must be within 30 seconds of MIRA asking a question
+  const timeSince = Date.now() - lastMiraResponseTime;
+  if (!miraAskedQuestion || timeSince > 30000) {
     return false;
   }
   
   const lower = text.toLowerCase().trim();
   
-  // Skip if it's clearly addressed to someone else
-  const notForMira = [
-    /^(hey|hi|hello)\s+(mom|dad|brother|sister|friend|dude|bro|man)/i,
-    /talking\s+to\s+(someone|you)/i,
-    /not\s+talking\s+to\s+(you|mira)/i,
-  ];
-  if (notForMira.some(p => p.test(lower))) {
-    console.log('[FollowUp] Message appears directed at someone else');
+  // Exclude if clearly directed at someone else
+  if (/^(hey|hi|hello)\s+(mom|dad|bro|dude|man|alexa|siri|google)/i.test(lower)) {
     return false;
   }
   
-  // Skip if it contains another wake word (alexa, siri, google, etc.)
-  const otherAssistants = /\b(alexa|siri|google|hey google|cortana)\b/i;
-  if (otherAssistants.test(lower)) {
-    console.log('[FollowUp] Message directed at another assistant');
+  // Exclude other assistant wake words
+  if (/\b(alexa|siri|hey google|cortana)\b/i.test(lower)) {
     return false;
   }
   
-  // Within the follow-up window, MOST responses should be treated as follow-ups
-  // Only exclude if clearly not for MIRA
-  
-  // Common follow-up response patterns (very broad to catch most answers)
-  const followUpPatterns = [
-    /^(yes|no|yeah|yep|nope|sure|okay|ok|nah|maybe|probably|definitely|absolutely)/i,
-    /^(i think|i guess|i mean|well|actually|hmm|um|let me|i'd|i would|i could)/i,
-    /^(that's|it's|this is|it was|there's|here's|those|these)/i,
-    /^(the|a|an|my|his|her|their|our|your|some|any|all|both)\s+/i,
-    /^(because|since|so|but|and|or|if|when|where|what|why|how|which)/i,
-    /^(about|around|maybe|probably|definitely|certainly|actually|basically)/i,
-    /^(not\s+really|kind\s+of|sort\s+of|i\s+don't|i\s+do|i\s+am|i\s+have|i\s+was|i\s+will|i\s+can)/i,
-    /^[0-9]/,  // Starts with a number (answering a question)
-    /^(one|two|three|four|five|six|seven|eight|nine|ten|first|second|third)/i,
-    /^(it|he|she|they|we|you|that|this|those|these)\s+/i,  // Pronoun starts
-    /^(can|could|would|should|will|won't|don't|didn't|isn't|aren't|wasn't)/i,
-    /^(never|always|sometimes|often|usually|rarely|just|only|even)/i,
-    /^(like|love|hate|want|need|prefer|enjoy)/i,
-    /^(go|come|take|make|get|give|put|try|let|see|look|find)/i,  // Common verbs
-  ];
-  
-  // If message matches follow-up patterns, it's likely a response to MIRA's question
-  if (followUpPatterns.some(p => p.test(lower))) {
-    console.log('[FollowUp] Detected follow-up response pattern within window');
-    return true;
-  }
-  
-  // Within 30 seconds, be very lenient - most responses are likely follow-ups
-  // unless they're very long (might be a new topic)
-  const wordCount = lower.split(/\s+/).length;
-  if (timeSinceQuestion < 30000) {
-    // Under 30 seconds: accept responses up to 50 words
-    if (wordCount <= 50) {
-      console.log('[FollowUp] Response within 30s window - treating as follow-up');
-      return true;
-    }
-  } else if (timeSinceQuestion < 45000) {
-    // 30-45 seconds: accept shorter responses (up to 25 words)
-    if (wordCount <= 25) {
-      console.log('[FollowUp] Short response within extended window - treating as follow-up');
-      return true;
-    }
-  }
-  
-  return false;
+  // Within 30 seconds, treat most responses as follow-ups
+  // Keep it simple - if they're talking, they're probably answering
+  console.log('[FollowUp] Treating as follow-up (within 30s window)');
+  return true;
 }
 
-// Check if message is directed at MIRA (with fuzzy matching) OR is a follow-up response
+// MAIN DETECTION: Is message directed at MIRA?
 function isDirectedAtMira(text: string): boolean {
-  // First check if it's a follow-up response
+  // 1. Check follow-up first (no wake word needed)
   if (isFollowUpResponse(text)) {
     return true;
   }
   
-  const lower = text.toLowerCase().trim();
-  const originalText = text.trim(); // Keep original for Hindi matching
-  const words = lower.split(/\s+/);
-  
-  // 1. Exact keyword match (handles both Roman and Devanagari)
-  const hasExactMatch = MIRA_KEYWORDS.some(keyword => {
-    // For Roman keywords, use lowercase comparison
-    if (/[a-z]/.test(keyword)) {
-      if (lower.startsWith(keyword + ' ') || lower.startsWith(keyword + ',')) return true;
-      if (/^(hey|hi|hello|ok|okay)\s+/.test(lower) && lower.includes(keyword)) return true;
-      if (lower.endsWith(keyword) || lower.endsWith(keyword + '?') || lower.endsWith(keyword + '!')) return true;
-      const keywordRegex = new RegExp(`\\b${keyword}\\b`, 'i');
-      return keywordRegex.test(lower);
-    } else {
-      // For Devanagari keywords, use original text (case doesn't apply)
-      if (originalText.includes(keyword)) return true;
-    }
-    return false;
-  });
-  
-  if (hasExactMatch) return true;
-  
-  // 2. Fuzzy matching on first few words (wake word is usually at the start)
-  const firstWords = words.slice(0, 4);
-  const coreTargets = ['mira', 'meera', 'mi', 'ra'];
-  
-  for (const word of firstWords) {
-    // Skip very short words or common articles
-    if (word.length < 2 || ['a', 'an', 'the', 'is', 'it', 'to', 'in', 'on', 'at'].includes(word)) {
-      continue;
-    }
-    
-    // Check fuzzy match against core wake words
-    for (const target of coreTargets) {
-      if (isFuzzyMatch(word, target)) {
-        console.log(`[WakeWord] Fuzzy match: "${word}" ≈ "${target}"`);
-        return true;
-      }
-    }
-  }
-  
-  // 3. Check for "hey/hi + fuzzy match" pattern
-  if (words.length >= 2 && ['hey', 'hi', 'hello', 'ok', 'okay'].includes(words[0])) {
-    const secondWord = words[1];
-    for (const target of coreTargets) {
-      if (isFuzzyMatch(secondWord, target)) {
-        console.log(`[WakeWord] Fuzzy match after greeting: "${secondWord}" ≈ "${target}"`);
-        return true;
-      }
-    }
+  // 2. Check for wake word
+  if (containsWakeWord(text)) {
+    return true;
   }
   
   return false;
@@ -470,8 +360,18 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   // Track last AI response text
   const lastResponseTextRef = useRef<string>('');
   
+  // Track interrupted response for resumption
+  const interruptedResponseRef = useRef<{
+    text: string;
+    agent: AgentType;
+    spokenPortion: string; // What was already spoken before interruption
+  } | null>(null);
+  
   // TTS audio level for sphere reactivity (from WebRTC output)
   const [ttsAudioLevel, setTtsAudioLevel] = useState(0);
+
+  // Track when first audio input is received (for loading dialog dismissal)
+  const [hasReceivedFirstAudio, setHasReceivedFirstAudio] = useState(false);
 
   // ========== WebRTC Realtime API (Hybrid Mode) ==========
   // Handles BOTH speech-to-text AND text-to-speech via WebRTC
@@ -480,7 +380,23 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   const handleRealtimeTranscript = useCallback((text: string, isFinal: boolean) => {
     if (!isFinal || !text.trim()) return;
     
+    // First audio transcript received - dismiss loading dialog
+    setHasReceivedFirstAudio(true);
+    
     console.log('[Realtime] User transcript:', text);
+    
+    // Check if this is an interruption (user spoke while MIRA was speaking)
+    // Track interrupted response so we can resume after handling the interruption
+    if (isSpeaking && lastResponseTextRef.current) {
+      console.log('[Interruption] User interrupted MIRA while speaking');
+      interruptedResponseRef.current = {
+        text: lastResponseTextRef.current,
+        agent: (speakingAgent || 'mira') as AgentType,
+        spokenPortion: lastResponseTextRef.current.substring(0, Math.floor(lastResponseTextRef.current.length * 0.5)), // Estimate ~50% was spoken
+      };
+      // Cancel the current response
+      realtimeCancelResponse();
+    }
     
     const directed = isDirectedAtMira(text);
     
@@ -1024,6 +940,20 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         dateTime: dateTime.formattedDateTime 
       });
       
+      // Check if we have interruption context to include
+      const interruptionContext = interruptedResponseRef.current ? {
+        wasInterrupted: true,
+        previousResponse: interruptedResponseRef.current.text,
+        spokenPortion: interruptedResponseRef.current.spokenPortion,
+        agent: interruptedResponseRef.current.agent,
+      } : undefined;
+      
+      // Clear interruption context after capturing it
+      if (interruptedResponseRef.current) {
+        console.log('[Interruption] Including interruption context in message');
+        interruptedResponseRef.current = null;
+      }
+      
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
@@ -1035,6 +965,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
           conversationId,
           sessionId: sessionIdRef.current,
           attachments: attachments || [],
+          interruptionContext, // Include interruption context if present
           ...contextData,
         }),
       });
@@ -1215,7 +1146,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     stopRecording,
     isSpeaking,
     speakingAgent,
-    isMicReady: realtimeConnected,
+    isMicReady: realtimeConnected && hasReceivedFirstAudio,
 
     // Media
     isCameraActive,

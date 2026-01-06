@@ -386,8 +386,8 @@ function MIRAApp() {
 
   return (
     <div className={`min-h-screen app-container ${isInIframe ? 'bg-transparent' : 'bg-black'}`}>
-      {/* MIRA Getting Ready Loading Dialog */}
-      {!isMicReady && (
+      {/* MIRA Getting Ready Loading Dialog - hide when recording starts */}
+      {!isMicReady && !isRecording && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
           <div className="bg-black/60 backdrop-blur-xl border border-white/20 rounded-3xl px-8 py-6 shadow-2xl">
             <div className="flex flex-col items-center gap-4">

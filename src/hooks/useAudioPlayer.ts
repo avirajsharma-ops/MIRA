@@ -7,7 +7,6 @@ type AgentType = 'mi' | 'ra' | 'mira';
 interface UseAudioPlayerOptions {
   onSpeakingStart?: (agent: AgentType, text: string) => void;
   onSpeakingEnd?: (agent: AgentType) => void;
-  onInterrupted?: (interruptionText: string, lastSpokenText: string) => void;
 }
 
 // Thinking sounds - ULTRA SHORT for instant loading
@@ -99,7 +98,7 @@ if (typeof window !== 'undefined') {
 }
 
 export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
-  const { onSpeakingStart, onSpeakingEnd, onInterrupted } = options;
+  const { onSpeakingStart, onSpeakingEnd } = options;
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
@@ -116,14 +115,9 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const sourceNodeRef = useRef<MediaElementAudioSourceNode | null>(null);
   const animationFrameRef = useRef<number | null>(null);
-  const lastSpokenTextRef = useRef<string>('');
   const lastPlayedTextRef = useRef<string>(''); // Prevent duplicate playback
   const lastPlayedTimeRef = useRef<number>(0);
-  const onInterruptedRef = useRef(onInterrupted);
   const fetchControllerRef = useRef<AbortController | null>(null);
-  
-  // Keep callback ref updated
-  onInterruptedRef.current = onInterrupted;
 
   // Cleanup audio level monitoring
   const cleanupAudioAnalysis = useCallback(() => {
@@ -281,9 +275,6 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
       thinkingAudioRef.current = null;
       setIsThinking(false);
     }
-
-    // Track what's being spoken (for interruption context)
-    lastSpokenTextRef.current = text;
 
     // For MIRA responses, use MI's voice (no overlapping voices)
     const voiceToUse = agent === 'mira' ? 'mi' : agent;
@@ -462,20 +453,8 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
     setQueue([]);
   }, [cleanupAudio]);
 
-  // Interrupt current audio with user speech - captures what was said and last AI text
-  const interruptAudio = useCallback(async (interruptionText: string) => {
-    if (!isPlayingRef.current) return;
-    
-    const lastSpoken = lastSpokenTextRef.current;
-    
-    // Stop the current audio
-    await stopAudio();
-    
-    // Notify about the interruption
-    if (onInterruptedRef.current && interruptionText.trim()) {
-      onInterruptedRef.current(interruptionText.trim(), lastSpoken);
-    }
-  }, [stopAudio]);
+  // Note: WebRTC handles audio interruption automatically via echo cancellation
+  // No custom interruption logic needed
 
   // Pre-load thinking sounds for instant playback
   const preloadThinkingSounds = useCallback(async () => {
@@ -680,7 +659,6 @@ export function useAudioPlayer(options: UseAudioPlayerOptions = {}) {
     playThinkingSound,
     playThinkingAndQueueResponse,
     stopThinkingSound,
-    interruptAudio,
     initAudio,
     preloadThinkingSounds,
   };

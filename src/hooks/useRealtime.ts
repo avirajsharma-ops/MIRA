@@ -217,8 +217,12 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // Connect to OpenAI Realtime API via WebRTC (using calls endpoint)
-      const sdpResponse = await fetch('https://api.openai.com/v1/realtime/calls', {
+      // Connect to OpenAI Realtime API via WebRTC
+      // The client_secret is used as Bearer token, model is specified in URL
+      const baseUrl = 'https://api.openai.com/v1/realtime';
+      const model = 'gpt-4o-realtime-preview-2024-12-17';
+      
+      const sdpResponse = await fetch(`${baseUrl}?model=${model}`, {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${client_secret}`,
@@ -228,6 +232,8 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
       });
 
       if (!sdpResponse.ok) {
+        const errorText = await sdpResponse.text();
+        console.error('[Realtime] WebRTC SDP error:', sdpResponse.status, errorText);
         throw new Error('Failed to establish WebRTC connection');
       }
 
@@ -266,12 +272,14 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
         break;
 
       case 'input_audio_buffer.speech_started':
-        console.log('[Realtime] User started speaking');
-        updateState('listening');
+        // Note: WebRTC handles echo cancellation automatically
+        // Don't change state here - it can cause self-interruption issues
+        // when MIRA's voice is picked up by the microphone
+        console.log('[Realtime] VAD detected speech start');
         break;
 
       case 'input_audio_buffer.speech_stopped':
-        console.log('[Realtime] User stopped speaking');
+        console.log('[Realtime] VAD detected speech stop');
         break;
 
       case 'conversation.item.input_audio_transcription.completed':
@@ -313,8 +321,13 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
         break;
 
       case 'error':
-        console.error('[Realtime] Error:', event.error);
-        onError?.(event.error?.message || 'Unknown error');
+        // Log full error details for debugging
+        console.error('[Realtime] Error:', JSON.stringify(event.error || event));
+        const errorMsg = event.error?.message || event.message || 'Unknown error';
+        // Don't report "cancelled" errors - those are intentional
+        if (!errorMsg.toLowerCase().includes('cancel')) {
+          onError?.(errorMsg);
+        }
         break;
 
       default:
@@ -373,28 +386,38 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
 
     console.log('[Realtime] Injecting response as', agent, '(voice:', expectedVoice, '):', text.substring(0, 50) + '...');
     
-    // Send as user message with instruction to speak - this triggers TTS properly
-    // The OpenAI Realtime API will then speak the response
+    // IMPORTANT: Cancel any ongoing response first to avoid "active response in progress" error
     dc.send(JSON.stringify({
-      type: 'conversation.item.create',
-      item: {
-        type: 'message',
-        role: 'user',
-        content: [
-          {
-            type: 'input_text',
-            text: `[SPEAK EXACTLY AS WRITTEN - DO NOT MODIFY OR ADD ANYTHING]: ${text}`,
-          },
-        ],
-      },
-    }));
-
-    // Request response to generate audio
-    dc.send(JSON.stringify({
-      type: 'response.create',
+      type: 'response.cancel',
     }));
     
-    updateState('speaking');
+    // Small delay to ensure cancel is processed before creating new response
+    setTimeout(() => {
+      if (!dc || dc.readyState !== 'open') return;
+      
+      // Send as user message with instruction to speak - this triggers TTS properly
+      // The OpenAI Realtime API will then speak the response
+      dc.send(JSON.stringify({
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: `[SPEAK EXACTLY AS WRITTEN - DO NOT MODIFY OR ADD ANYTHING]: ${text}`,
+            },
+          ],
+        },
+      }));
+
+      // Request response to generate audio
+      dc.send(JSON.stringify({
+        type: 'response.create',
+      }));
+      
+      updateState('speaking');
+    }, 50); // 50ms delay to ensure cancel is processed
   }, [updateState]);
 
   // Cancel ongoing AI response

@@ -139,6 +139,7 @@ export async function POST(request: NextRequest) {
       proactive, // Flag for proactive checks
       sessionId, // Session ID for transcript context
       attachments, // File attachments (images, PDFs, text, etc.)
+      interruptionContext, // Context from when user interrupted MIRA
     } = await request.json();
 
     if (!message) {
@@ -344,6 +345,11 @@ export async function POST(request: NextRequest) {
     // Add attachment context if any
     if (attachmentContext) {
       contextParts.push(attachmentContext);
+    }
+    
+    // Add interruption context if user interrupted MIRA mid-response
+    if (interruptionContext?.wasInterrupted) {
+      contextParts.push(`\n[INTERRUPTION CONTEXT]\nYou were interrupted while saying: "${interruptionContext.spokenPortion}..."\nYour full intended response was: "${interruptionContext.previousResponse}"\nAfter addressing the user's interruption/question, naturally continue or summarize what you were saying. Don't explicitly say "as I was saying" - just smoothly continue.`);
     }
     
     const contextString = contextParts.join('\n');
