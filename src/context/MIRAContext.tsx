@@ -104,7 +104,6 @@ interface MIRAContextType {
   isMicReady: boolean;
   isRecording: boolean;
   isProcessing: boolean;
-  activeProvider: string;
   isListening: boolean;
   isSpeaking: boolean;
   speakingAgent: AgentType | null;
