@@ -8,6 +8,7 @@ export async function GET(request: NextRequest) {
     const token = getTokenFromHeader(request.headers.get('authorization'));
     
     if (!token) {
+      console.log('[Auth/Me] No token provided');
       return NextResponse.json(
         { error: 'No token provided' },
         { status: 401 }
@@ -16,6 +17,7 @@ export async function GET(request: NextRequest) {
     
     const payload = verifyToken(token);
     if (!payload) {
+      console.log('[Auth/Me] Invalid token');
       return NextResponse.json(
         { error: 'Invalid token' },
         { status: 401 }
@@ -26,11 +28,14 @@ export async function GET(request: NextRequest) {
     
     const user = await User.findById(payload.userId).select('-password');
     if (!user) {
+      console.log('[Auth/Me] User not found for ID:', payload.userId);
       return NextResponse.json(
         { error: 'User not found' },
         { status: 404 }
       );
     }
+    
+    console.log('[Auth/Me] Session valid for:', user.email);
     
     return NextResponse.json({
       user: {
@@ -38,12 +43,13 @@ export async function GET(request: NextRequest) {
         email: user.email,
         name: user.name,
         preferences: user.preferences,
+        talioIntegration: user.talioIntegration || null,
         lastActive: user.lastActive,
       },
     });
     
   } catch (error) {
-    console.error('Auth check error:', error);
+    console.error('[Auth/Me] Error:', error);
     return NextResponse.json(
       { error: 'Internal server error' },
       { status: 500 }

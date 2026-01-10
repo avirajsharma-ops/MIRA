@@ -123,7 +123,15 @@ export async function POST(request: NextRequest) {
       token,
     });
     
-  } catch (error) {
+  } catch (error: any) {
+    // Handle connection abort errors gracefully (client disconnected)
+    if (error?.code === 'ECONNRESET' || error?.message?.includes('aborted')) {
+      console.log('[Login] Connection aborted by client');
+      return NextResponse.json(
+        { error: 'Connection aborted' },
+        { status: 499 } // Client Closed Request
+      );
+    }
     console.error('Login error:', error);
     return NextResponse.json(
       { error: 'Internal server error' },

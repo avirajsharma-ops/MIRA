@@ -4,6 +4,11 @@ import { IUser, ITalioIntegration } from '@/models/User';
 
 const JWT_SECRET = process.env.JWT_SECRET || 'mira-default-secret';
 
+// Log JWT_SECRET availability (not the actual secret)
+if (!process.env.JWT_SECRET) {
+  console.warn('[Auth] WARNING: JWT_SECRET not set, using default (insecure for production)');
+}
+
 export interface TokenPayload {
   userId: string;
   email: string;
@@ -27,13 +32,16 @@ export function generateToken(user: IUser): string {
     talioIntegration: user.talioIntegration || undefined,
   };
   
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '7d' });
+  // Token valid for 30 days
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
 }
 
 export function verifyToken(token: string): TokenPayload | null {
   try {
-    return jwt.verify(token, JWT_SECRET) as TokenPayload;
-  } catch {
+    const payload = jwt.verify(token, JWT_SECRET) as TokenPayload;
+    return payload;
+  } catch (error: any) {
+    console.log('[Auth] Token verification failed:', error?.message || 'Unknown error');
     return null;
   }
 }

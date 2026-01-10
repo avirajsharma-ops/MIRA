@@ -82,7 +82,7 @@ function CodeOutputsPanel({ isOpen, onClose }: { isOpen: boolean; onClose: () =>
   if (!isOpen) return null;
 
   return (
-    <div className="fixed right-4 top-16 bottom-20 w-80 sm:w-96 z-[55] bg-black/80 backdrop-blur-xl border border-white/20 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+    <div className="fixed right-4 top-16 bottom-20 w-80 sm:w-96 z-[55] bg-black/90 border border-white/20 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
         <div className="flex items-center gap-2">
@@ -259,7 +259,7 @@ function FloatingKeyboard() {
               onChange={(e) => setText(e.target.value)}
               placeholder={attachments.length > 0 ? "Add a message..." : "Type a message..."}
               autoFocus
-              className="floating-keyboard-input w-[calc(100vw-11rem)] sm:w-64 max-w-64 px-4 py-3 bg-black/60 backdrop-blur-md border border-white/20 rounded-full text-white placeholder-white/40 focus:outline-none focus:border-purple-500/50 text-base"
+              className="floating-keyboard-input w-[calc(100vw-11rem)] sm:w-64 max-w-64 px-4 py-3 bg-black/80 border border-white/20 rounded-full text-white placeholder-white/40 focus:outline-none focus:border-purple-500/50 text-base"
             />
             <button
               type="submit"
@@ -286,7 +286,7 @@ function FloatingKeyboard() {
       ) : (
         <button
           onClick={() => setIsOpen(true)}
-          className="floating-keyboard-btn p-4 bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/20 rounded-full text-white/70 hover:text-white transition-all shadow-lg hover:scale-105 min-w-[56px] min-h-[56px] flex items-center justify-center"
+          className="floating-keyboard-btn p-4 bg-black/60 hover:bg-black/80 border border-white/20 rounded-full text-white/70 hover:text-white transition-all shadow-lg hover:scale-105 min-w-[56px] min-h-[56px] flex items-center justify-center"
           title="Type a message"
         >
           <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -371,7 +371,7 @@ function MIRAApp() {
   // Show loading screen while checking auth
   if (isAuthLoading) {
     return (
-      <div className={`min-h-screen flex items-center justify-center ${isInIframe ? 'bg-white/10 backdrop-blur-lg' : 'bg-black'}`}>
+      <div className={`min-h-screen flex items-center justify-center ${isInIframe ? 'bg-black/80' : 'bg-black'}`}>
         <div className="flex flex-col items-center gap-4">
           <img src="/icons/favicon.png" alt="MIRA" className="w-16 h-16 rounded-2xl animate-pulse" />
           <div className={`text-sm ${isInIframe ? 'text-black/60' : 'text-white/60'}`}>Loading...</div>
@@ -389,7 +389,7 @@ function MIRAApp() {
       {/* MIRA Getting Ready Loading Dialog - hide when mic is ready or recording */}
       {!isMicReady && !isRecording && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
-          <div className="bg-black/60 backdrop-blur-xl border border-white/20 rounded-3xl px-8 py-6 shadow-2xl">
+          <div className="bg-black/90 border border-white/20 rounded-3xl px-8 py-6 shadow-2xl">
             <div className="flex flex-col items-center gap-4">
               <div className="relative">
                 <div className="w-12 h-12 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 animate-pulse" />
@@ -412,7 +412,7 @@ function MIRAApp() {
         {/* UI Toggle Button */}
         <button
           onClick={() => setShowUI(!showUI)}
-          className="p-2 bg-black/40 hover:bg-black/60 backdrop-blur-md border border-white/20 rounded-full text-white/70 hover:text-white transition-all ui-toggle-btn"
+          className="p-2 bg-black/60 hover:bg-black/80 border border-white/20 rounded-full text-white/70 hover:text-white transition-all ui-toggle-btn"
           title={showUI ? 'Hide UI' : 'Show UI'}
         >
           {showUI ? (
@@ -431,7 +431,7 @@ function MIRAApp() {
         {/* Code/Outputs Panel Toggle Button */}
         <button
           onClick={() => setShowCodePanel(!showCodePanel)}
-          className={`p-2 backdrop-blur-md border rounded-full transition-all ${
+          className={`p-2 border rounded-full transition-all ${
             showCodePanel 
               ? 'bg-emerald-500/30 border-emerald-500/50 text-emerald-400' 
               : 'bg-black/40 hover:bg-black/60 border-white/20 text-white/70 hover:text-white'
@@ -446,7 +446,7 @@ function MIRAApp() {
       </div>
 
       {/* Header - Collapsible */}
-      <header className={`fixed top-0 left-0 right-0 z-50 bg-black/80 backdrop-blur-md border-b border-white/10 safe-area-top ui-collapsible ${showUI ? 'ui-visible' : 'ui-hidden'}`}>
+      <header className={`fixed top-0 left-0 right-0 z-50 bg-black/90 border-b border-white/10 safe-area-top ui-collapsible ${showUI ? 'ui-visible' : 'ui-hidden'}`}>
         <div className="flex items-center justify-between px-3 sm:px-6 py-2 sm:py-3">
           <div className="flex items-center gap-2 sm:gap-4">
             <div className="flex items-center gap-2">

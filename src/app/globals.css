@@ -17,21 +17,17 @@ body {
   font-family: var(--font-inter), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
-/* Iframe mode - transparent background with white overlay and backdrop blur */
+/* Iframe mode - transparent background */
 body.iframe-mode {
   background: transparent !important;
 }
 
 body.iframe-mode .app-container {
-  background: rgba(255, 255, 255, 0.1) !important;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgba(255, 255, 255, 0.15) !important;
 }
 
 body.iframe-mode .auth-container {
-  background: rgba(255, 255, 255, 0.1) !important;
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  background: rgba(255, 255, 255, 0.15) !important;
 }
 
 /* Iframe mode - adapt UI for light backgrounds */
@@ -133,8 +129,7 @@ body.iframe-mode .status-text {
 
 /* Glass effect */
 .glass {
-  background: rgba(255, 255, 255, 0.05);
-  backdrop-filter: blur(10px);
+  background: rgba(255, 255, 255, 0.08);
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 

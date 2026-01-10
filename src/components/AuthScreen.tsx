@@ -77,7 +77,7 @@ export default function AuthScreen() {
         </div>
 
         {/* Form */}
-        <div className={`backdrop-blur-lg rounded-2xl p-8 border ${isInIframe ? 'bg-black/60 border-black/20' : 'bg-white/5 border-white/10 bg-black/40'}`}>
+        <div className={`rounded-2xl p-8 border ${isInIframe ? 'bg-black/80 border-black/20' : 'bg-black/80 border-white/10'}`}>
           <h2 className="text-2xl font-semibold text-white mb-6">
             {isLogin ? 'Welcome Back' : 'Create Account'}
           </h2>

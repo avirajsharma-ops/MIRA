@@ -545,14 +545,17 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
 
       if (response.ok) {
         const { user, token } = await response.json();
+        console.log('[MIRA] Login successful, storing token for:', user.email);
         localStorage.setItem('mira_token', token);
         setUser(user);
         setIsAuthenticated(true);
         autoStart();
         return true;
       }
+      console.log('[MIRA] Login failed, status:', response.status);
       return false;
-    } catch {
+    } catch (error) {
+      console.error('[MIRA] Login error:', error);
       return false;
     }
   }, [autoStart]);
@@ -591,10 +594,18 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     disconnectRealtime();
   }, [disconnectRealtime]);
 
-  // Check auth on mount
+  // Check auth on mount - restore session from localStorage
   useEffect(() => {
     const checkAuth = async () => {
+      // Only run on client side
+      if (typeof window === 'undefined') {
+        setIsAuthLoading(false);
+        return;
+      }
+      
       const token = localStorage.getItem('mira_token');
+      console.log('[MIRA] Checking auth, token exists:', !!token);
+      
       if (!token) {
         setIsAuthLoading(false);
         return;
@@ -607,14 +618,18 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
 
         if (response.ok) {
           const { user } = await response.json();
+          console.log('[MIRA] Session restored for:', user.email);
           setUser(user);
           setIsAuthenticated(true);
           autoStart();
         } else {
+          console.log('[MIRA] Session invalid, status:', response.status);
           localStorage.removeItem('mira_token');
         }
-      } catch {
-        localStorage.removeItem('mira_token');
+      } catch (error) {
+        console.error('[MIRA] Session check error:', error);
+        // Don't remove token on network error - might be temporary
+        // Only remove if it was explicitly rejected
       } finally {
         setIsAuthLoading(false);
       }
