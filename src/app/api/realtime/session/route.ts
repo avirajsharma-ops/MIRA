@@ -180,13 +180,13 @@ ${taskList || 'None'}
 PROJECTS: ${projectList}
 
 LEAVE: ${leaveBalance}
-${talioContext.teamTasks?.length > 0 ? `
-TEAM TASKS (${talioContext.teamTasks.length} total):
+${(talioContext.teamTasks?.length ?? 0) > 0 ? `
+TEAM TASKS (${talioContext.teamTasks?.length ?? 0} total):
 ${teamTasksList}` : ''}
-${talioContext.teamAttendance?.records?.length > 0 ? `
+${(talioContext.teamAttendance?.records?.length ?? 0) > 0 ? `
 TEAM ATTENDANCE (7 days): ${teamAttendanceSummary}` : ''}
-${talioContext.teamMembers?.length > 0 ? `
-TEAM SIZE: ${talioContext.teamMembers.length} members` : ''}
+${(talioContext.teamMembers?.length ?? 0) > 0 ? `
+TEAM SIZE: ${talioContext.teamMembers?.length ?? 0} members` : ''}
 
 HR: ${hrContacts}
 ${employeeLookup ? `DIRECTORY:\n${employeeLookup}` : ''}
