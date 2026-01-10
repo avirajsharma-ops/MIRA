@@ -26,14 +26,6 @@ export default function AgentDisplay({ showControls = true }: AgentDisplayProps)
 
   // Display mode - always combined now (unified agent, no more debate separation)
   const mode = 'combined';
-  
-  // Get audio level for sphere animation
-  // Use outputAudioLevel when MIRA is speaking, inputAudioLevel when user is speaking
-  const effectiveAudioLevel = isSpeaking 
-    ? outputAudioLevel  // MIRA's voice should make sphere react
-    : (isRecording || isListening) 
-      ? audioLevel  // User's voice
-      : 0;
 
   // AI is "thinking" when loading but not yet speaking
   const isThinking = isLoading && !isSpeaking;
@@ -45,7 +37,8 @@ export default function AgentDisplay({ showControls = true }: AgentDisplayProps)
         mode={mode}
         speakingAgent={speakingAgent}
         isSpeaking={isSpeaking}
-        audioLevel={effectiveAudioLevel}
+        miraAudioLevel={outputAudioLevel}  // MIRA's voice level for distortion effect
+        userAudioLevel={isRecording || isListening ? audioLevel : 0}  // User's voice for spin effect
         isThinking={isThinking}
       />
 

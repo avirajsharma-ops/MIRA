@@ -520,26 +520,21 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     captureInterval: 10000,
   });
 
-  // Auto-start WebRTC and Camera after auth
+  // Auto-start WebRTC after auth (camera disabled by default for privacy)
   const autoStart = useCallback(() => {
     if (!autoStartedRef.current) {
       autoStartedRef.current = true;
-      // Start WebRTC immediately
+      // Start WebRTC immediately - auto-initiate enabled by default
       setTimeout(() => {
         connectRealtime();
-        console.log('[MIRA] WebRTC connected');
+        console.log('[MIRA] WebRTC connected - auto-initiate enabled');
       }, 300);
       
-      // Start camera slightly after WebRTC (to not overwhelm browser)
-      setTimeout(() => {
-        startCamera().then(() => {
-          console.log('[MIRA] Camera started for visual recognition');
-        }).catch((err) => {
-          console.log('[MIRA] Camera auto-start failed:', err);
-        });
-      }, 800);
+      // Camera is disabled by default for privacy
+      // User can manually enable camera when needed
+      console.log('[MIRA] Camera disabled by default - user can enable manually');
     }
-  }, [connectRealtime, startCamera]);
+  }, [connectRealtime]);
 
   // Auth functions
   const login = useCallback(async (email: string, password: string): Promise<boolean> => {

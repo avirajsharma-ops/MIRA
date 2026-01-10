@@ -6,7 +6,8 @@ interface FullScreenSpheresProps {
   mode: 'separate' | 'combined';
   speakingAgent: 'mira' | null; // MIRA is a single unified entity
   isSpeaking: boolean;
-  audioLevel: number;
+  miraAudioLevel: number;  // MIRA's voice level - for distortion effect
+  userAudioLevel: number;  // User's voice level - for spin effect
   isThinking?: boolean;
 }
 
@@ -42,26 +43,31 @@ export default function FullScreenSpheres({
   mode,
   speakingAgent,
   isSpeaking,
-  audioLevel,
+  miraAudioLevel,
+  userAudioLevel,
   isThinking = false,
 }: FullScreenSpheresProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const particlesRef = useRef<Particle[]>([]);
   const animationRef = useRef<number | undefined>(undefined);
-  const audioLevelRef = useRef(0);
+  const miraAudioLevelRef = useRef(0);
+  const userAudioLevelRef = useRef(0);
   const modeRef = useRef(mode);
   const transitionProgressRef = useRef(mode === 'combined' ? 1 : 0);
   const mouseRef = useRef({ x: 0, y: 0, isActive: false });
   const isSpeakingRef = useRef(isSpeaking);
   const isThinkingRef = useRef(isThinking);
-  const speakingAgentRef = useRef(speakingAgent);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const initializedRef = useRef(false);
   
   // Smooth audio level transitions - use refs to avoid callback recreation
   useEffect(() => {
-    audioLevelRef.current = audioLevel;
-  }, [audioLevel]);
+    miraAudioLevelRef.current = miraAudioLevel;
+  }, [miraAudioLevel]);
+
+  useEffect(() => {
+    userAudioLevelRef.current = userAudioLevel;
+  }, [userAudioLevel]);
 
   // Update mode ref for animation
   useEffect(() => {
@@ -72,10 +78,6 @@ export default function FullScreenSpheres({
   useEffect(() => {
     isSpeakingRef.current = isSpeaking;
   }, [isSpeaking]);
-
-  useEffect(() => {
-    speakingAgentRef.current = speakingAgent;
-  }, [speakingAgent]);
 
   // Update thinking state ref
   useEffect(() => {
@@ -202,25 +204,24 @@ export default function FullScreenSpheres({
     ctx.globalCompositeOperation = 'lighter';
 
     const time = Date.now() * 0.001;
-    const currentAudioLevel = audioLevelRef.current;
-    // Dynamically detect if AI is speaking based on audio level (not state)
-    // This fixes the issue where state changes before audio finishes playing
+    const currentMiraAudioLevel = miraAudioLevelRef.current;
+    const currentUserAudioLevel = userAudioLevelRef.current;
+    
+    // Audio threshold for detecting voice activity
     const AUDIO_THRESHOLD = 0.05;
-    const aiSpeaking = currentAudioLevel > AUDIO_THRESHOLD;
+    const miraSpeaking = currentMiraAudioLevel > AUDIO_THRESHOLD;
+    const userSpeaking = currentUserAudioLevel > AUDIO_THRESHOLD;
     const aiThinking = isThinkingRef.current;
     const currentMode = modeRef.current;
     const centers = getSphereCenters();
     const radius = getSphereRadius();
-    
-    // Determine which agent is currently speaking (mi, ra, or mira for both) - use ref
-    const currentSpeaker = speakingAgentRef.current;
 
     // Thinking animation - subtle pulsing glow effect
-    const thinkingPulse = aiThinking ? Math.sin(time * 3) * 0.3 + 0.7 : 0; // 0 to 1 pulse
+    const thinkingPulse = aiThinking ? Math.sin(time * 3) * 0.3 + 0.7 : 0;
 
     // Smooth transition between modes
     const targetProgress = currentMode === 'combined' ? 1 : 0;
-    const transitionSpeed = 0.03; // Smooth transition
+    const transitionSpeed = 0.03;
     if (transitionProgressRef.current < targetProgress) {
       transitionProgressRef.current = Math.min(1, transitionProgressRef.current + transitionSpeed);
     } else if (transitionProgressRef.current > targetProgress) {
@@ -228,31 +229,32 @@ export default function FullScreenSpheres({
     }
     const progress = transitionProgressRef.current;
 
-    // Rotation speed based on AI speaking or thinking
-    const rotationSpeed = aiSpeaking ? 0.5 : aiThinking ? 0.35 : 0.25;
-    const rotTime = time * rotationSpeed;
-
-    // Physics constants - softer spring and higher friction for smoother movement
-    const SPRING = 0.025;
-    const FRICTION = 0.88;
-    const Z_PERSPECTIVE = 1200;
+    // === USER VOICE: Intense oscillation/vibration effect ===
+    // Oscillation frequency increases with voice intensity
+    const baseOscillationFreq = 15; // Higher base frequency for more visible vibration
+    const oscillationFreq = baseOscillationFreq + currentUserAudioLevel * 40; // Even faster vibration
     
-    // Voice distortion settings - dynamically mapped to audio level
+    // Oscillation amplitude - VERY intense
+    const oscillationAmplitude = currentUserAudioLevel * 120; // Doubled from 60 to 120
+
+    // === MIRA VOICE: Original distortion effect settings ===
     const baseVoiceSpeed = 2.0;
-    const voiceSpeedBoost = currentAudioLevel * 1.5; // Faster rotation at higher volumes
+    const voiceSpeedBoost = currentMiraAudioLevel * 1.5;
     const voiceAngle = time * (baseVoiceSpeed + voiceSpeedBoost);
-    const voiceDistortRadius = radius * (0.3 + currentAudioLevel * 0.4); // Grows with volume
+    const voiceDistortRadius = radius * (0.3 + currentMiraAudioLevel * 0.4);
+
+    // Physics constants for MIRA distortion
+    const Z_PERSPECTIVE = 1200;
+    const FRICTION = 0.88;
 
     particlesRef.current.forEach((p) => {
-      // MIRA is a unified entity - all particles react together when speaking
-      const particleShouldReact = aiSpeaking;
-      
       // No pulse scale - keep sphere size constant
       const pulseScale = 1;
       
-      // Organic intensity - stronger for reacting particles, subtle movement during thinking
+      // Organic intensity - subtle movement during thinking, boosted when MIRA speaks
       const thinkingBoost = aiThinking ? 8 + thinkingPulse * 12 : 0;
-      const organicIntensity = 15 + thinkingBoost + (particleShouldReact ? 25 + currentAudioLevel * 40 : 0);
+      const miraBoost = miraSpeaking ? 25 + currentMiraAudioLevel * 40 : 0;
+      const organicIntensity = 10 + thinkingBoost + miraBoost;
       
       // Calculate target center based on transition progress
       const miCenter = { x: centers.mi.x * dpr, y: centers.mi.y * dpr };
@@ -282,53 +284,51 @@ export default function FullScreenSpheres({
       const scaledBaseY = (p.sphereBaseY / radius) * scaledRadius;
       const scaledBaseZ = (p.sphereBaseZ / radius) * scaledRadius;
 
-      // Rotation around Y axis
-      let rotatedX = scaledBaseX * Math.cos(rotTime) - scaledBaseZ * Math.sin(rotTime);
-      let rotatedZ = scaledBaseX * Math.sin(rotTime) + scaledBaseZ * Math.cos(rotTime);
+      // No rotation - sphere stays still
+      let rotatedX = scaledBaseX;
+      let rotatedZ = scaledBaseZ;
       let rotatedY = scaledBaseY;
-
-      // Target position (relative to center) - includes organic noise movement
-      const targetX = rotatedX + targetCenterX - cx + noiseX;
-      const targetY = rotatedY + targetCenterY - cy + noiseY;
-      const targetZ = rotatedZ + noiseZ;
-
-      // Spring physics towards target - use softer spring to prevent sudden jumps
-      const springForce = SPRING;
-      p.vx += (targetX - p.x) * springForce;
-      p.vy += (targetY - p.y) * springForce;
-      p.vz += (targetZ - p.z) * springForce;
       
-      // Clamp velocity to prevent extreme stretching/zooming
-      const maxVelocity = 25;
-      p.vx = Math.max(-maxVelocity, Math.min(maxVelocity, p.vx));
-      p.vy = Math.max(-maxVelocity, Math.min(maxVelocity, p.vy));
-      p.vz = Math.max(-maxVelocity, Math.min(maxVelocity, p.vz));
-
-      // Mouse interaction - particles repel from cursor (reduced force)
-      const mouse = mouseRef.current;
-      if (mouse.isActive) {
-        const scale = Z_PERSPECTIVE / (Z_PERSPECTIVE + p.z);
-        const screenX = cx + p.x * scale;
-        const screenY = cy + p.y * scale;
+      // === USER VOICE: Intense oscillation/vibration ===
+      // Each particle oscillates outward/inward based on user voice, creating vibration effect
+      if (userSpeaking && oscillationAmplitude > 0.5) {
+        // Each particle has unique phase based on its position (creates wave pattern)
+        const particlePhase = p.noiseOffsetX + p.noiseOffsetY + p.noiseOffsetZ;
         
-        const dx = screenX - mouse.x * dpr;
-        const dy = screenY - mouse.y * dpr;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        const mouseRadius = radius * dpr * 0.6;
+        // Oscillation wave - multiple frequencies for complex, intense vibration
+        const wave1 = Math.sin(time * oscillationFreq + particlePhase);
+        const wave2 = Math.sin(time * oscillationFreq * 1.7 + particlePhase * 0.6) * 0.6;
+        const wave3 = Math.sin(time * oscillationFreq * 0.6 + particlePhase * 1.4) * 0.4;
+        const wave4 = Math.sin(time * oscillationFreq * 2.3 + particlePhase * 0.3) * 0.3; // Extra high freq
+        const combinedWave = (wave1 + wave2 + wave3 + wave4) / 2.3;
         
-        if (dist < mouseRadius && dist > 0) {
-          const force = (mouseRadius - dist) / mouseRadius;
-          const angle = Math.atan2(dy, dx);
-          
-          const mouseForce = force * 60;
-          p.vx += Math.cos(angle) * mouseForce;
-          p.vy += Math.sin(angle) * mouseForce;
-          p.vz += -force * mouseForce * 0.15;
-        }
+        // Calculate radial direction (outward from center)
+        const dist = Math.sqrt(rotatedX * rotatedX + rotatedY * rotatedY + rotatedZ * rotatedZ) || 1;
+        const nx = rotatedX / dist;
+        const ny = rotatedY / dist;
+        const nz = rotatedZ / dist;
+        
+        // Apply intense oscillation - particles vibrate in/out along radial direction
+        const oscillationOffset = combinedWave * oscillationAmplitude;
+        rotatedX += nx * oscillationOffset;
+        rotatedY += ny * oscillationOffset;
+        rotatedZ += nz * oscillationOffset;
       }
 
-      // Voice/Speaking distortion - ONLY for particles belonging to speaking agent
-      if (particleShouldReact) {
+      // Direct position calculation - snappy response
+      const finalX = rotatedX + targetCenterX - cx + noiseX;
+      const finalY = rotatedY + targetCenterY - cy + noiseY;
+      const finalZ = rotatedZ + noiseZ;
+      
+      // Smooth interpolation to target
+      const smoothing = 0.15;
+      p.x += (finalX - p.x) * smoothing;
+      p.y += (finalY - p.y) * smoothing;
+      p.z += (finalZ - p.z) * smoothing;
+
+      // === MIRA VOICE: Original distortion effect ===
+      // Velocity-based push from rotating distortion points
+      if (miraSpeaking) {
         const scale = Z_PERSPECTIVE / (Z_PERSPECTIVE + p.z);
         const screenX = cx + p.x * scale;
         const screenY = cy + p.y * scale;
@@ -339,10 +339,8 @@ export default function FullScreenSpheres({
           const pointAngle = voiceAngle + (i * Math.PI * 2 / numPoints);
           
           // Distortion points around the particle's sphere center
-          const distortCenterX = targetCenterX;
-          const distortCenterY = targetCenterY;
-          const distortX = distortCenterX + Math.cos(pointAngle) * voiceDistortRadius * dpr;
-          const distortY = distortCenterY + Math.sin(pointAngle) * voiceDistortRadius * dpr;
+          const distortX = targetCenterX + Math.cos(pointAngle) * voiceDistortRadius * dpr;
+          const distortY = targetCenterY + Math.sin(pointAngle) * voiceDistortRadius * dpr;
 
           const dx = screenX - distortX;
           const dy = screenY - distortY;
@@ -350,7 +348,7 @@ export default function FullScreenSpheres({
 
           // Interaction radius - dynamically scales with audio level
           const baseInteractionRadius = radius * dpr * 0.5;
-          const audioBoost = currentAudioLevel * 1.5; // More responsive to audio
+          const audioBoost = currentMiraAudioLevel * 1.5;
           const interactionRadius = baseInteractionRadius * (1 + audioBoost);
 
           if (dist < interactionRadius && dist > 0) {
@@ -358,9 +356,8 @@ export default function FullScreenSpheres({
             const angle = Math.atan2(dy, dx);
 
             // Force intensity dynamically mapped to audio level
-            // Base force when speaking + exponential boost based on volume
             const baseForce = 80;
-            const audioMultiplier = 1 + Math.pow(currentAudioLevel, 0.7) * 3; // Exponential response
+            const audioMultiplier = 1 + Math.pow(currentMiraAudioLevel, 0.7) * 3;
             const dynamicForce = baseForce * audioMultiplier;
             const voiceForce = force * dynamicForce;
             
@@ -371,7 +368,7 @@ export default function FullScreenSpheres({
         }
       }
 
-      // Apply velocity with friction
+      // Apply MIRA velocity with friction
       p.x += p.vx;
       p.y += p.vy;
       p.z += p.vz;
@@ -383,11 +380,11 @@ export default function FullScreenSpheres({
       const finalScale = Z_PERSPECTIVE / (Z_PERSPECTIVE + p.z);
       if (p.z > -Z_PERSPECTIVE + 10 && finalScale > 0) {
         const depthAlpha = Math.min(1, Math.max(0.1, finalScale * p.alpha - p.z / 2000));
-        // Boost glow for speaking particles, enhanced glow during thinking
+        // Boost glow: user voice = subtle, MIRA voice = bright, thinking = pulse
         const thinkingGlow = aiThinking ? thinkingPulse * 0.6 : 0;
-        const glowAlpha = particleShouldReact 
-          ? depthAlpha * (1.5 + currentAudioLevel * 0.8) 
-          : depthAlpha * (1 + thinkingGlow);
+        const userGlow = userSpeaking ? Math.min(0.4, currentUserAudioLevel * 0.5) : 0;
+        const miraGlow = miraSpeaking ? Math.min(0.8, currentMiraAudioLevel * 1.0) : 0;
+        const glowAlpha = depthAlpha * (1 + thinkingGlow + userGlow + miraGlow);
 
         // Colors
         const { r, g, b } = p.colorType === 'mi'
@@ -396,9 +393,11 @@ export default function FullScreenSpheres({
 
         const screenX = cx + p.x * finalScale;
         const screenY = cy + p.y * finalScale;
-        // Scale particles for speaking agent, subtle pulse during thinking
+        // Scale particles: user = vibrating effect, MIRA = size pulse
         const thinkingSizeBoost = aiThinking ? 1 + thinkingPulse * 0.15 : 1;
-        const particleSize = p.size * finalScale * thinkingSizeBoost * (particleShouldReact ? 1 + currentAudioLevel * 0.3 : 1);
+        const userSizeBoost = userSpeaking ? 1 + currentUserAudioLevel * 0.15 : 1;
+        const miraSizeBoost = miraSpeaking ? 1 + currentMiraAudioLevel * 0.3 : 1;
+        const particleSize = p.size * finalScale * thinkingSizeBoost * userSizeBoost * miraSizeBoost;
 
         // Draw outer glow during thinking phase
         if (aiThinking && thinkingPulse > 0.3) {

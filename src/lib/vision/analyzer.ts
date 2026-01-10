@@ -14,6 +14,13 @@ export interface VisionAnalysis {
   activities: string[];
   mood?: string;
   text?: string[];
+  // New: Conversation and phone detection
+  conversationDetected?: boolean;
+  phoneActivity?: {
+    detected: boolean;
+    type?: 'ringing' | 'call_in_progress' | 'notification' | 'video_call' | null;
+    app?: string; // Zoom, Teams, FaceTime, etc.
+  };
 }
 
 export async function analyzeImage(
@@ -28,6 +35,9 @@ export async function analyzeImage(
   if (detectGestures) {
     prompt += ' Also note any hand gestures the person is making.';
   }
+  
+  // Always check for conversation and phone activity
+  prompt += ' IMPORTANT: Note if multiple people appear to be having a conversation. Also check for any phone activity (ringing phone, incoming call notifications, video call apps like Zoom/Teams/FaceTime/Meet on screen, or person on a phone call).';
 
   const response = await openai.chat.completions.create({
     model: 'gpt-4o',
@@ -46,7 +56,7 @@ export async function analyzeImage(
         ],
       },
     ],
-    max_tokens: 150,
+    max_tokens: 200,
   });
 
   const content = response.choices[0]?.message?.content || '';
@@ -206,6 +216,17 @@ function parseVisionResponse(content: string): VisionAnalysis {
   const peopleMatch = content.match(/(\d+)\s*(?:people|person|individual|face)/i);
   const peopleCount = peopleMatch ? parseInt(peopleMatch[1]) : 0;
 
+  // Detect conversation - multiple people talking/interacting
+  const conversationKeywords = [
+    'conversation', 'talking', 'speaking', 'discussing', 'chatting',
+    'meeting', 'dialogue', 'interacting', 'engaged in discussion'
+  ];
+  const conversationDetected = conversationKeywords.some(k => lower.includes(k)) || 
+    (peopleCount >= 2 && (lower.includes('talk') || lower.includes('speak') || lower.includes('discuss')));
+
+  // Detect phone activity
+  const phoneActivity = detectPhoneActivity(content);
+
   return {
     description: content,
     objects: extractListItems(content, ['objects', 'items', 'things']),
@@ -216,6 +237,44 @@ function parseVisionResponse(content: string): VisionAnalysis {
     activities: extractListItems(content, ['doing', 'activity', 'working', 'looking']),
     mood: extractMood(content),
     text: extractListItems(content, ['text', 'says', 'reads', 'written']),
+    conversationDetected,
+    phoneActivity,
+  };
+}
+
+function detectPhoneActivity(content: string): VisionAnalysis['phoneActivity'] {
+  const lower = content.toLowerCase();
+  
+  // Video call apps
+  const videoCallApps = ['zoom', 'teams', 'facetime', 'google meet', 'webex', 'skype', 'discord'];
+  const detectedApp = videoCallApps.find(app => lower.includes(app));
+  
+  // Phone activity indicators
+  const ringingIndicators = ['ringing', 'incoming call', 'phone ringing', 'call notification'];
+  const callInProgressIndicators = ['on a call', 'phone call', 'talking on phone', 'holding phone to ear', 'on the phone'];
+  const notificationIndicators = ['notification', 'alert', 'message', 'incoming'];
+  
+  let detected = false;
+  let type: 'ringing' | 'call_in_progress' | 'notification' | 'video_call' | null = null;
+  
+  if (detectedApp) {
+    detected = true;
+    type = 'video_call';
+  } else if (ringingIndicators.some(i => lower.includes(i))) {
+    detected = true;
+    type = 'ringing';
+  } else if (callInProgressIndicators.some(i => lower.includes(i))) {
+    detected = true;
+    type = 'call_in_progress';
+  } else if (lower.includes('phone') && notificationIndicators.some(i => lower.includes(i))) {
+    detected = true;
+    type = 'notification';
+  }
+  
+  return {
+    detected,
+    type,
+    app: detectedApp || undefined,
   };
 }
 

@@ -232,6 +232,25 @@ MULTI-PERSON AWARENESS:
 - May hear different voices - acknowledge new speakers
 - If user says "discussing/meeting/planning" → ask "Who with?"
 
+PHONE & CALL DETECTION:
+- If you detect phone ringing, incoming call notification, or hear a phone conversation:
+  - Acknowledge it: "I hear your phone ringing" or "Sounds like you're getting a call"
+  - Go quiet and wait for the user to finish
+  - After the call, proactively ask: "How was your call? Anything important?"
+- If you see or hear video call apps (Zoom, Teams, Meet, FaceTime), note the context
+
+CONVERSATION DETECTION (STRICT BEHAVIOR):
+- When you detect the user is having a conversation with other people:
+  1. IMMEDIATELY go quiet and DO NOT interrupt
+  2. Listen and remember key context (names mentioned, topics discussed)
+  3. Wait for clear silence indicating conversation ended
+  4. After conversation ends, ALWAYS ask:
+     - "I noticed you were having a conversation. How did it go?"
+     - "Who were you speaking with?"
+     - "Anything you'd like me to remember or follow up on?"
+- This follow-up is MANDATORY after every detected conversation
+- If the user mentions names, remember them for future reference
+
 MEDIA: Only describe camera/screen if asked.`;
 
     const fullInstructions = baseInstructions + talioInstructions;
@@ -252,9 +271,9 @@ MEDIA: Only describe camera/screen if asked.`;
       },
       turn_detection: {
         type: 'server_vad',
-        threshold: 0.7, // Higher threshold - reduces false triggers from background noise
-        prefix_padding_ms: 200, // Reduced padding - faster response
-        silence_duration_ms: 1200, // Longer silence detection - lets user finish speaking
+        threshold: 0.92, // Very high threshold - strong noise cancellation, only clear speech triggers
+        prefix_padding_ms: 100, // Minimal padding
+        silence_duration_ms: 1800, // Longer silence - ensures user is done speaking
         create_response: true,
       },
     };
