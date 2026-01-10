@@ -1,23 +1,21 @@
-import { useState, useCallback, useRef } from 'react';
-import { useRealtime } from './useRealtime';
+'use client';
 
-export type AIProvider = 'gemini' | 'openai' | 'perplexity';
+import { useState, useCallback } from 'react';
+import { useRealtime } from './useRealtime';
 
 interface EngineConfig {
   onTranscript?: (text: string) => void;
   onResponse?: (text: string) => void;
   onError?: (error: string) => void;
-  onIdleDisconnect?: () => void; // COST OPTIMIZATION: Callback when auto-disconnected
+  onIdleDisconnect?: () => void;
   voice?: 'mira' | 'aks';
 }
 
-// Simplified engine - uses OpenAI Realtime directly
-// COST OPTIMIZATION: Auto-disconnects after 3 minutes of idle
+// Using OpenAI Realtime API for voice AI
 export function useMIRAEngine(config: EngineConfig = {}) {
-  const [activeProvider] = useState<AIProvider>('openai'); // OpenAI is primary for now
   const [status, setStatus] = useState<'connected' | 'disconnected' | 'connecting' | 'error'>('disconnected');
 
-  // OpenAI Realtime Hook - primary engine
+  // OpenAI Realtime Hook - primary and only engine for now
   const openAI = useRealtime({
     voice: config.voice || 'mira',
     onTranscript: config.onTranscript,
@@ -36,7 +34,6 @@ export function useMIRAEngine(config: EngineConfig = {}) {
       console.error('[MIRAEngine] OpenAI Error:', err);
       config.onError?.(err);
     },
-    // COST OPTIMIZATION: Handle idle disconnect
     onIdleDisconnect: () => {
       console.log('[MIRAEngine] Auto-disconnected due to inactivity to save costs');
       setStatus('disconnected');
@@ -45,7 +42,7 @@ export function useMIRAEngine(config: EngineConfig = {}) {
   });
 
   const connect = useCallback(async () => {
-    console.log('[MIRAEngine] Connecting...');
+    console.log('[MIRAEngine] Connecting to OpenAI Realtime...');
     setStatus('connecting');
     await openAI.connect();
   }, [openAI]);
@@ -56,7 +53,6 @@ export function useMIRAEngine(config: EngineConfig = {}) {
     setStatus('disconnected');
   }, [openAI]);
 
-  // COST OPTIMIZATION: Reset idle timer on user activity
   const resetIdleTimer = useCallback(() => {
     openAI.resetIdleTimer();
   }, [openAI]);
@@ -64,8 +60,7 @@ export function useMIRAEngine(config: EngineConfig = {}) {
   return {
     connect,
     disconnect,
-    resetIdleTimer, // COST OPTIMIZATION: Call this on user interaction
-    activeProvider,
+    resetIdleTimer,
     status,
     isConnected: openAI.isConnected,
     isListening: openAI.isListening,
@@ -73,6 +68,6 @@ export function useMIRAEngine(config: EngineConfig = {}) {
     transcript: openAI.transcript,
     lastResponse: openAI.lastResponse,
     audioLevel: openAI.inputAudioLevel,
-    outputAudioLevel: openAI.outputAudioLevel, // MIRA's voice level for sphere reactivity
+    outputAudioLevel: openAI.outputAudioLevel,
   };
 }

@@ -259,11 +259,16 @@ export async function GET(request: NextRequest) {
       userCheck.employeeId!,
       userCheck.role || 'employee',
       userCheck.companyId!,
-      departmentId
+      departmentId,
+      userCheck.isDepartmentHead,
+      userCheck.headOfDepartments
     );
     
     debug.roleBasedAccess = {
       role: userCheck.role,
+      isDepartmentHead: userCheck.isDepartmentHead,
+      headOfDepartments: userCheck.headOfDepartments,
+      effectiveRole: accessibleEmployees.effectiveRole,
       accessLevel: accessibleEmployees.accessLevel,
       accessDescription: accessibleEmployees.accessDescription,
       teamMemberCount: accessibleEmployees.employees.length,
@@ -281,6 +286,8 @@ export async function GET(request: NextRequest) {
       userCheck.role || 'employee',
       userCheck.companyId!,
       departmentId,
+      userCheck.isDepartmentHead,
+      userCheck.headOfDepartments,
       20
     );
     

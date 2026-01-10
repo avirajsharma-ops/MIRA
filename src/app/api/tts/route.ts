@@ -1,22 +1,15 @@
 import { NextRequest } from 'next/server';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
 
-// OpenAI TTS - using multilingual voices (non-streaming fallback)
-// MI: Female voice (nova - warm, expressive)
-// RA: Male voice (onyx - deep, authoritative)
+// OpenAI TTS - MIRA voice (non-streaming fallback)
+// MIRA: coral voice via Realtime API, nova for TTS fallback
 
-// Preprocess text to replace MI/RA/MIRA with phonetic pronunciations for TTS
+// Preprocess text to replace MIRA with phonetic pronunciation for TTS
 function preprocessTextForTTS(text: string): string {
   let processed = text;
   
-  // Replace MIRA first (before MI/RA to avoid partial replacements)
+  // Replace MIRA with phonetic pronunciation
   processed = processed.replace(/\bMIRA\b/gi, 'Meera');
-  
-  // Replace MI
-  processed = processed.replace(/\bMI\b/gi, 'Mee');
-  
-  // Replace RA
-  processed = processed.replace(/\bRA\b/gi, 'Raa');
   
   return processed;
 }
@@ -41,15 +34,8 @@ export async function POST(request: NextRequest) {
 
     const { text, voice } = await request.json();
 
-    if (!text || !voice) {
-      return new Response(JSON.stringify({ error: 'Text and voice are required' }), { 
-        status: 400,
-        headers: { 'Content-Type': 'application/json' }
-      });
-    }
-
-    if (voice !== 'mi' && voice !== 'ra' && voice !== 'mira') {
-      return new Response(JSON.stringify({ error: 'Voice must be "mi", "ra", or "mira"' }), { 
+    if (!text) {
+      return new Response(JSON.stringify({ error: 'Text is required' }), { 
         status: 400,
         headers: { 'Content-Type': 'application/json' }
       });
@@ -64,16 +50,8 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // OpenAI Voice mapping
-    // MI/MIRA: nova - soft, warm female voice (multilingual)
-    // RA: onyx - deep, smooth male voice (multilingual)
-    const voiceMap: Record<string, string> = {
-      mi: 'nova',
-      ra: 'onyx',
-      mira: 'nova',
-    };
-
-    const selectedVoice = voiceMap[voice as 'mi' | 'ra' | 'mira'];
+    // MIRA always uses nova voice for TTS fallback
+    const selectedVoice = 'nova';
     const processedText = preprocessTextForTTS(text);
 
     // Call OpenAI TTS API

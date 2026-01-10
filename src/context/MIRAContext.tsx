@@ -39,7 +39,7 @@ interface DateTimeContext {
 
 // MIRA wake words - simple and fast
 const MIRA_WAKE_WORDS = new Set([
-  'mira', 'meera', 'mi', 'ra', 'myra', 'mera', 'maya', 'mia', 'miri',
+  'mira', 'meera', 'myra', 'mera', 'maya', 'mia', 'miri',
   'hey mira', 'hi mira', 'hello mira', 'ok mira', 'okay mira',
 ]);
 

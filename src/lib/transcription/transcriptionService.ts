@@ -7,9 +7,7 @@ import mongoose from 'mongoose';
 // MIRA trigger keywords
 const MIRA_KEYWORDS = [
   'mira', 'hey mira', 'hi mira', 'hello mira',
-  'mi', 'hey mi', 'hi mi',
-  'ra', 'hey ra', 'hi ra',
-  'meera', 'maya', // Common mispronunciations
+  'meera', 'maya', 'myra', 'mia', 'miri', // Common mispronunciations
 ];
 
 // Check if message is directed at MIRA
@@ -59,11 +57,11 @@ export function createUserSpeaker(userName: string): ISpeaker {
   };
 }
 
-// Create speaker object for मीरा
+// Create speaker object for MIRA
 export function createMiraSpeaker(_agent?: 'mira' | string): ISpeaker {
   return {
     id: 'mira',
-    name: 'मीरा',
+    name: 'MIRA',
     type: 'mira',
     isKnown: true,
   };

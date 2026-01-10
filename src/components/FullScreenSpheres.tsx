@@ -4,7 +4,7 @@ import { useEffect, useRef, useCallback, useState } from 'react';
 
 interface FullScreenSpheresProps {
   mode: 'separate' | 'combined';
-  speakingAgent: 'mi' | 'ra' | 'mira' | null;
+  speakingAgent: 'mira' | null; // MIRA is a single unified entity
   isSpeaking: boolean;
   audioLevel: number;
   isThinking?: boolean;
@@ -244,14 +244,8 @@ export default function FullScreenSpheres({
     const voiceDistortRadius = radius * (0.3 + currentAudioLevel * 0.4); // Grows with volume
 
     particlesRef.current.forEach((p) => {
-      // Determine if THIS particle should react to speech
-      // - If speaker is 'mira', all particles react
-      // - If speaker is 'mi', only MI particles react
-      // - If speaker is 'ra', only RA particles react
-      const particleShouldReact = aiSpeaking && (
-        currentSpeaker === 'mira' || 
-        currentSpeaker === p.colorType
-      );
+      // MIRA is a unified entity - all particles react together when speaking
+      const particleShouldReact = aiSpeaking;
       
       // No pulse scale - keep sphere size constant
       const pulseScale = 1;

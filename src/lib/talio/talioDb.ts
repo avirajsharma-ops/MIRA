@@ -3,8 +3,12 @@
 
 import mongoose from 'mongoose';
 
-const TALIO_MONGODB_URI = process.env.TALIO_MONGODB_URI || 
-  'mongodb+srv://admin:Mansiavi%402001@talio01.bzqh6xd.mongodb.net/?retryWrites=true&w=majority';
+// IMPORTANT: Do not hardcode MongoDB URIs - use environment variables only
+const TALIO_MONGODB_URI = process.env.TALIO_MONGODB_URI;
+
+if (!TALIO_MONGODB_URI) {
+  console.warn('[TalioDB] TALIO_MONGODB_URI not set in environment variables');
+}
 
 // Connection cache for tenant databases
 const tenantConnections = new Map<string, mongoose.Connection>();
@@ -19,6 +23,10 @@ let superAdminConnection: mongoose.Connection | null = null;
 export async function getSuperAdminConnection(): Promise<mongoose.Connection> {
   if (superAdminConnection && superAdminConnection.readyState === 1) {
     return superAdminConnection;
+  }
+
+  if (!TALIO_MONGODB_URI) {
+    throw new Error('TALIO_MONGODB_URI environment variable is not configured');
   }
 
   try {
@@ -47,6 +55,10 @@ export async function getTenantConnection(databaseName: string): Promise<mongoos
   const cached = tenantConnections.get(databaseName);
   if (cached && cached.readyState === 1) {
     return cached;
+  }
+
+  if (!TALIO_MONGODB_URI) {
+    throw new Error('TALIO_MONGODB_URI environment variable is not configured');
   }
 
   try {

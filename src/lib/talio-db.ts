@@ -439,6 +439,7 @@ const ROLE_HIERARCHY: Record<string, number> = {
 };
 
 // Get all employees accessible by a user based on their role AND department head status
+// ENHANCED: Managers get access to their department members + direct reports
 export async function getAccessibleEmployees(
   userId: string,
   employeeId: string,
@@ -551,16 +552,50 @@ export async function getAccessibleEmployees(
         accessDescription = `Manager access to ${directReports.length} direct reports`;
       }
     }
-    // Manager: Access to direct reports only
+    // Manager: Access to direct reports AND their own department members
+    // ENHANCED: Managers should see their department team members, not just direct reports
     else if (effectiveRole === 'manager' || roleLevel >= 2) {
-      employees = await employeesCollection
+      // Get direct reports
+      const directReports = await employeesCollection
         .find({ 
           reportingManager: new mongoose.Types.ObjectId(employeeId),
           status: 'active'
         })
         .toArray();
-      accessLevel = 'direct_reports';
-      accessDescription = `Manager access to ${employees.length} direct reports`;
+      
+      // ALSO get department members if manager belongs to a department
+      let departmentMembers: any[] = [];
+      if (departmentId) {
+        departmentMembers = await employeesCollection
+          .find({ 
+            company: new mongoose.Types.ObjectId(companyId),
+            department: new mongoose.Types.ObjectId(departmentId),
+            status: 'active'
+          })
+          .toArray();
+      }
+      
+      // Merge direct reports and department members (remove duplicates)
+      const employeeIds = new Set(departmentMembers.map(e => e._id.toString()));
+      for (const dr of directReports) {
+        if (!employeeIds.has(dr._id.toString())) {
+          departmentMembers.push(dr);
+        }
+      }
+      
+      employees = departmentMembers;
+      
+      if (departmentId && departmentMembers.length > directReports.length) {
+        // Get department name
+        const dept = await departmentsCollection.findOne({ 
+          _id: new mongoose.Types.ObjectId(departmentId) 
+        });
+        accessLevel = 'department';
+        accessDescription = `Manager access to ${dept?.name || 'your department'} (${employees.length} members) + ${directReports.length} direct reports`;
+      } else {
+        accessLevel = 'direct_reports';
+        accessDescription = `Manager access to ${directReports.length} direct reports`;
+      }
     }
     // Employee: Only self (already handled by default)
     else {
@@ -585,7 +620,7 @@ export async function getAccessibleEmployees(
       }
     }
 
-    console.log(`[Talio] Role ${effectiveRole} (isDeptHead: ${actualIsDepartmentHead}) has ${accessLevel} access to ${employees.length} employees`);
+    console.log(`[Talio] Role ${effectiveRole} (isDeptHead: ${actualIsDepartmentHead}, dept: ${departmentId}) has ${accessLevel} access to ${employees.length} employees`);
     return { employees, accessLevel, accessDescription, effectiveRole };
   } catch (error) {
     console.error('[Talio] Error getting accessible employees:', error);
@@ -1175,6 +1210,8 @@ export async function getTalioContext(email: string): Promise<{
   // Get employee details first (needed for department)
   const employee = userCheck.employeeId ? await getTalioEmployee(userCheck.employeeId) : null;
   const departmentId = employee?.department?.toString();
+  
+  console.log('[Talio] Employee department:', departmentId, 'departmentName:', employee?.departmentName);
 
   // Fetch basic data in parallel
   const [tasks, projects, messages, subordinates] = await Promise.all([
@@ -1262,6 +1299,8 @@ export async function getTalioContext(email: string): Promise<{
     roleSummary = `MANAGER + DEPARTMENT HEAD ACCESS: Access to ${teamMembers.length} employees (department members + ${subordinates.length} direct reports). Can view team tasks and attendance.`;
   } else if (isDeptHead) {
     roleSummary = `DEPARTMENT HEAD ACCESS: Access to ${teamMembers.length} employees in your department(s). Can view team tasks and attendance.`;
+  } else if (userCheck.role === 'manager' && accessLevel === 'department') {
+    roleSummary = `MANAGER ACCESS: Access to ${teamMembers.length} team members in your department + ${subordinates.length} direct reports. Can view team tasks, projects, and attendance.`;
   } else if (effectiveRole === 'manager') {
     roleSummary = `MANAGER ACCESS: Access to ${subordinates.length} direct reports. Can view and assign tasks, check attendance.`;
   } else {

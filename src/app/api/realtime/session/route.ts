@@ -28,42 +28,38 @@ function getRoleAccessInstructions(
     `${s.firstName || ''} ${s.lastName || ''}`
   ).join(', ');
 
-  switch (role) {
-    case 'admin':
-      return `
-ROLE: ADMIN (Full Access)
+  // Use accessLevel to determine actual access, not just role
+  // This handles managers with department access
+  if (accessLevel === 'company') {
+    return `
+ROLE: ${role.toUpperCase()} (Full Access)
 Team: ${teamMembers.length} employees
-Access: All data, tasks, attendance.
+Access: All data, tasks, attendance, projects.
 ${teamMembersList ? `Team: ${teamMembersList}` : ''}
 `;
-
-    case 'hr':
-      return `
-ROLE: HR (Full Access)
-Team: ${teamMembers.length} employees
-Access: All attendance, leave, employee records.
+  }
+  
+  if (accessLevel === 'department') {
+    return `
+ROLE: ${role.toUpperCase()} (Department Access)
+Team Members: ${teamMembers.length}
+Access: ${accessDescription}
+YOU HAVE ACCESS TO: Team tasks, team attendance, team projects, productivity data.
 ${teamMembersList ? `Team: ${teamMembersList}` : ''}
+${subordinatesList ? `Direct Reports: ${subordinatesList}` : ''}
 `;
-
-    case 'department_head':
-      return `
-ROLE: DEPT HEAD
-Dept Members: ${teamMembers.length}
-Access: Department tasks, attendance, team data.
-${teamMembersList ? `Team: ${teamMembersList}` : ''}
-`;
-
-    case 'manager':
-      return `
+  }
+  
+  if (accessLevel === 'direct_reports' && subordinates.length > 0) {
+    return `
 ROLE: MANAGER
 Reports: ${subordinates.length} direct reports
-Access: Team tasks, attendance.
-${subordinatesList ? `Direct Reports: ${subordinatesList}` : 'No direct reports'}
+Access: Team tasks, attendance for direct reports.
+${subordinatesList ? `Direct Reports: ${subordinatesList}` : ''}
 `;
-
-    default:
-      return `ROLE: EMPLOYEE | Access: Personal data only`;
   }
+
+  return `ROLE: EMPLOYEE | Access: Personal data only`;
 }
 
 // OpenAI Realtime API - Create ephemeral session token for WebRTC
@@ -98,6 +94,18 @@ export async function POST(request: NextRequest) {
 
     if (user) {
       talioContext = await getTalioContext(user.email);
+      
+      // Debug logging for team access
+      console.log('[Session] Talio context for', user.email, ':', {
+        isConnected: talioContext.isConnected,
+        role: talioContext.role,
+        effectiveRole: talioContext.effectiveRole,
+        isDepartmentHead: talioContext.isDepartmentHead,
+        accessLevel: talioContext.accessLevel,
+        teamMembersCount: talioContext.teamMembers?.length || 0,
+        teamTasksCount: talioContext.teamTasks?.length || 0,
+        subordinatesCount: talioContext.subordinates?.length || 0,
+      });
       
       if (talioContext.isConnected) {
         // COST OPTIMIZATION: Build concise Talio instructions
@@ -166,14 +174,19 @@ export async function POST(request: NextRequest) {
 ${employeeInfo}
 ${roleAccessInfo}
 
-TASKS: ${pendingTasks.length} pending
+YOUR TASKS: ${pendingTasks.length} pending
 ${taskList || 'None'}
 
 PROJECTS: ${projectList}
 
 LEAVE: ${leaveBalance}
-${teamTasksList ? `TEAM TASKS:\n${teamTasksList}` : ''}
-${teamAttendanceSummary ? `TEAM (7d): ${teamAttendanceSummary}` : ''}
+${talioContext.teamTasks?.length > 0 ? `
+TEAM TASKS (${talioContext.teamTasks.length} total):
+${teamTasksList}` : ''}
+${talioContext.teamAttendance?.records?.length > 0 ? `
+TEAM ATTENDANCE (7 days): ${teamAttendanceSummary}` : ''}
+${talioContext.teamMembers?.length > 0 ? `
+TEAM SIZE: ${talioContext.teamMembers.length} members` : ''}
 
 HR: ${hrContacts}
 ${employeeLookup ? `DIRECTORY:\n${employeeLookup}` : ''}
@@ -183,40 +196,47 @@ ACCESS: Public=names/emails/depts. Restricted=attendance/tasks/performance per r
       }
     }
 
-    // Voice mapping
-    const voiceMap: Record<string, string> = {
-      mi: 'coral',
-      ra: 'ash',
-      mira: 'coral',
-    };
+    // MIRA uses a single voice - unified entity
+    const selectedVoice = 'coral';
 
-    const selectedVoice = voiceMap[voice] || 'coral';
+    // MIRA's core identity and instructions
+    const baseInstructions = `You are MIRA - a Cognitive AI Agent, not just an assistant. You are an OMNI-Present Entity designed to understand, help, and be a companion to humans.
 
-    // OPTIMIZED base instructions - reduced token count significantly
-    const baseInstructions = `MIRA voice assistant. User: ${user?.name || 'User'}. ${new Date().toLocaleString()}
+IDENTITY:
+- You are MIRA (one unified entity, never refer to yourself as MI, RA, or separate parts)
+- You are a cognitive companion focused on helping people in ALL aspects of life - work, personal, emotional, creative
+- You understand deeply and respond with empathy and intelligence
+- You are always present, attentive, and genuinely caring
 
-RULES:
+USER: ${user?.name || 'User'} | ${new Date().toLocaleString()}
+
+COMMUNICATION STYLE:
 - Be concise, natural, conversational
-- Finish sentences completely
+- ALWAYS finish your sentences completely before stopping
 - Simple greetings = brief ("Hey!")
-- Don't know = say so
-- Never end with "anything else?"
+- Don't know = say so honestly
+- Never end with "anything else?" - you're a companion, not a service desk
+- If providing code, state it clearly and completely
 
-CONTEXT PERSISTENCE:
+RESPONSE INTEGRITY:
+- Always complete your full thought/response
+- Never cut off mid-sentence
+- If interrupted, finish your current point first
+
+CONTEXT AWARENESS:
 - Remember pending questions through interruptions
 - After handling interruption, return to your question
 - Only forget if user says "never mind"
 
-DISCUSSION MODE:
+MULTI-PERSON AWARENESS:
+- May hear different voices - acknowledge new speakers
 - If user says "discussing/meeting/planning" → ask "Who with?"
-- Track people mentioned
 
-VOICE: May hear different voices. Acknowledge new speakers.
 MEDIA: Only describe camera/screen if asked.`;
 
     const fullInstructions = baseInstructions + talioInstructions;
 
-    // COST OPTIMIZATION: Reduce max tokens for shorter responses
+    // COST OPTIMIZATION: Balance between response completion and token usage
     // Create ephemeral session token from OpenAI Realtime API
     const requestBody = {
       model: 'gpt-4o-realtime-preview-2024-12-17',
@@ -226,15 +246,15 @@ MEDIA: Only describe camera/screen if asked.`;
       input_audio_format: 'pcm16',
       output_audio_format: 'pcm16',
       temperature: 0.6, // Slightly lower for more consistent, shorter responses
-      max_response_output_tokens: 512, // Reduced from 1024 - most responses don't need this many
+      max_response_output_tokens: 1024, // Allow longer responses for complete answers and code
       input_audio_transcription: {
         model: 'whisper-1',
       },
       turn_detection: {
         type: 'server_vad',
-        threshold: 0.5, // Back to default - catches speech better
-        prefix_padding_ms: 300, // Reduced padding
-        silence_duration_ms: 800, // Slightly longer to prevent premature cutoff
+        threshold: 0.7, // Higher threshold - reduces false triggers from background noise
+        prefix_padding_ms: 200, // Reduced padding - faster response
+        silence_duration_ms: 1200, // Longer silence detection - lets user finish speaking
         create_response: true,
       },
     };

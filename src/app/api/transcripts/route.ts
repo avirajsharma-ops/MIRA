@@ -37,10 +37,8 @@ export async function POST(request: NextRequest) {
     if (speakerType === 'user') {
       speaker = createUserSpeaker(payload.name || 'User');
     } else if (speakerType === 'mira') {
-      // Normalize speakerName to lowercase for createMiraSpeaker
-      // Handle both 'MI'/'RA'/'MIRA' (uppercase) and 'mi'/'ra'/'mira' (lowercase)
-      const normalizedAgent = (speakerName || 'mira').toLowerCase() as 'mi' | 'ra' | 'mira';
-      speaker = createMiraSpeaker(normalizedAgent);
+      // MIRA is a unified entity
+      speaker = createMiraSpeaker();
     } else {
       // Other person
       speaker = {

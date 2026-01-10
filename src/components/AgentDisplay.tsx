@@ -51,13 +51,9 @@ export default function AgentDisplay({ showControls = true }: AgentDisplayProps)
 
       {/* Status overlay */}
       <div className="absolute inset-0 flex flex-col items-center justify-end pb-24 sm:pb-32 pointer-events-none z-10 status-overlay-mobile">
-        {isSpeaking && speakingAgent && (
+        {isSpeaking && (
           <p className="text-white/70 text-sm sm:text-lg mb-4 px-4 text-center">
-            {speakingAgent === 'mira'
-              ? 'MIRA is speaking...'
-              : speakingAgent === 'mi'
-              ? 'MI is speaking...'
-              : 'RA is speaking...'}
+            MIRA is speaking...
           </p>
         )}
         {isThinking && (
