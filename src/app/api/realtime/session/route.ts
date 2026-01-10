@@ -271,9 +271,9 @@ MEDIA: Only describe camera/screen if asked.`;
       },
       turn_detection: {
         type: 'server_vad',
-        threshold: 0.92, // Very high threshold - strong noise cancellation, only clear speech triggers
-        prefix_padding_ms: 100, // Minimal padding
-        silence_duration_ms: 1800, // Longer silence - ensures user is done speaking
+        threshold: 0.95, // Maximum threshold - only very clear, loud speech triggers interruption
+        prefix_padding_ms: 1000, // Require 1 full second of sustained speech before considering it an interruption
+        silence_duration_ms: 2000, // 2 seconds of silence required to confirm end of speech
         create_response: true,
       },
     };
