@@ -120,8 +120,8 @@ export default function FullScreenSpheres({
     if (dimensions.width === 0) return;
 
     const particles: Particle[] = [];
-    // Reduced particle count by 30% for better performance on low-end devices
-    const particleCount = 3500;
+    // Reduced particle count for better performance and stability
+    const particleCount = 2000;
     const radius = getSphereRadius();
     const centers = getSphereCenters();
     // Use lower DPR for better performance (cap at 1.5)

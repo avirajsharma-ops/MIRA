@@ -11,7 +11,7 @@ const inter = Inter({
 
 export const metadata: Metadata = {
   title: "MIRA",
-  description: "Your Intelligent AI Companion",
+  description: "Not just AI",
   manifest: "/manifest.json",
   icons: {
     icon: "/favicon.png",

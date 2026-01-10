@@ -49,7 +49,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST - Add a new person
+// POST - Add a new person (supports both face-based and voice-based detection)
 export async function POST(request: NextRequest) {
   try {
     const token = getTokenFromHeader(request.headers.get('authorization'));
@@ -63,11 +63,11 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { name, imageBase64, relationship, context } = body;
+    const { name, imageBase64, relationship, context, conversationContext, source, firstMet } = body;
 
-    if (!name || !imageBase64) {
+    if (!name) {
       return NextResponse.json(
-        { error: 'Name and image are required' },
+        { error: 'Name is required' },
         { status: 400 }
       );
     }
@@ -81,35 +81,91 @@ export async function POST(request: NextRequest) {
     });
 
     if (existingPerson) {
-      return NextResponse.json(
-        { error: 'A person with this name already exists' },
-        { status: 409 }
-      );
+      // Update existing person with new context
+      existingPerson.metadata.lastSeen = new Date();
+      existingPerson.metadata.seenCount += 1;
+      
+      // Add conversation context to learned info
+      if (conversationContext) {
+        const contextSummary = `[${new Date().toLocaleDateString()}] Said: "${conversationContext.slice(0, 200)}${conversationContext.length > 200 ? '...' : ''}"`;
+        existingPerson.metadata.learnedInfo.push(contextSummary);
+        
+        // Keep only last 20 learned items
+        if (existingPerson.metadata.learnedInfo.length > 20) {
+          existingPerson.metadata.learnedInfo = existingPerson.metadata.learnedInfo.slice(-20);
+        }
+      }
+      
+      await existingPerson.save();
+      
+      return NextResponse.json({
+        success: true,
+        isNew: false,
+        person: {
+          id: existingPerson._id.toString(),
+          name: existingPerson.personName,
+          relationship: existingPerson.relationship,
+        },
+      });
     }
 
-    const person = await savePerson(
-      payload.userId,
-      name,
-      imageBase64,
-      relationship || 'unknown',
-      context || ''
-    );
-
-    if (!person) {
-      return NextResponse.json(
-        { error: 'Failed to save person' },
-        { status: 500 }
+    // If we have an image, use the face-based save function
+    if (imageBase64) {
+      const person = await savePerson(
+        payload.userId,
+        name,
+        imageBase64,
+        relationship || 'unknown',
+        context || ''
       );
+
+      if (!person) {
+        return NextResponse.json(
+          { error: 'Failed to save person' },
+          { status: 500 }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        isNew: true,
+        person: {
+          id: person._id.toString(),
+          name: person.personName,
+          relationship: person.relationship,
+          distinctiveFeatures: person.distinctiveFeatures,
+          context: person.metadata.context,
+        },
+      });
     }
+    
+    // Voice-based detection (no image)
+    const person = new FaceData({
+      userId: payload.userId,
+      personName: name,
+      relationship: relationship || 'unknown',
+      metadata: {
+        firstSeen: firstMet || new Date(),
+        lastSeen: new Date(),
+        seenCount: 1,
+        notes: source === 'voice_detection' ? 'Detected via voice in conversation' : '',
+        context: context || '',
+        learnedInfo: conversationContext 
+          ? [`[${new Date().toLocaleDateString()}] Said: "${conversationContext.slice(0, 200)}${conversationContext.length > 200 ? '...' : ''}"`]
+          : [],
+      },
+      isOwner: false,
+    });
+
+    await person.save();
 
     return NextResponse.json({
       success: true,
+      isNew: true,
       person: {
         id: person._id.toString(),
         name: person.personName,
         relationship: person.relationship,
-        distinctiveFeatures: person.distinctiveFeatures,
-        context: person.metadata.context,
       },
     });
   } catch (error) {

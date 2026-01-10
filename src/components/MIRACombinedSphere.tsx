@@ -5,7 +5,7 @@ import { useEffect, useRef, useCallback } from 'react';
 interface MIRACombinedSphereProps {
   isSpeaking: boolean;
   size?: number;
-  audioLevel?: number;
+  audioLevel?: number; // Now properly receives MIRA's output audio level when speaking
 }
 
 interface Particle {
@@ -26,7 +26,7 @@ interface Particle {
 export default function MIRACombinedSphere({
   isSpeaking,
   size = 400,
-  audioLevel = 0,
+  audioLevel = 0, // Receives proper MIRA output level from context
 }: MIRACombinedSphereProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const particlesRef = useRef<Particle[]>([]);
@@ -34,14 +34,16 @@ export default function MIRACombinedSphere({
   const mouseRef = useRef({ x: 0, y: 0, isActive: false });
   const audioLevelRef = useRef(0);
   
+  // Update audio level ref when prop changes
   useEffect(() => {
     audioLevelRef.current = audioLevel;
   }, [audioLevel]);
 
-  // Initialize particles with mixed colors
+  // Initialize particles with mixed colors - OPTIMIZED for performance
   const initParticles = useCallback(() => {
     const particles: Particle[] = [];
-    const particleCount = 4000;
+    // Reduced particle count for better performance (was 4000, now 1200)
+    const particleCount = 1200;
     const baseRadius = size * 0.4;
 
     for (let i = 0; i < particleCount; i++) {
@@ -62,8 +64,8 @@ export default function MIRACombinedSphere({
         vx: 0,
         vy: 0,
         vz: 0,
-        size: Math.random() * 1.5 + 0.5,
-        alpha: Math.random() * 0.5 + 0.5,
+        size: Math.random() * 2.5 + 1.2, // Slightly larger particles to compensate for fewer
+        alpha: Math.random() * 0.6 + 0.4,
         colorType: Math.random() > 0.5 ? 'mi' : 'ra', // Mixed colors
       });
     }
@@ -71,7 +73,22 @@ export default function MIRACombinedSphere({
     particlesRef.current = particles;
   }, [size]);
 
+  // Track last frame time for throttling
+  const lastFrameTimeRef = useRef(0);
+  const targetFPS = 30; // Throttle to 30 FPS for better performance
+  const frameInterval = 1000 / targetFPS;
+
   const animate = useCallback(() => {
+    const now = Date.now();
+    const elapsed = now - lastFrameTimeRef.current;
+    
+    // Throttle frame rate
+    if (elapsed < frameInterval) {
+      animationRef.current = requestAnimationFrame(animate);
+      return;
+    }
+    lastFrameTimeRef.current = now - (elapsed % frameInterval);
+
     const canvas = canvasRef.current;
     if (!canvas) return;
 
@@ -86,23 +103,26 @@ export default function MIRACombinedSphere({
     ctx.clearRect(0, 0, width, height);
     ctx.globalCompositeOperation = 'lighter';
 
-    const time = Date.now() * 0.001;
+    const time = now * 0.001;
     const currentAudioLevel = audioLevelRef.current;
     const voiceActive = currentAudioLevel > 0.05;
     
-    const rotationSpeed = (isSpeaking || voiceActive) ? 0.6 : 0.3;
+    // Smoother rotation - slower base speed for stability
+    const rotationSpeed = (isSpeaking || voiceActive) ? 0.4 : 0.25;
     const rotTime = time * rotationSpeed;
     
-    // No pulse/zoom effect - keep sphere size constant
+    // No pulse/zoom effect - keep sphere size constant for stability
     const pulseScale = 1;
 
-    const SPRING = (isSpeaking || voiceActive) ? 0.07 : 0.05;
-    const FRICTION = 0.9;
+    // Increased spring stiffness and friction for stability
+    const SPRING = (isSpeaking || voiceActive) ? 0.08 : 0.06;
+    const FRICTION = 0.88; // Slightly higher friction for more stability
     const Z_PERSPECTIVE = 800;
-    const interactionRadius = size * 0.6;
+    const interactionRadius = size * 0.5; // Reduced interaction radius
     
-    const baseWarpStrength = isSpeaking ? 180 : 150;
-    const voiceWarpBoost = currentAudioLevel * 250;
+    // Reduced warp strength for stability
+    const baseWarpStrength = isSpeaking ? 120 : 100;
+    const voiceWarpBoost = currentAudioLevel * 150; // Reduced from 250
     const warpStrength = baseWarpStrength + voiceWarpBoost;
 
     const mouse = mouseRef.current;
@@ -111,10 +131,10 @@ export default function MIRACombinedSphere({
     const rotX = mouse.isActive ? mouseRelY * 0.0001 : 0;
     const rotY = mouse.isActive ? mouseRelX * 0.0001 : 0;
     
-    // Voice distortion points
+    // Voice distortion - smoother and more stable
     const voiceDistortionActive = voiceActive && !mouse.isActive;
-    const voiceAngle = time * 3;
-    const voiceDistortRadius = size * 0.3 * (1 + currentAudioLevel);
+    const voiceAngle = time * 2; // Slower rotation for stability
+    const voiceDistortRadius = size * 0.25 * (1 + currentAudioLevel * 0.5); // Reduced range
 
     particlesRef.current.forEach((p) => {
       const scaledBaseX = p.baseX * pulseScale;
@@ -163,11 +183,11 @@ export default function MIRACombinedSphere({
         }
       }
       
-      // Voice-reactive distortion
+      // Voice-reactive distortion - reduced to 2 points for performance
       if (voiceDistortionActive) {
-        const numPoints = 4;
+        const numPoints = 2;
         for (let i = 0; i < numPoints; i++) {
-          const pointAngle = voiceAngle + (i * Math.PI * 2 / numPoints);
+          const pointAngle = voiceAngle + (i * Math.PI);
           const distortX = cx + Math.cos(pointAngle) * voiceDistortRadius;
           const distortY = cy + Math.sin(pointAngle) * voiceDistortRadius;
           
@@ -181,7 +201,7 @@ export default function MIRACombinedSphere({
             const force = (voiceInteractionRadius - dist) / voiceInteractionRadius;
             const angle = Math.atan2(dy, dx);
             
-            const voiceForce = force * warpStrength * currentAudioLevel * 0.4;
+            const voiceForce = force * warpStrength * currentAudioLevel * 0.5;
             const fx = Math.cos(angle) * voiceForce;
             const fy = Math.sin(angle) * voiceForce;
             const fz = -force * voiceForce * 0.25;

@@ -7,6 +7,7 @@ import mongoose from 'mongoose';
 import { getRecentTranscriptEntries } from '@/lib/transcription/transcriptionService';
 import { unifiedSmartChat } from '@/lib/ai/gemini-chat';
 import { analyzeImageWithGemini } from '@/lib/vision';
+import { handleTalioQuery, isTalioQuery, TalioMiraUser } from '@/lib/talio/talioMiraIntegration';
 
 // File attachment interface
 interface FileAttachment {
@@ -64,27 +65,6 @@ async function processAttachments(attachments: FileAttachment[]): Promise<string
   return results.length > 0 ? `\n--- User Attachments ---\n${results.join('\n\n')}\n--- End Attachments ---\n` : '';
 }
 
-// Detect if user is addressing a specific agent (MI, RA, or MIRA)
-function detectAgentMention(text: string): 'mi' | 'ra' | 'mira' | null {
-  const lower = text.toLowerCase();
-  
-  // Check for MIRA first (combination of MI+RA)
-  if (/\b(mira|meera|meira|myra)\b/i.test(lower)) {
-    return 'mira';
-  }
-  
-  // Check for specific agents
-  if (/\b(hey |hi )?(mi|mee|mי)\b/i.test(lower)) {
-    return 'mi';
-  }
-  
-  if (/\b(hey |hi )?(ra|raa|rah)\b/i.test(lower)) {
-    return 'ra';
-  }
-  
-  return null;
-}
-
 // Check if message is simple and doesn't need heavy processing
 function isSimpleMessage(message: string): boolean {
   const lower = message.toLowerCase().trim();
@@ -135,7 +115,6 @@ export async function POST(request: NextRequest) {
       conversationId,
       visualContext,
       dateTime,
-      forceAgent, // Optional: force a specific agent
       proactive, // Flag for proactive checks
       sessionId, // Session ID for transcript context
       attachments, // File attachments (images, PDFs, text, etc.)
@@ -173,14 +152,14 @@ export async function POST(request: NextRequest) {
       };
       
       const agent = new MIRAAgent(agentContext);
-      const introResponse = await agent.getAgentResponse('mi', 
+      const introResponse = await agent.getAgentResponse('mira', 
         `You notice someone new. ${faceContext} Introduce yourself warmly as मीरा and ask them their name. Be friendly and natural - don't mention cameras or images. Just greet them like you're meeting for the first time and ask who they are.`
       );
       
       return NextResponse.json({
         conversationId: conversationId || null,
         response: {
-          agent: 'mi',
+          agent: 'mira',
           content: introResponse.content,
           emotion: 'friendly',
         },
@@ -267,9 +246,6 @@ export async function POST(request: NextRequest) {
 
     const agent = new MIRAAgent(agentContext);
 
-    // Detect if user is addressing a specific agent
-    const mentionedAgent = forceAgent || detectAgentMention(message);
-
     // Check for face save intent ONLY if message contains face-related keywords
     const faceSaveKeywords = /\b(save|remember|this is|meet|name is|called)\b.*\b(face|person|him|her|them|photo)\b|\b(face|person|him|her|them)\b.*\b(save|remember|name)\b/i;
     if (!simpleMsg && visualContext?.currentFrame && faceSaveKeywords.test(message)) {
@@ -296,14 +272,14 @@ export async function POST(request: NextRequest) {
       
       conversation.metadata.totalMessages = conversation.messages.length;
       conversation.metadata.userMessages += 1;
-      conversation.metadata.miMessages += 1;
+      conversation.metadata.miraMessages += 1;
       
       await conversation.save();
       
       return NextResponse.json({
         conversationId: conversation._id,
         response: {
-          agent: 'mi',
+          agent: 'mira',
           content: responseContent,
         },
         faceSaved: faceSaveResult.saved,
@@ -319,6 +295,36 @@ export async function POST(request: NextRequest) {
     if (attachments && attachments.length > 0) {
       console.log('[Chat] Processing', attachments.length, 'attachment(s)');
       attachmentContext = await processAttachments(attachments);
+    }
+
+    // =================
+    // TALIO HRMS QUERY DETECTION
+    // =================
+    // Check if user has Talio integration and this is a Talio-related query
+    let talioContext = '';
+    if (payload.talioIntegration?.enabled && isTalioQuery(message)) {
+      try {
+        console.log('[Chat] Detected Talio HRMS query');
+        const talioUser: TalioMiraUser = {
+          email: payload.email,
+          talioUserId: payload.talioIntegration.userId,
+          tenantDatabase: payload.talioIntegration.tenantId,
+          role: payload.talioIntegration.role,
+          employeeId: payload.talioIntegration.employeeId,
+          department: payload.talioIntegration.department,
+        };
+        
+        const talioResult = await handleTalioQuery(message, talioUser);
+        
+        if (talioResult.success && talioResult.data) {
+          // Add Talio data to context for the AI to use
+          talioContext = `\n[TALIO HRMS DATA]\n${talioResult.message}\n${JSON.stringify(talioResult.data, null, 2)}\n[END TALIO DATA]\n`;
+          console.log('[Chat] Talio query successful, adding context');
+        }
+      } catch (talioError) {
+        console.error('[Chat] Talio query failed:', talioError);
+        // Continue without Talio data
+      }
     }
 
     // Build context string for unified chat
@@ -347,6 +353,11 @@ export async function POST(request: NextRequest) {
       contextParts.push(attachmentContext);
     }
     
+    // Add Talio HRMS data context if available
+    if (talioContext) {
+      contextParts.push(talioContext);
+    }
+    
     // Add interruption context if user interrupted MIRA mid-response
     if (interruptionContext?.wasInterrupted) {
       contextParts.push(`\n[INTERRUPTION CONTEXT]\nYou were interrupted while saying: "${interruptionContext.spokenPortion}..."\nYour full intended response was: "${interruptionContext.previousResponse}"\nAfter addressing the user's interruption/question, naturally continue or summarize what you were saying. Don't explicitly say "as I was saying" - just smoothly continue.`);
@@ -359,31 +370,23 @@ export async function POST(request: NextRequest) {
       ? `${message}\n\n${attachmentContext}` 
       : message;
 
-    // Check if user explicitly mentioned an agent
-    if (mentionedAgent === 'mi') {
-      // User specifically wants MI - use direct call for speed
-      response = await agent.getAgentResponse('mi', messageWithAttachments);
-    } else if (mentionedAgent === 'ra') {
-      // User specifically wants RA
-      response = await agent.getAgentResponse('ra', messageWithAttachments);
-    } else {
-      // === UNIFIED SMART CHAT - Single AI call handles routing + response ===
-      const unifiedResult = await unifiedSmartChat(
-        message,
-        contextString,
-        conversation.messages.slice(-6).map((m: { role: string; content: string }) => ({
-          role: m.role === 'user' ? 'user' as const : 'assistant' as const,
-          content: m.content.substring(0, 200),
-        }))
-      );
-      
-      // Direct response from unified agent (no more debate system)
-      response = {
-        agent: unifiedResult.agent,
-        content: unifiedResult.content,
-        emotion: unifiedResult.emotion,
-      };
-    }
+    // Always use unified MIRA - no more agent routing
+    // === UNIFIED SMART CHAT - Single AI call handles response ===
+    const unifiedResult = await unifiedSmartChat(
+      messageWithAttachments,
+      contextString,
+      conversation.messages.slice(-6).map((m: { role: string; content: string }) => ({
+        role: m.role === 'user' ? 'user' as const : 'assistant' as const,
+        content: m.content.substring(0, 200),
+      }))
+    );
+    
+    // Direct response from unified MIRA agent
+    response = {
+      agent: unifiedResult.agent,
+      content: unifiedResult.content,
+      emotion: unifiedResult.emotion,
+    };
 
     // Store user message
     conversation.messages.push({
@@ -394,7 +397,7 @@ export async function POST(request: NextRequest) {
 
     // Store final response
     conversation.messages.push({
-      role: response.agent as 'mi' | 'ra' | 'mira',
+      role: 'mira',
       content: response.content,
       timestamp: new Date(),
       emotion: 'emotion' in response ? response.emotion : undefined,
@@ -403,8 +406,7 @@ export async function POST(request: NextRequest) {
     // Update metadata
     conversation.metadata.totalMessages = conversation.messages.length;
     conversation.metadata.userMessages += 1;
-    if (response.agent === 'mi') conversation.metadata.miMessages += 1;
-    if (response.agent === 'ra') conversation.metadata.raMessages += 1;
+    conversation.metadata.miraMessages += 1;
 
     await conversation.save();
 

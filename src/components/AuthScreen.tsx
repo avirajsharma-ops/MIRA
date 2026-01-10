@@ -72,7 +72,7 @@ export default function AuthScreen() {
             </h1>
           </div>
           <p className={`mt-2 ${isInIframe ? 'text-black/60' : 'text-white/50'}`}>
-            Your Intelligent AI Companion
+            Not just AI
           </p>
         </div>
 
@@ -150,10 +150,6 @@ export default function AuthScreen() {
         </div>
 
         {/* Info */}
-        <div className={`mt-8 text-center text-sm ${isInIframe ? 'text-black/40' : 'text-white/30'}`}>
-          <p>✨ Always here to help</p>
-          <p>🎯 Smart, intuitive, and personal</p>
-        </div>
       </div>
     </div>
   );

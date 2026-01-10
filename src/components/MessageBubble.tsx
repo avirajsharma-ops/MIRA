@@ -3,9 +3,8 @@
 import { useMIRA } from '@/context/MIRAContext';
 
 interface MessageBubbleProps {
-  role: 'user' | 'mi' | 'ra' | 'mira' | 'system';
+  role: 'user' | 'mira' | 'system';
   content: string;
-  isDebate?: boolean;
   emotion?: string;
   timestamp: Date;
 }
@@ -13,16 +12,11 @@ interface MessageBubbleProps {
 export default function MessageBubble({
   role,
   content,
-  isDebate,
   emotion,
   timestamp,
 }: MessageBubbleProps) {
   const getAgentColor = () => {
     switch (role) {
-      case 'mi':
-        return 'bg-purple-500/20 border-purple-500/50';
-      case 'ra':
-        return 'bg-cyan-500/20 border-cyan-500/50';
       case 'mira':
         return 'bg-white/10 border-white/30';
       case 'user':
@@ -34,10 +28,6 @@ export default function MessageBubble({
 
   const getAgentName = () => {
     switch (role) {
-      case 'mi':
-        return 'MI';
-      case 'ra':
-        return 'RA';
       case 'mira':
         return 'MIRA';
       case 'user':
@@ -49,10 +39,6 @@ export default function MessageBubble({
 
   const getAgentIcon = () => {
     switch (role) {
-      case 'mi':
-        return '💜';
-      case 'ra':
-        return '💙';
       case 'mira':
         return '✨';
       case 'user':
@@ -64,9 +50,7 @@ export default function MessageBubble({
 
   return (
     <div
-      className={`flex ${role === 'user' ? 'justify-end' : 'justify-start'} ${
-        isDebate ? 'pl-8 opacity-80' : ''
-      }`}
+      className={`flex ${role === 'user' ? 'justify-end' : 'justify-start'}`}
     >
       <div
         className={`max-w-[80%] rounded-2xl px-4 py-3 border ${getAgentColor()} ${
@@ -77,7 +61,6 @@ export default function MessageBubble({
           <span className="text-sm">{getAgentIcon()}</span>
           <span className="text-xs font-semibold text-white/70">
             {getAgentName()}
-            {isDebate && ' (discussing)'}
           </span>
           {emotion && (
             <span className="text-xs text-white/50 italic">• {emotion}</span>

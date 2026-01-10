@@ -386,7 +386,7 @@ function MIRAApp() {
 
   return (
     <div className={`min-h-screen app-container ${isInIframe ? 'bg-transparent' : 'bg-black'}`}>
-      {/* MIRA Getting Ready Loading Dialog - hide when recording starts */}
+      {/* MIRA Getting Ready Loading Dialog - hide when mic is ready or recording */}
       {!isMicReady && !isRecording && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
           <div className="bg-black/60 backdrop-blur-xl border border-white/20 rounded-3xl px-8 py-6 shadow-2xl">
@@ -397,6 +397,12 @@ function MIRAApp() {
               </div>
               <div className="text-white/90 font-medium text-lg">MIRA is getting ready...</div>
               <div className="text-white/50 text-sm">Setting up voice connection</div>
+              <button 
+                className="mt-2 px-4 py-1.5 bg-white/10 hover:bg-white/20 rounded-full text-xs text-white/70 pointer-events-auto transition-colors"
+                onClick={() => window.location.reload()}
+              >
+                Reload if stuck
+              </button>
             </div>
           </div>
         </div>

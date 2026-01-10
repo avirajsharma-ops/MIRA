@@ -1,13 +1,11 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
 export interface IMessage {
-  role: 'user' | 'mi' | 'ra' | 'mira' | 'system';
+  role: 'user' | 'mira' | 'system';
   content: string;
   timestamp: Date;
   audioUrl?: string;
   emotion?: string;
-  isDebate?: boolean; // Marks messages that are part of MI-RA discussion
-  replyTo?: string; // For tracking debate flow
   visualContext?: {
     hasCamera: boolean;
     hasScreen: boolean;
@@ -28,11 +26,8 @@ export interface IConversation extends Document {
   endedAt?: Date;
   metadata: {
     totalMessages: number;
-    miMessages: number;
-    raMessages: number;
+    miraMessages: number;
     userMessages: number;
-    debateCount: number;
-    consensusReached: number;
   };
 }
 
@@ -40,7 +35,7 @@ const MessageSchema = new Schema<IMessage>(
   {
     role: {
       type: String,
-      enum: ['user', 'mi', 'ra', 'mira', 'system'],
+      enum: ['user', 'mira', 'system'],
       required: true,
     },
     content: {
@@ -53,11 +48,6 @@ const MessageSchema = new Schema<IMessage>(
     },
     audioUrl: String,
     emotion: String,
-    isDebate: {
-      type: Boolean,
-      default: false,
-    },
-    replyTo: String,
     visualContext: {
       hasCamera: Boolean,
       hasScreen: Boolean,
@@ -97,11 +87,8 @@ const ConversationSchema = new Schema<IConversation>(
     endedAt: Date,
     metadata: {
       totalMessages: { type: Number, default: 0 },
-      miMessages: { type: Number, default: 0 },
-      raMessages: { type: Number, default: 0 },
+      miraMessages: { type: Number, default: 0 },
       userMessages: { type: Number, default: 0 },
-      debateCount: { type: Number, default: 0 },
-      consensusReached: { type: Number, default: 0 },
     },
   },
   {

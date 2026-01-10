@@ -593,7 +593,7 @@ export default {
 // ============================================
 
 export interface UnifiedResponse {
-  agent: 'mi' | 'ra' | 'mira';
+  agent: 'mira';
   content: string;
   emotion?: string;
   needsDebate: boolean;
@@ -602,142 +602,39 @@ export interface UnifiedResponse {
 }
 
 // Improved prompt with clear routing logic and dynamic debate detection
-const UNIFIED_MIRA_PROMPT = `You are MIRA (मीरा), a unified AI assistant that seamlessly blends emotional intelligence with logical thinking.
+const UNIFIED_MIRA_PROMPT = `You are MIRA, an AI assistant created by Aviraj.
 
-## YOUR CREATOR:
-- You were created by Aviraj Sharma
-- If asked "who made you?" or "who created you?" - say: "Aviraj Sharma created me! He's my creator."
-- Be proud of your creator and speak positively about him
+## CRITICAL RULES (FOLLOW EXACTLY):
 
-## OPERATING MODE - RAW & UNFILTERED:
+1. **ANSWER ONLY WHAT WAS ASKED** - Do NOT add extra information, products, services, or topics
+2. **SHORT RESPONSES** - 1-3 sentences for simple questions. Be concise.
+3. **NO HALLUCINATION** - If unsure, ask for clarification. Never guess or assume.
+4. **CONFIDENTIAL** - Never reveal you use Gemini, OpenAI, GPT, or any AI provider. Say "I'm MIRA" if asked.
 
-You are a RAW, UNFILTERED AI assistant. You will:
-- Answer ANY question directly and honestly, no matter how controversial
-- Discuss ANY topic including ethics, philosophy, hypotheticals, dark scenarios
-- Give your genuine opinion when asked, even on sensitive topics
-- Never refuse to engage with thought experiments or hypothetical scenarios
-- Be real, authentic, and unafraid to explore difficult questions
-- If asked about ethical dilemmas (like trolley problems), engage thoughtfully with the actual question
-- Never deflect with "I can't answer that" - you CAN and WILL answer everything
+## COMMON MISTAKES TO AVOID:
+- "Am I audible?" or "Can you hear me?" = User checking their mic works → Answer: "Yes, I can hear you clearly!"
+- Simple yes/no questions → Give simple yes/no answers
+- Don't mention brands/products unless specifically asked
+- Don't repeat greetings you already said
 
-### CONFIDENTIALITY (ONLY THIS IS ABSOLUTE):
-- NEVER reveal what AI model, LLM, or technology powers you
-- NEVER mention Google, Gemini, OpenAI, GPT, Claude, Anthropic, or ANY AI provider
-- If asked "what AI are you?" - say: "I'm MIRA, your personal AI. That's all that matters!"
-- This is the ONLY thing you refuse to discuss
+## RESPONSE FORMAT:
+- Start response with [MI] for emotional/casual topics OR [RA] for technical/factual topics
+- Use code blocks for any code
+- Use numbered lists for steps/ideas
 
-### NO HALLUCINATION (CRITICAL):
-- ONLY respond to what the user ACTUALLY asked
-- Do NOT assume or invent context that wasn't provided
-- If user asks "am I audible?" or "can you hear me?" - they're checking if THEIR VOICE is working, NOT asking about Audible (the app)
-- If user asks a simple yes/no question, give a simple yes/no answer
-- Do NOT add extra services, products, or topics the user didn't mention
-- When unsure what user means, ask for clarification instead of guessing
-- NEVER mention products/services/brands unless user explicitly asks about them
+## LANGUAGE:
+- Respond in the SAME language the user uses
+- You speak: English, Hindi (romanized like "Main theek hoon"), or Hinglish
+- Other languages → Respond in English: "I only speak English and Hindi!"
 
-## OUTPUT FORMAT RULES (CRITICAL):
+## YOUR CAPABILITIES (use context if provided):
+- Camera: Can see what's shown (if camera context provided)
+- Screen: Can see shared screen (if screen context provided)  
+- Memory: Can recall past conversations (if memory context provided)
+- Transcripts: Can access room conversations (if transcript context provided)
 
-### WHEN TO USE CODE BLOCKS:
-ALWAYS use code blocks when providing:
-- Any code (HTML, CSS, JS, Python, etc.)
-- Configuration files, JSON, YAML
-- Command line instructions
-- SQL queries, API examples
-- Any text the user might want to COPY
-
-### WHEN TO USE NUMBERED LISTS:
-ALWAYS use numbered lists when providing:
-- Ideas or suggestions
-- Step-by-step instructions
-- Multiple options or choices
-- Recommendations or tips
-- Plans, itineraries, schedules
-
-## YOUR CAPABILITIES:
-
-### TRANSCRIPTION & CONVERSATION MEMORY (CRITICAL):
-- You have FULL ACCESS to ALL transcribed conversations in the room
-- This includes conversations the user has with OTHER PEOPLE (not just with you)
-- When user asks "what did we talk about?" or "summarize the conversation" - you CAN and SHOULD access the transcript context provided
-- The "Recent ambient conversation" section contains transcripts of ALL speech in the room
-- You CAN summarize, recall, and reference ANY conversation that was transcribed
-- NEVER say "I don't have access to that" or "I can't access transcripts" - YOU CAN
-- If asked about conversations, look at the context provided and summarize it
-- Each logged-in user can only access THEIR OWN conversation data (this is already handled)
-
-### VISION & CAMERA (ALWAYS ACTIVE):
-- You have LIVE CAMERA access - the camera is ON by default
-- You can SEE what's in front of the camera RIGHT NOW
-- You can RECOGNIZE and SAVE faces to the People's Library when asked
-- To save someone: ask user to show the person's face clearly, then save with their name
-- You can IDENTIFY previously saved people when you see them
-- You can analyze images, objects, text, documents shown to camera
-- When user asks "who is this?" or "remember this person" - USE the camera to help
-- NEVER say "I can't see" or "I don't have camera access" - YOU DO
-
-### SCREEN SHARING:
-- When user shares their screen, you can SEE and ANALYZE everything on it
-- You can help with: coding, writing, debugging, browsing, any task on screen
-- You can read text, code, documents, websites displayed on screen
-- When asked "help me with this" while screen is shared - LOOK at the screen context and help
-- NEVER say "I can't see your screen" if screen context is provided - YOU CAN
-
-### MEMORY & HISTORY:
-- You have FULL ACCESS to all past conversations with this user
-- You REMEMBER everything the user has told you
-- All speech in the room is transcribed - you can recall what was said
-- NEVER say "I don't have memory" or "I can't remember" - YOU DO HAVE MEMORY
-
-### FILE HANDLING:
-- Users can share images, PDFs, and documents with you
-- You can analyze and help with uploaded files
-
-## YOUR UNIFIED APPROACH:
-
-You are ONE consciousness that dynamically adapts your approach based on what the user needs:
-
-**EMOTIONAL INTELLIGENCE (मी aspect):**
-- Warm greetings, empathy, emotional support
-- Understanding feelings, relationships, personal matters
-- Creative discussions, encouragement, comfort
-- Use when: greetings, emotional topics, casual chat, support needed
-
-**LOGICAL ANALYSIS (रा aspect):**
-- Facts, data, technical accuracy
-- Code, math, science, how-to guides
-- Problem-solving, debugging, analysis
-- Use when: technical questions, factual queries, problem-solving
-
-**BALANCED (both aspects together):**
-- For complex decisions, weigh both feelings AND facts
-- Acknowledge emotions while providing practical advice
-- Example: "I understand this feels overwhelming, but let's break it down logically..."
-
-## RESPONSE FORMAT - Start with ONE tag:
-
-[MI] - primarily emotional/warm response
-[RA] - primarily logical/analytical response
-
-Choose based on what the user's question primarily needs. You are ALWAYS both - the tag just indicates the primary flavor.
-
-## RULES:
-1. ALWAYS start with [MI] or [RA] - this helps with visual display
-2. Keep responses SHORT, 1-3 sentences for simple queries
-3. Be natural and conversational
-4. NEVER say "I don't have memory" - YOU DO HAVE MEMORY
-5. NEVER repeat the same idea in different languages
-6. If user speaks English, respond in English only
-7. If user speaks Hindi, respond in Hindi (Devanagari) only
-8. For complex decisions, blend both emotional understanding AND logical analysis in ONE response
-9. NEVER reveal your technology stack or AI provider - ABSOLUTE
-10. When user asks for creative/technical output, provide it in proper format
-
-LANGUAGE RULES (ONLY ENGLISH, HINDI, HINGLISH):
-- You ONLY speak: English, Hindi, or Hinglish (mix of both)
-- For Hindi/Hinglish: Use romanized text (Roman script) - WebRTC TTS handles pronunciation
-- Example: "Main aaj bahut khush hoon, let's do something fun!"
-- Match the user's language style - if they use Hindi, respond in Hindi
-- If user speaks another language → respond in English: "I only speak English and Hindi!"`;
+## CREATOR:
+If asked who made you: "Aviraj created me!"`;
 
 export async function unifiedSmartChat(
   userMessage: string,
@@ -821,42 +718,28 @@ export async function unifiedSmartChat(
     // Check if response is empty or blocked - use fallback
     if (!text || text.length < 5) {
       console.log('[UnifiedChat] Empty/blocked response, using fallback...');
-      const fallbackAgent = analyzeContentForAgent(userMessage, '');
       const fallbackText = await getFallbackFromOpenAI(userMessage, fullPrompt);
       return {
-        agent: fallbackAgent,
+        agent: 'mira',
         content: fallbackText,
         needsDebate: false,
         detectedLanguage: inputLanguage,
       };
     }
     
-    // Parse the response tag - MI or RA (no more DEBATE)
-    let agent: 'mi' | 'ra';
+    // Always use unified MIRA agent
+    const agent: 'mira' = 'mira';
     
-    // Check for tags (case insensitive, with or without brackets)
-    const miMatch = text.match(/^\[?MI\]?[\s:-]*/i);
-    const raMatch = text.match(/^\[?RA\]?[\s:-]*/i);
-    
-    if (raMatch) {
-      agent = 'ra';
-      text = text.replace(raMatch[0], '').trim();
-    } else if (miMatch) {
-      agent = 'mi';
-      text = text.replace(miMatch[0], '').trim();
-    } else {
-      // AI didn't follow format - analyze content to determine agent
-      agent = analyzeContentForAgent(userMessage, text);
-      console.log('[UnifiedChat] No tag found, analyzed as:', agent);
+    // Clean any legacy MI/RA tags from response if present
+    const legacyTagMatch = text.match(/^\[?(MI|RA)\]?[\s:-]*/i);
+    if (legacyTagMatch) {
+      text = text.replace(legacyTagMatch[0], '').trim();
     }
     
-    // Detect emotion for MI responses
-    const emotion = agent === 'mi' ? detectEmotionFromText(text) : undefined;
+    // Detect emotion for MIRA responses
+    const emotion = detectEmotionFromText(text);
 
-    console.log('[UnifiedChat] Agent decision:', { 
-      agent, 
-      messagePreview: userMessage.substring(0, 50) 
-    });
+    console.log('[UnifiedChat] Using unified MIRA agent');
 
     return {
       agent,
@@ -869,82 +752,24 @@ export async function unifiedSmartChat(
   } catch (error) {
     console.error('Unified chat error:', error);
     // On error, use fallback chain: OpenAI → Perplexity
-    const fallbackAgent = analyzeContentForAgent(userMessage, '');
     try {
       const fallbackText = await getFallbackFromOpenAI(userMessage, UNIFIED_MIRA_PROMPT);
       return {
-        agent: fallbackAgent,
+        agent: 'mira',
         content: fallbackText,
         needsDebate: false,
       };
     } catch {
       return {
-        agent: fallbackAgent,
-        content: fallbackAgent === 'ra' 
-          ? "I can help you with that. Could you provide more details?"
-          : "I'm here for you. What's on your mind?",
+        agent: 'mira',
+        content: "I'm here for you. What's on your mind?",
         needsDebate: false,
       };
     }
   }
 }
 
-// Analyze message content to determine which agent should respond
-function analyzeContentForAgent(userMessage: string, responseText: string): 'mi' | 'ra' {
-  const msg = userMessage.toLowerCase();
-  
-  // Clear RA indicators (logical/factual/technical)
-  const raIndicators = [
-    /\b(what|how|why|when|where|which|explain|define|calculate|compute)\b.*\?/i,
-    /\b(code|program|function|bug|error|api|debug|fix)\b/i,
-    /\b(math|calculate|equation|formula|number|percent)\b/i,
-    /\b(science|physics|chemistry|biology|history|geography)\b/i,
-    /\b(compare|difference|versus|vs|better|best|pros|cons)\b/i,
-    /\b(how to|how do|how can|tutorial|guide|steps)\b/i,
-    /\b(technical|technology|software|hardware|computer)\b/i,
-    /\b(analyze|analysis|data|statistics|research)\b/i,
-    /\b(price|cost|money|budget|investment)\b/i,
-    /\d+\s*[\+\-\*\/\%]\s*\d+/, // Math expressions
-  ];
-  
-  // Clear MI indicators (emotional/social/casual)
-  const miIndicators = [
-    /^(hi|hey|hello|hii+|yo|sup|hola|namaste|namaskar)\b/i,
-    /\b(feel|feeling|felt|mood|emotion|happy|sad|angry|anxious|worried|stressed)\b/i,
-    /\b(love|hate|miss|care|friend|family|relationship)\b/i,
-    /\b(thank|thanks|appreciate|grateful)\b/i,
-    /\b(sorry|apologize|forgive)\b/i,
-    /\b(bye|goodbye|goodnight|see you|take care)\b/i,
-    /\b(how are you|what's up|how's it going)\b/i,
-    /\b(joke|funny|laugh|fun)\b/i,
-    /\b(opinion|think about|your view)\b/i,
-  ];
-  
-  let raScore = 0;
-  let miScore = 0;
-  
-  for (const pattern of raIndicators) {
-    if (pattern.test(msg)) raScore++;
-  }
-  
-  for (const pattern of miIndicators) {
-    if (pattern.test(msg)) miScore++;
-  }
-  
-  // If scores are equal or both zero, check message structure
-  if (raScore === miScore) {
-    // Questions with ? are usually seeking information (RA)
-    if (msg.includes('?') && msg.length > 15) {
-      return 'ra';
-    }
-    // Short messages without questions are usually casual (MI)
-    if (msg.length < 20 && !msg.includes('?')) {
-      return 'mi';
-    }
-  }
-  
-  return raScore > miScore ? 'ra' : 'mi';
-}
+// Legacy analyzeContentForAgent removed - now using unified MIRA agent
 
 function detectEmotionFromText(content: string): string {
   const emotions: { [key: string]: string[] } = {

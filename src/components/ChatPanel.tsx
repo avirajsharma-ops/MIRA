@@ -38,7 +38,6 @@ export default function ChatPanel() {
             key={message.id}
             role={message.role}
             content={message.content}
-            isDebate={message.isDebate}
             emotion={message.emotion}
             timestamp={message.timestamp}
           />

@@ -2,15 +2,17 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 
+// COST OPTIMIZATION: Auto-disconnect after idle timeout
+const IDLE_TIMEOUT_MS = 3 * 60 * 1000; // 3 minutes of no activity = disconnect
+const ACTIVITY_CHECK_INTERVAL = 30 * 1000; // Check every 30 seconds
+
 interface RealtimeConfig {
-  voice?: 'mi' | 'ra' | 'mira';
-  instructions?: string;
-  onTranscript?: (text: string, isFinal: boolean) => void;
-  onAudioResponse?: (text: string) => void;
+  voice?: 'mira' | 'aks';
+  onTranscript?: (text: string) => void;
+  onResponse?: (text: string) => void;
   onError?: (error: string) => void;
   onStateChange?: (state: RealtimeState) => void;
-  // Hybrid mode: if true, won't auto-respond - waits for injectResponse()
-  hybridMode?: boolean;
+  onIdleDisconnect?: () => void; // Callback when disconnected due to idle
 }
 
 type RealtimeState = 'disconnected' | 'connecting' | 'connected' | 'speaking' | 'listening';
@@ -19,29 +21,24 @@ interface UseRealtimeReturn {
   state: RealtimeState;
   connect: () => Promise<void>;
   disconnect: () => void;
-  sendText: (text: string) => void;
-  // Hybrid mode methods
-  injectResponse: (text: string, agent?: 'mi' | 'ra' | 'mira') => void; // Make AI speak this text
-  cancelResponse: () => void; // Stop current AI response
-  updateInstructions: (instructions: string) => void; // Update session instructions
   isConnected: boolean;
   isSpeaking: boolean;
   isListening: boolean;
   transcript: string;
   lastResponse: string;
-  inputAudioLevel: number;  // 0-1 mic audio level for sphere reactivity
-  outputAudioLevel: number; // 0-1 AI audio level for sphere reactivity
+  inputAudioLevel: number;
+  outputAudioLevel: number;
+  resetIdleTimer: () => void; // Call this on any user activity
 }
 
 export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
   const {
-    voice = 'mi',
-    instructions,
+    voice = 'mira',
     onTranscript,
-    onAudioResponse,
+    onResponse,
     onError,
     onStateChange,
-    hybridMode = false, // Default: full AI mode
+    onIdleDisconnect,
   } = config;
 
   const [state, setState] = useState<RealtimeState>('disconnected');
@@ -58,35 +55,70 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
   const outputAnalyserRef = useRef<AnalyserNode | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  
+  // COST OPTIMIZATION: Idle timeout tracking
+  const lastActivityRef = useRef<number>(Date.now());
+  const idleCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Refs to store current audio levels (avoid setState on every frame)
   const inputLevelRef = useRef(0);
   const outputLevelRef = useRef(0);
   const lastUpdateTimeRef = useRef(0);
 
-  // Audio level monitoring function - throttled to prevent infinite loop
+  // COST OPTIMIZATION: Reset idle timer on activity
+  const resetIdleTimer = useCallback(() => {
+    lastActivityRef.current = Date.now();
+  }, []);
+
+  // Audio level monitoring - improved for better sphere reactivity
   const startAudioLevelMonitoring = useCallback(() => {
+    let lastOutputLevel = 0;
+    let lastInputLevel = 0;
+    
     const updateLevels = () => {
       const now = Date.now();
       
-      // Update input (mic) level
+      // Input (microphone) level
       if (inputAnalyserRef.current) {
         const inputData = new Uint8Array(inputAnalyserRef.current.frequencyBinCount);
         inputAnalyserRef.current.getByteFrequencyData(inputData);
-        const inputAvg = inputData.reduce((a, b) => a + b, 0) / inputData.length;
-        inputLevelRef.current = Math.min(1, inputAvg / 128); // Store in ref
+        // Use RMS for smoother, more accurate level
+        const sumSquares = inputData.reduce((sum, val) => sum + val * val, 0);
+        const rms = Math.sqrt(sumSquares / inputData.length);
+        const normalized = Math.min(1, rms / 100);
+        // Smooth transition
+        lastInputLevel = lastInputLevel * 0.7 + normalized * 0.3;
+        inputLevelRef.current = lastInputLevel;
+        
+        // COST OPTIMIZATION: Significant audio input = activity
+        if (normalized > 0.1) {
+          lastActivityRef.current = Date.now();
+        }
       }
       
-      // Update output (AI) level
+      // Output (MIRA's voice) level
       if (outputAnalyserRef.current) {
         const outputData = new Uint8Array(outputAnalyserRef.current.frequencyBinCount);
         outputAnalyserRef.current.getByteFrequencyData(outputData);
-        const outputAvg = outputData.reduce((a, b) => a + b, 0) / outputData.length;
-        outputLevelRef.current = Math.min(1, outputAvg / 128); // Store in ref
+        // Use RMS for smoother, more accurate level
+        const sumSquares = outputData.reduce((sum, val) => sum + val * val, 0);
+        const rms = Math.sqrt(sumSquares / outputData.length);
+        const normalized = Math.min(1, rms / 100);
+        // Smooth with slightly faster response for output
+        lastOutputLevel = lastOutputLevel * 0.6 + normalized * 0.4;
+        outputLevelRef.current = lastOutputLevel;
+        
+        // COST OPTIMIZATION: MIRA speaking = activity
+        if (normalized > 0.1) {
+          lastActivityRef.current = Date.now();
+        }
+      } else {
+        // Decay output level if no analyser
+        lastOutputLevel = lastOutputLevel * 0.95;
+        outputLevelRef.current = lastOutputLevel;
       }
       
-      // Only update React state every 50ms to prevent infinite loop
-      if (now - lastUpdateTimeRef.current > 50) {
+      // Update state every 30ms for smoother animation
+      if (now - lastUpdateTimeRef.current > 30) {
         setInputAudioLevel(inputLevelRef.current);
         setOutputAudioLevel(outputLevelRef.current);
         lastUpdateTimeRef.current = now;
@@ -98,13 +130,11 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
     updateLevels();
   }, []);
 
-  // Update state and notify
   const updateState = useCallback((newState: RealtimeState) => {
     setState(newState);
     onStateChange?.(newState);
   }, [onStateChange]);
 
-  // Get auth token
   const getAuthToken = useCallback((): string | null => {
     if (typeof window === 'undefined') return null;
     return localStorage.getItem('mira_token');
@@ -125,14 +155,14 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
         throw new Error('Not authenticated');
       }
 
-      // Get ephemeral token from our backend
+      // Get ephemeral token from backend
       const sessionResponse = await fetch('/api/realtime/session', {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${authToken}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({ voice, instructions }),
+        body: JSON.stringify({ voice }),
       });
 
       if (!sessionResponse.ok) {
@@ -142,11 +172,15 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
 
       const { client_secret } = await sessionResponse.json();
 
+      // Set up audio context FIRST for proper analysis
+      const audioContext = new AudioContext();
+      audioContextRef.current = audioContext;
+
       // Create peer connection
       const pc = new RTCPeerConnection();
       peerConnectionRef.current = pc;
 
-      // Set up audio output
+      // Set up audio output element
       const audioEl = document.createElement('audio');
       audioEl.autoplay = true;
       audioElementRef.current = audioEl;
@@ -155,16 +189,21 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
         console.log('[Realtime] Received audio track');
         audioEl.srcObject = e.streams[0];
         
-        // Set up audio analysis for output (AI) audio level
-        if (audioContextRef.current && e.streams[0]) {
-          const outputSource = audioContextRef.current.createMediaStreamSource(e.streams[0]);
-          const outputAnalyser = audioContextRef.current.createAnalyser();
-          outputAnalyser.fftSize = 256;
-          outputSource.connect(outputAnalyser);
-          outputAnalyserRef.current = outputAnalyser;
-          
-          // Start audio level monitoring loop
-          startAudioLevelMonitoring();
+        // Set up output audio analysis using the stream directly
+        if (audioContext && e.streams[0]) {
+          try {
+            const outputSource = audioContext.createMediaStreamSource(e.streams[0]);
+            const outputAnalyser = audioContext.createAnalyser();
+            outputAnalyser.fftSize = 256;
+            outputAnalyser.smoothingTimeConstant = 0.3; // Faster response
+            outputSource.connect(outputAnalyser);
+            // Also connect to destination to ensure audio plays
+            outputSource.connect(audioContext.destination);
+            outputAnalyserRef.current = outputAnalyser;
+            console.log('[Realtime] Output audio analyser set up');
+          } catch (err) {
+            console.error('[Realtime] Error setting up output analyser:', err);
+          }
         }
         
         updateState('connected');
@@ -175,20 +214,21 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
         audio: {
           echoCancellation: true,
           noiseSuppression: true,
-          sampleRate: 24000,
+          autoGainControl: true,
         },
       });
       mediaStreamRef.current = mediaStream;
 
-      // Set up audio analysis for input (mic) audio level
-      const audioContext = new AudioContext();
-      audioContextRef.current = audioContext;
-      
+      // Set up input audio analysis
       const inputSource = audioContext.createMediaStreamSource(mediaStream);
       const inputAnalyser = audioContext.createAnalyser();
       inputAnalyser.fftSize = 256;
+      inputAnalyser.smoothingTimeConstant = 0.3;
       inputSource.connect(inputAnalyser);
       inputAnalyserRef.current = inputAnalyser;
+      
+      // Start monitoring audio levels
+      startAudioLevelMonitoring();
 
       // Add audio track to peer connection
       mediaStream.getTracks().forEach(track => {
@@ -217,23 +257,20 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
 
-      // Connect to OpenAI Realtime API via WebRTC
-      // The client_secret is used as Bearer token, model is specified in URL
-      const baseUrl = 'https://api.openai.com/v1/realtime';
-      const model = 'gpt-4o-realtime-preview-2024-12-17';
-      
-      const sdpResponse = await fetch(`${baseUrl}?model=${model}`, {
+      // Connect via server proxy
+      const sdpResponse = await fetch('/api/realtime/connect', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${client_secret}`,
-          'Content-Type': 'application/sdp',
+          'Authorization': `Bearer ${authToken}`,
+          'Content-Type': 'application/json',
         },
-        body: offer.sdp,
+        body: JSON.stringify({
+          sdp: offer.sdp,
+          client_secret,
+        }),
       });
 
       if (!sdpResponse.ok) {
-        const errorText = await sdpResponse.text();
-        console.error('[Realtime] WebRTC SDP error:', sdpResponse.status, errorText);
         throw new Error('Failed to establish WebRTC connection');
       }
 
@@ -251,263 +288,160 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
       updateState('disconnected');
       cleanup();
     }
-  }, [state, voice, instructions, getAuthToken, updateState, onError]);
+  }, [state, voice, getAuthToken, updateState, onError, startAudioLevelMonitoring]);
 
-  // Handle server events
+  // Handle server events - pure WebRTC streaming
   const handleServerEvent = useCallback((event: any) => {
-    // Skip spammy delta events in logs
     if (!event.type.includes('delta')) {
-      console.log('[Realtime] Server event:', event.type);
+      console.log('[Realtime] Event:', event.type);
     }
 
     switch (event.type) {
       case 'session.created':
-        console.log('[Realtime] Session created');
-        // Session is configured at creation time via /api/realtime/session
-        // No need to update here - hybrid mode is set via create_response: false in session config
-        break;
-
       case 'session.updated':
-        console.log('[Realtime] Session updated');
+        console.log('[Realtime] Session ready');
         break;
 
       case 'input_audio_buffer.speech_started':
-        // Note: WebRTC handles echo cancellation automatically
-        // Don't change state here - it can cause self-interruption issues
-        // when MIRA's voice is picked up by the microphone
-        console.log('[Realtime] VAD detected speech start');
+        console.log('[Realtime] Speech started');
+        updateState('listening');
         break;
 
       case 'input_audio_buffer.speech_stopped':
-        console.log('[Realtime] VAD detected speech stop');
-        break;
-
-      case 'conversation.item.input_audio_transcription.completed':
-        // User's speech transcribed
-        const userTranscript = event.transcript || '';
-        console.log('[Realtime] Transcription complete:', userTranscript);
-        setTranscript(userTranscript);
-        onTranscript?.(userTranscript, true);
-        // In hybrid mode, the caller handles what to do with the transcript
+        console.log('[Realtime] Speech stopped');
         break;
 
       case 'response.audio_transcript.delta':
-      case 'response.output_audio_transcript.delta':
       case 'response.audio.delta':
-        // AI is speaking - streaming audio (only update state, don't log)
         updateState('speaking');
         break;
 
       case 'response.audio_transcript.done':
-      case 'response.output_audio_transcript.done':
-        // AI finished transcribing this part (but audio may still be playing)
         const responseText = event.transcript || '';
         setLastResponse(responseText);
-        onAudioResponse?.(responseText);
-        break;
-
-      case 'response.audio.done':
-        // Audio finished - but keep speaking state briefly to let audio buffer flush
-        console.log('[Realtime] Audio stream done, keeping speaking state for buffer flush');
-        // Don't immediately go to listening - wait for response.done
+        onResponse?.(responseText);
         break;
 
       case 'response.done':
         console.log('[Realtime] Response complete');
-        // Add a small delay to ensure audio buffer finishes playing
-        setTimeout(() => {
-          updateState('listening');
-        }, 500);
+        setTimeout(() => updateState('listening'), 300);
+        break;
+
+      case 'conversation.item.input_audio_transcription.completed':
+        const userText = event.transcript || '';
+        console.log('[Realtime] User said:', userText);
+        setTranscript(userText);
+        onTranscript?.(userText);
         break;
 
       case 'error':
-        // Log full error details for debugging
-        console.error('[Realtime] Error:', JSON.stringify(event.error || event));
-        const errorMsg = event.error?.message || event.message || 'Unknown error';
-        // Don't report "cancelled" errors - those are intentional
+        console.error('[Realtime] Error:', event.error);
+        const errorMsg = event.error?.message || 'Unknown error';
         if (!errorMsg.toLowerCase().includes('cancel')) {
           onError?.(errorMsg);
         }
         break;
-
-      default:
-        // Log other unhandled events (except deltas)
-        if (!event.type.includes('delta')) {
-          console.log('[Realtime] Unhandled event:', event.type);
-        }
     }
-  }, [hybridMode, updateState, onTranscript, onAudioResponse, onError]);
-
-  // Send text message (for hybrid text+voice)
-  const sendText = useCallback((text: string) => {
-    const dc = dataChannelRef.current;
-    if (!dc || dc.readyState !== 'open') {
-      console.warn('[Realtime] Data channel not ready');
-      return;
-    }
-
-    // Create conversation item with text
-    dc.send(JSON.stringify({
-      type: 'conversation.item.create',
-      item: {
-        type: 'message',
-        role: 'user',
-        content: [
-          {
-            type: 'input_text',
-            text: text,
-          },
-        ],
-      },
-    }));
-
-    // Request response
-    dc.send(JSON.stringify({
-      type: 'response.create',
-    }));
-  }, []);
-
-  // HYBRID MODE: Inject a response for the AI to speak (bypasses AI thinking)
-  const injectResponse = useCallback((text: string, agent?: 'mi' | 'ra' | 'mira') => {
-    const dc = dataChannelRef.current;
-    if (!dc || dc.readyState !== 'open') {
-      console.warn('[Realtime] Data channel not ready for injectResponse');
-      return;
-    }
-
-    // Voice mapping: MI/MIRA = coral (female), RA = ash (male)
-    // Note: Voice is set at session creation. Dynamic switching requires reconnection.
-    const voiceMap: Record<string, string> = {
-      mi: 'coral',
-      ra: 'ash',
-      mira: 'coral',
-    };
-    const expectedVoice = agent ? voiceMap[agent] : 'coral';
-
-    console.log('[Realtime] Injecting response as', agent, '(voice:', expectedVoice, '):', text.substring(0, 50) + '...');
-    
-    // IMPORTANT: Cancel any ongoing response first to avoid "active response in progress" error
-    dc.send(JSON.stringify({
-      type: 'response.cancel',
-    }));
-    
-    // Small delay to ensure cancel is processed before creating new response
-    setTimeout(() => {
-      if (!dc || dc.readyState !== 'open') return;
-      
-      // Send as user message with instruction to speak - this triggers TTS properly
-      // The OpenAI Realtime API will then speak the response
-      dc.send(JSON.stringify({
-        type: 'conversation.item.create',
-        item: {
-          type: 'message',
-          role: 'user',
-          content: [
-            {
-              type: 'input_text',
-              text: `[SPEAK EXACTLY AS WRITTEN - DO NOT MODIFY OR ADD ANYTHING]: ${text}`,
-            },
-          ],
-        },
-      }));
-
-      // Request response to generate audio
-      dc.send(JSON.stringify({
-        type: 'response.create',
-      }));
-      
-      updateState('speaking');
-    }, 50); // 50ms delay to ensure cancel is processed
-  }, [updateState]);
-
-  // Cancel ongoing AI response
-  const cancelResponse = useCallback(() => {
-    const dc = dataChannelRef.current;
-    if (!dc || dc.readyState !== 'open') {
-      console.warn('[Realtime] Data channel not ready for cancelResponse');
-      return;
-    }
-
-    console.log('[Realtime] Cancelling response');
-    dc.send(JSON.stringify({
-      type: 'response.cancel',
-    }));
-    
-    updateState('listening');
-  }, [updateState]);
-
-  // Update session instructions dynamically
-  const updateInstructions = useCallback((_newInstructions: string) => {
-    // Note: session.update requires specific parameters that may cause errors
-    // Instructions are set at session creation time via /api/realtime/session
-    // This function is kept for interface compatibility but is a no-op
-    console.log('[Realtime] updateInstructions called (no-op - set at session creation)');
-  }, []);
+  }, [updateState, onTranscript, onResponse, onError]);
 
   // Cleanup resources
   const cleanup = useCallback(() => {
-    // Stop animation frame
+    // COST OPTIMIZATION: Clear idle check interval
+    if (idleCheckIntervalRef.current) {
+      clearInterval(idleCheckIntervalRef.current);
+      idleCheckIntervalRef.current = null;
+    }
+    
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
     }
     
-    // Close audio context
     if (audioContextRef.current) {
       audioContextRef.current.close();
       audioContextRef.current = null;
     }
     
-    // Clear analysers
     inputAnalyserRef.current = null;
     outputAnalyserRef.current = null;
     
-    // Reset audio levels
     setInputAudioLevel(0);
     setOutputAudioLevel(0);
     
-    // Stop media tracks
     mediaStreamRef.current?.getTracks().forEach(track => track.stop());
     mediaStreamRef.current = null;
 
-    // Close data channel
     dataChannelRef.current?.close();
     dataChannelRef.current = null;
 
-    // Close peer connection
     peerConnectionRef.current?.close();
     peerConnectionRef.current = null;
 
-    // Clean up audio element
     if (audioElementRef.current) {
       audioElementRef.current.srcObject = null;
       audioElementRef.current = null;
     }
   }, []);
 
-  // Disconnect from realtime API
   const disconnect = useCallback(() => {
     console.log('[Realtime] Disconnecting');
     cleanup();
     updateState('disconnected');
   }, [cleanup, updateState]);
 
-  // Cleanup on unmount
+  // COST OPTIMIZATION: Start idle check when connected
   useEffect(() => {
+    if (state === 'connected' || state === 'listening' || state === 'speaking') {
+      // Reset activity timer when connected
+      lastActivityRef.current = Date.now();
+      
+      // Start idle check interval
+      if (!idleCheckIntervalRef.current) {
+        console.log('[Realtime] Starting idle detection - will disconnect after', IDLE_TIMEOUT_MS / 1000, 'seconds of inactivity');
+        
+        idleCheckIntervalRef.current = setInterval(() => {
+          const idleTime = Date.now() - lastActivityRef.current;
+          
+          if (idleTime >= IDLE_TIMEOUT_MS) {
+            console.log('[Realtime] Idle timeout - disconnecting to save costs. Idle for', Math.round(idleTime / 1000), 'seconds');
+            
+            // Clear the interval first
+            if (idleCheckIntervalRef.current) {
+              clearInterval(idleCheckIntervalRef.current);
+              idleCheckIntervalRef.current = null;
+            }
+            
+            // Disconnect
+            cleanup();
+            updateState('disconnected');
+            onIdleDisconnect?.();
+          }
+        }, ACTIVITY_CHECK_INTERVAL);
+      }
+    } else {
+      // Clear interval when disconnected
+      if (idleCheckIntervalRef.current) {
+        clearInterval(idleCheckIntervalRef.current);
+        idleCheckIntervalRef.current = null;
+      }
+    }
+    
     return () => {
-      cleanup();
+      if (idleCheckIntervalRef.current) {
+        clearInterval(idleCheckIntervalRef.current);
+        idleCheckIntervalRef.current = null;
+      }
     };
+  }, [state, cleanup, updateState, onIdleDisconnect]);
+
+  useEffect(() => {
+    return () => cleanup();
   }, [cleanup]);
 
   return {
     state,
     connect,
     disconnect,
-    sendText,
-    // Hybrid mode methods
-    injectResponse,
-    cancelResponse,
-    updateInstructions,
     isConnected: state !== 'disconnected' && state !== 'connecting',
     isSpeaking: state === 'speaking',
     isListening: state === 'listening',
@@ -515,6 +449,7 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
     lastResponse,
     inputAudioLevel,
     outputAudioLevel,
+    resetIdleTimer,
   };
 }
 

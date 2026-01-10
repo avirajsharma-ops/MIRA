@@ -2,27 +2,17 @@
 
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { useMediaCapture } from '@/hooks';
-import { useRealtime } from '@/hooks/useRealtime';
+import { useMIRAEngine } from '@/hooks/useMIRAEngine';
 import { isMobileDevice } from '@/lib/utils/deviceDetection';
-// MediaPipe gesture detection disabled due to WASM compatibility issues
-// import { useGestureDetection } from '@/lib/gesture/useGestureDetection';
-import { 
-  GestureType, 
-  DetectedGesture, 
-  getGesturePrompt,
-  isGestureOnCooldown,
-  markGestureUsed 
-} from '@/lib/gesture/gestureService';
+import { SpeakerDetectionManager, DetectedSpeaker } from '@/lib/voice/speakerDetection';
 
-type AgentType = 'mi' | 'ra' | 'mira';
+type AgentType = 'mira';
 
 interface Message {
   id: string;
-  role: 'user' | 'mi' | 'ra' | 'mira' | 'system';
+  role: 'user' | 'mira' | 'system';
   content: string;
   timestamp: Date;
-  isDebate?: boolean;
-  isConsensus?: boolean;
   emotion?: string;
 }
 
@@ -33,80 +23,44 @@ interface VisualContext {
 
 export interface FileAttachment {
   name: string;
-  type: string; // MIME type
+  type: string;
   size: number;
-  data: string; // base64 encoded data
+  data: string;
 }
 
 interface DateTimeContext {
-  date: string; // YYYY-MM-DD
-  time: string; // HH:MM:SS
+  date: string;
+  time: string;
   dayOfWeek: string;
   timestamp: number;
   timezone: string;
-  formattedDateTime: string; // Human readable
+  formattedDateTime: string;
 }
 
-// MIRA trigger keywords - SIMPLIFIED and OPTIMIZED for speed
-// Core wake words only - let AI handle ambiguous cases
+// MIRA wake words - simple and fast
 const MIRA_WAKE_WORDS = new Set([
-  // Core names (lowercase for fast matching)
-  'mira', 'meera', 'mi', 'ra',
-  // Common phonetic variations
-  'myra', 'mera', 'maya', 'mia', 'miri',
-  // Hindi
-  'मीरा', 'मी', 'रा',
+  'mira', 'meera', 'mi', 'ra', 'myra', 'mera', 'maya', 'mia', 'miri',
+  'hey mira', 'hi mira', 'hello mira', 'ok mira', 'okay mira',
 ]);
 
-// Wake word prefixes for "hey X" detection
-const WAKE_PREFIXES = new Set(['hey', 'hi', 'hello', 'ok', 'okay', 'oi', 'yo']);
-
-// Fast check if text contains MIRA wake word
 function containsWakeWord(text: string): boolean {
   const lower = text.toLowerCase().trim();
-  const words = lower.split(/\s+/);
   
-  // Check first 4 words only for speed
-  const checkWords = words.slice(0, 4);
-  
-  // Direct wake word match
-  for (const word of checkWords) {
-    const cleanWord = word.replace(/[.,!?'"]/g, '');
-    if (MIRA_WAKE_WORDS.has(cleanWord)) {
-      return true;
-    }
+  // Direct match
+  for (const wake of MIRA_WAKE_WORDS) {
+    if (lower.includes(wake)) return true;
   }
   
-  // "Hey MIRA" pattern - check if second word is wake word
-  if (checkWords.length >= 2 && WAKE_PREFIXES.has(checkWords[0])) {
-    const secondWord = checkWords[1].replace(/[.,!?'"]/g, '');
-    if (MIRA_WAKE_WORDS.has(secondWord)) {
-      return true;
-    }
-    // Fuzzy match for common transcription errors
-    if (secondWord.length >= 3 && secondWord.length <= 6) {
-      // Simple phonetic similarity check
-      const similar = ['mira', 'meera', 'myra', 'mera'].some(target => {
-        if (Math.abs(secondWord.length - target.length) > 2) return false;
-        let matches = 0;
-        for (let i = 0; i < Math.min(secondWord.length, target.length); i++) {
-          if (secondWord[i] === target[i]) matches++;
-        }
-        return matches >= target.length - 1;
-      });
-      if (similar) return true;
-    }
-  }
-  
-  // Check for Hindi wake words in original text
-  if (/मीरा|मी |रा |हे मीरा|हाय मीरा/.test(text)) {
-    return true;
+  // Check first few words
+  const words = lower.split(/\s+/).slice(0, 4);
+  for (const word of words) {
+    const clean = word.replace(/[.,!?'"]/g, '');
+    if (MIRA_WAKE_WORDS.has(clean)) return true;
   }
   
   return false;
 }
 
-// Get current date/time context
 function getCurrentDateTime(): DateTimeContext {
   const now = new Date();
   const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -126,62 +80,8 @@ function getCurrentDateTime(): DateTimeContext {
       hour: 'numeric',
       minute: '2-digit',
       hour12: true,
-      timeZoneName: 'short'
     })
   };
-}
-
-// Follow-up state - managed as simple variables for speed
-let lastMiraResponseTime = 0;
-let miraAskedQuestion = false;
-
-// Export functions to update follow-up state
-export function setMiraAskedFollowUp(asked: boolean) {
-  miraAskedQuestion = asked;
-  if (asked) {
-    lastMiraResponseTime = Date.now();
-  }
-}
-
-// SIMPLIFIED follow-up check - time-based with basic exclusions
-function isFollowUpResponse(text: string): boolean {
-  // Must be within 30 seconds of MIRA asking a question
-  const timeSince = Date.now() - lastMiraResponseTime;
-  if (!miraAskedQuestion || timeSince > 30000) {
-    return false;
-  }
-  
-  const lower = text.toLowerCase().trim();
-  
-  // Exclude if clearly directed at someone else
-  if (/^(hey|hi|hello)\s+(mom|dad|bro|dude|man|alexa|siri|google)/i.test(lower)) {
-    return false;
-  }
-  
-  // Exclude other assistant wake words
-  if (/\b(alexa|siri|hey google|cortana)\b/i.test(lower)) {
-    return false;
-  }
-  
-  // Within 30 seconds, treat most responses as follow-ups
-  // Keep it simple - if they're talking, they're probably answering
-  console.log('[FollowUp] Treating as follow-up (within 30s window)');
-  return true;
-}
-
-// MAIN DETECTION: Is message directed at MIRA?
-function isDirectedAtMira(text: string): boolean {
-  // 1. Check follow-up first (no wake word needed)
-  if (isFollowUpResponse(text)) {
-    return true;
-  }
-  
-  // 2. Check for wake word
-  if (containsWakeWord(text)) {
-    return true;
-  }
-  
-  return false;
 }
 
 interface MIRAContextType {
@@ -195,22 +95,29 @@ interface MIRAContextType {
 
   // Conversation
   messages: Message[];
-  conversationId: string | null;
   isLoading: boolean;
-  isThinking: boolean; // True when AI is processing (plays thinking sound)
   sendMessage: (text: string, attachments?: FileAttachment[]) => Promise<void>;
   clearConversation: () => void;
 
-  // Voice
+  // Voice - Pure WebRTC
+  isConnected: boolean;
+  isMicReady: boolean;
   isRecording: boolean;
-  isListening: boolean;
   isProcessing: boolean;
-  audioLevel: number;
-  startRecording: () => void;
-  stopRecording: () => void;
+  activeProvider: string;
+  isListening: boolean;
   isSpeaking: boolean;
   speakingAgent: AgentType | null;
-  isMicReady: boolean; // True when WebRTC is connected and mic is available
+  audioLevel: number;
+  outputAudioLevel: number; // MIRA's voice level for sphere reactivity
+  transcript: string;
+  lastResponse: string;
+  connect: () => void;
+  disconnect: () => void;
+  startRecording: () => void;
+  stopRecording: () => void;
+  enableProactive: boolean;
+  setEnableProactive: (value: boolean) => void;
 
   // Media
   isCameraActive: boolean;
@@ -222,16 +129,6 @@ interface MIRAContextType {
   stopScreenCapture: () => void;
   cameraVideoRef: React.RefObject<HTMLVideoElement | null>;
   visualContext: VisualContext;
-
-  // Proactive
-  enableProactive: boolean;
-  setEnableProactive: (enabled: boolean) => void;
-
-  // Gesture Detection
-  currentGesture: DetectedGesture | null;
-  gestureEnabled: boolean;
-  setGestureEnabled: (enabled: boolean) => void;
-  isHandsLoaded: boolean;
 
   // Time
   dateTime: DateTimeContext;
@@ -250,433 +147,338 @@ export function useMIRA() {
 export function MIRAProvider({ children }: { children: React.ReactNode }) {
   // Auth state
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [isAuthLoading, setIsAuthLoading] = useState(true); // Start true to check existing session
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [user, setUser] = useState<{ id: string; name: string; email: string } | null>(null);
 
   // Conversation state
   const [messages, setMessages] = useState<Message[]>([]);
-  const [conversationId, setConversationId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
-  
-  // Ref for instant access to loading state (avoids stale closures)
-  const isProcessingMessageRef = useRef(false);
-  
-  // Refs for face detection callback - prevents STT interference from re-renders
-  const isSpeakingRef = useRef(false);
-  const isLoadingRef = useRef(false);
+
+  // Proactive mode
+  const [enableProactive, setEnableProactive] = useState(false);
 
   // Visual context
   const [visualContext, setVisualContext] = useState<VisualContext>({});
 
-  // Proactive behavior
-  const [enableProactive, setEnableProactive] = useState(true);
-  const lastActivityRef = useRef<Date>(new Date());
-  const proactiveIntervalRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Ref to track if media has been auto-started
-  const mediaAutoStartedRef = useRef(false);
-  
-  // Ref to store sendMessage for use in callbacks
-  const sendMessageRef = useRef<((text: string) => Promise<void>) | undefined>(undefined);
-  
-  // Session ID for transcripts
-  const sessionIdRef = useRef<string>(`session_${Date.now()}`);
-  
-  // Gesture detection state
-  const [currentGesture, setCurrentGesture] = useState<DetectedGesture | null>(null);
-  const [gestureEnabled, setGestureEnabled] = useState(true);
-  const gestureProcessingRef = useRef(false);
-  
-  // Person context for gestures
-  const [currentPerson, setCurrentPerson] = useState<{ name?: string; context?: string } | null>(null);
-  
   // DateTime state
   const [dateTime, setDateTime] = useState<DateTimeContext>(() => getCurrentDateTime());
 
+  // Auto-start ref
+  const autoStartedRef = useRef(false);
+  
+  // Speaker detection for identifying different people in conversations
+  const speakerManagerRef = useRef<SpeakerDetectionManager | null>(null);
+  const [pendingUnknownSpeakers, setPendingUnknownSpeakers] = useState<DetectedSpeaker[]>([]);
+  const lastSpeechTimeRef = useRef<number>(Date.now());
+  const conversationSilenceTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const askAboutSpeakersRef = useRef<(() => void) | null>(null);
+
   // Update datetime every minute
   useEffect(() => {
-    const updateDateTime = () => {
-      setDateTime(getCurrentDateTime());
-    };
-    
-    // Update immediately
-    updateDateTime();
-    
-    // Update every minute
-    const interval = setInterval(updateDateTime, 60000);
-    
+    const interval = setInterval(() => setDateTime(getCurrentDateTime()), 60000);
     return () => clearInterval(interval);
   }, []);
 
-  // Helper function to transform content for TTS - summarizes code blocks and structured outputs
-  const transformForTTS = useCallback((content: string): string => {
-    // Check for code blocks
-    const codeBlockRegex = /```(\w+)?\n?([\s\S]*?)```/g;
-    const hasCodeBlocks = codeBlockRegex.test(content);
+  // Send message to chat API
+  const sendMessage = useCallback(async (text: string, attachments?: FileAttachment[]) => {
+    if (!text.trim() && (!attachments || attachments.length === 0)) return;
     
-    // Check for numbered/bulleted lists (3+ items)
-    const listRegex = /(?:^|\n)((?:[\d]+\.|[-•*])\s+.+(?:\n(?:[\d]+\.|[-•*])\s+.+){2,})/gm;
-    const hasLists = listRegex.test(content);
+    setIsLoading(true);
     
-    if (!hasCodeBlocks && !hasLists) {
-      return content; // No special content, return as-is
-    }
-    
-    let ttsContent = content;
-    
-    // Replace code blocks with spoken summary
-    if (hasCodeBlocks) {
-      ttsContent = ttsContent.replace(/```(\w+)?\n?([\s\S]*?)```/g, (match, language) => {
-        const lang = language || 'code';
-        return `I've written some ${lang} code for you. You can see it in the outputs panel.`;
-      });
-    }
-    
-    // Replace long lists with summary
-    if (hasLists) {
-      ttsContent = ttsContent.replace(/(?:^|\n)((?:[\d]+\.|[-•*])\s+.+(?:\n(?:[\d]+\.|[-•*])\s+.+){2,})/gm, (match) => {
-        const itemCount = (match.match(/(?:^|\n)[\d]+\.|[-•*]\s+/g) || []).length;
-        return `\nI've listed ${itemCount} items for you in the outputs panel.`;
-      });
-    }
-    
-    // Clean up multiple spaces/newlines
-    ttsContent = ttsContent.replace(/\n{3,}/g, '\n\n').trim();
-    
-    // If the entire content was just code/lists, add a helpful note
-    if (ttsContent.length < 50 && (hasCodeBlocks || hasLists)) {
-      ttsContent += ' Let me know if you have any questions about it!';
-    }
-    
-    return ttsContent;
-  }, []);
+    // Add user message
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: text,
+      timestamp: new Date(),
+    };
+    setMessages(prev => [...prev, userMessage]);
 
-  // isThinking state for AI processing indicator
-  const [isThinking, setIsThinking] = useState(false);
-  
-  // Track current speaking agent
-  const [speakingAgent, setSpeakingAgent] = useState<AgentType | null>(null);
-  
-  // Track last AI response text
-  const lastResponseTextRef = useRef<string>('');
-  
-  // Track interrupted response for resumption
-  const interruptedResponseRef = useRef<{
-    text: string;
-    agent: AgentType;
-    spokenPortion: string; // What was already spoken before interruption
-  } | null>(null);
-  
-  // TTS audio level for sphere reactivity (from WebRTC output)
-  const [ttsAudioLevel, setTtsAudioLevel] = useState(0);
-
-  // Track when first audio input is received (for loading dialog dismissal)
-  const [hasReceivedFirstAudio, setHasReceivedFirstAudio] = useState(false);
-
-  // ========== WebRTC Realtime API (Hybrid Mode) ==========
-  // Handles BOTH speech-to-text AND text-to-speech via WebRTC
-  // In hybrid mode: transcribes user speech, then we call /api/chat, then injectResponse to speak
-  
-  const handleRealtimeTranscript = useCallback((text: string, isFinal: boolean) => {
-    if (!isFinal || !text.trim()) return;
-    
-    // First audio transcript received - dismiss loading dialog
-    setHasReceivedFirstAudio(true);
-    
-    console.log('[Realtime] User transcript:', text);
-    
-    // Check if this is an interruption (user spoke while MIRA was speaking)
-    // Track interrupted response so we can resume after handling the interruption
-    if (isSpeaking && lastResponseTextRef.current) {
-      console.log('[Interruption] User interrupted MIRA while speaking');
-      interruptedResponseRef.current = {
-        text: lastResponseTextRef.current,
-        agent: (speakingAgent || 'mira') as AgentType,
-        spokenPortion: lastResponseTextRef.current.substring(0, Math.floor(lastResponseTextRef.current.length * 0.5)), // Estimate ~50% was spoken
-      };
-      // Cancel the current response
-      realtimeCancelResponse();
-    }
-    
-    const directed = isDirectedAtMira(text);
-    
-    // Always save the transcript in background
-    saveTranscriptEntry(text, 'user', user?.name || 'User', directed);
-    
-    // Only send to MIRA if addressed
-    // Note: WebRTC handles echo cancellation and interruptions automatically
-    if (directed && sendMessageRef.current) {
-      console.log('Message directed at MIRA:', text);
-      sendMessageRef.current(text);
-    } else {
-      console.log('Background transcript (not for MIRA):', text);
-    }
-  }, []);
-  
-  const handleRealtimeResponse = useCallback((text: string) => {
-    console.log('[Realtime] AI response:', text);
-    lastResponseTextRef.current = text;
-  }, []);
-  
-  const handleRealtimeError = useCallback((error: string) => {
-    console.error('[Realtime] Error:', error);
-  }, []);
-  
-  const handleRealtimeStateChange = useCallback((state: 'disconnected' | 'connecting' | 'connected' | 'speaking' | 'listening') => {
-    console.log('[Realtime] State change:', state);
-  }, []);
-  
-  // Initialize Realtime hook in HYBRID mode
-  const {
-    state: realtimeState,
-    connect: connectRealtime,
-    disconnect: disconnectRealtime,
-    injectResponse: realtimeInjectResponse,
-    cancelResponse: realtimeCancelResponse,
-    updateInstructions: realtimeUpdateInstructions,
-    isConnected: realtimeConnected,
-    isSpeaking,
-    isListening,
-    transcript: realtimeTranscript,
-    inputAudioLevel: micAudioLevel,
-    outputAudioLevel: realtimeOutputLevel,
-  } = useRealtime({
-    hybridMode: true, // CRITICAL: Don't auto-respond, we handle /api/chat
-    voice: 'mi', // Default voice
-    onTranscript: handleRealtimeTranscript,
-    onAudioResponse: handleRealtimeResponse,
-    onError: handleRealtimeError,
-    onStateChange: handleRealtimeStateChange,
-  });
-  
-  // Update TTS audio level from WebRTC output
-  useEffect(() => {
-    setTtsAudioLevel(realtimeOutputLevel);
-  }, [realtimeOutputLevel]);
-  
-  // Helper function to speak via WebRTC (replaces playAudio)
-  const playAudio = useCallback(async (text: string, agent: AgentType) => {
-    // Auto-connect if not connected
-    if (!realtimeConnected) {
-      console.log('[Realtime] Not connected, connecting first...');
-      await connectRealtime();
-      // Wait a bit for connection to establish
-      await new Promise(resolve => setTimeout(resolve, 1000));
-    }
-    
-    console.log('[Realtime] Speaking as', agent, ':', text.substring(0, 50) + '...');
-    setSpeakingAgent(agent);
-    lastResponseTextRef.current = text;
-    
-    // Inject the response for WebRTC to speak
-    realtimeInjectResponse(text, agent);
-  }, [realtimeConnected, connectRealtime, realtimeInjectResponse]);
-  
-  // playAudioAndWait - speaks and waits for completion
-  const playAudioAndWait = useCallback(async (text: string, agent: AgentType): Promise<void> => {
-    return new Promise(async (resolve) => {
-      // Auto-connect if not connected
-      if (!realtimeConnected) {
-        console.log('[Realtime] Not connected, connecting first...');
-        await connectRealtime();
-        // Wait a bit for connection to establish
-        await new Promise(r => setTimeout(r, 1000));
-      }
-      
-      console.log('[Realtime] Speaking (wait) as', agent, ':', text.substring(0, 50) + '...');
-      setSpeakingAgent(agent);
-      lastResponseTextRef.current = text;
-      
-      // Inject the response
-      realtimeInjectResponse(text, agent);
-      
-      // Estimate speech duration based on text length (~150 words per minute = 400ms per word)
-      const wordCount = text.split(/\s+/).length;
-      const estimatedDuration = Math.max(2000, wordCount * 400); // Minimum 2 seconds
-      
-      // Wait for estimated duration
-      setTimeout(() => {
-        resolve();
-      }, estimatedDuration);
-    });
-  }, [realtimeConnected, connectRealtime, realtimeInjectResponse]);
-  
-  // Stop audio - cancel WebRTC response
-  const stopAudio = useCallback(() => {
-    realtimeCancelResponse();
-    setSpeakingAgent(null);
-    lastResponseTextRef.current = '';
-  }, [realtimeCancelResponse]);
-  
-  // Thinking sound removed - was causing blocking issues
-  const playThinkingSound = useCallback(() => {
-    // No-op - thinking sound removed
-  }, []);
-  
-  const stopThinkingSound = useCallback(() => {
-    // No-op - thinking sound removed
-  }, []);
-
-  // Keep refs in sync with state values (for face detection callback)
-  useEffect(() => {
-    isSpeakingRef.current = isSpeaking;
-  }, [isSpeaking]);
-  
-  useEffect(() => {
-    isLoadingRef.current = isLoading;
-  }, [isLoading]);
-
-  // Save transcript entry in background
-  const saveTranscriptEntry = useCallback(async (
-    content: string,
-    speakerType: 'user' | 'mira' | 'other',
-    speakerName?: string,
-    directedAtMira?: boolean
-  ) => {
     try {
       const token = localStorage.getItem('mira_token');
-      if (!token) return;
-
-      await fetch('/api/transcripts', {
+      const response = await fetch('/api/chat', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({
-          sessionId: sessionIdRef.current,
-          content,
-          speakerType,
-          speakerName,
-          isDirectedAtMira: directedAtMira ?? isDirectedAtMira(content),
-        }),
-      });
-    } catch (error) {
-      console.error('Error saving transcript:', error);
-    }
-  }, []);
-
-  // Handle gesture-triggered AI response
-  const handleGestureResponse = useCallback(async (gesture: DetectedGesture) => {
-    if (!gestureEnabled || gestureProcessingRef.current || isSpeaking || isLoading) {
-      return;
-    }
-    
-    // Check cooldown
-    if (isGestureOnCooldown(gesture.gesture)) {
-      return;
-    }
-
-    gestureProcessingRef.current = true;
-    setCurrentGesture(gesture);
-    
-    try {
-      const token = localStorage.getItem('mira_token');
-      if (!token) return;
-
-      console.log(`[Gesture] Detected: ${gesture.gesture} (${(gesture.confidence * 100).toFixed(0)}%)`);
-      
-      // Call gesture API to get response
-      const response = await fetch('/api/gesture', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          gesture: gesture.gesture,
-          personName: currentPerson?.name,
-          personContext: currentPerson?.context,
+        body: JSON.stringify({ 
+          message: text,
+          attachments,
         }),
       });
 
       if (response.ok) {
         const data = await response.json();
-        
-        // Add message to UI
-        const gestureMessage: Message = {
-          id: `${Date.now()}-gesture`,
-          role: data.agent as Message['role'],
-          content: data.response,
+        const miraMessage: Message = {
+          id: `${Date.now()}-response`,
+          role: 'mira',
+          content: data.response || data.message || 'I received your message.',
           timestamp: new Date(),
-          emotion: 'friendly',
         };
-        setMessages(prev => [...prev, gestureMessage]);
-        
-        // Save to transcript - use English names for UI display
-        const agentNameMap: Record<string, string> = { 'mi': 'MI', 'ra': 'RA', 'mira': 'MIRA' };
-        saveTranscriptEntry(data.response, 'mira', agentNameMap[data.agent] || data.agent.toUpperCase(), true);
-        
-        // Play audio response (transform code/outputs for TTS)
-        await playAudio(transformForTTS(data.response), data.agent as AgentType);
-        
-        // Mark gesture as used
-        markGestureUsed(gesture.gesture);
+        setMessages(prev => [...prev, miraMessage]);
       }
     } catch (error) {
-      console.error('Gesture response error:', error);
+      console.error('[MIRA] Send message error:', error);
     } finally {
-      gestureProcessingRef.current = false;
-      // Clear current gesture after a delay
-      setTimeout(() => setCurrentGesture(null), 2000);
+      setIsLoading(false);
     }
-  }, [gestureEnabled, isSpeaking, isLoading, currentPerson, saveTranscriptEntry, playAudio, transformForTTS]);
-
-  // Note: Echo cancellation and interruption handling are managed by WebRTC automatically
-
-  // Audio level for sphere animation - ONLY use device output audio (ttsAudioLevel)
-  // This prevents spheres from reacting to external sounds picked up by mic
-  // Spheres should only react when MIRA is speaking, not to ambient noise
-  const audioLevel = ttsAudioLevel;
-
-  // Alias for backward compatibility
-  const isRecording = isListening;
-  const isProcessing = false; // No processing delay with WebRTC STT
-  
-  // Voice recording controls - connect/disconnect WebRTC
-  const startVoiceRecording = useCallback(() => {
-    if (!realtimeConnected) {
-      console.log('[Voice] Connecting WebRTC for voice...');
-      connectRealtime();
-    }
-  }, [realtimeConnected, connectRealtime]);
-  
-  const stopVoiceRecording = useCallback(() => {
-    // Don't actually disconnect - just log
-    console.log('[Voice] stopVoiceRecording called (WebRTC stays connected)');
   }, []);
 
-  // MediaPipe gesture detection disabled - using Gemini Vision API instead
-  // The hook causes WASM loading errors in Next.js
-  const isHandsLoaded = false; // Placeholder for interface
-  /*
-  const {
-    currentGesture: detectedGesture,
-    isHandsLoaded,
-    error: gestureError,
-    startDetection: startGestureDetection,
-    processFrame: processGestureFrame,
-    initializeHands,
-  } = useGestureDetection({
-    onGestureDetected: handleGestureResponse,
-    minConfidence: 0.7,
-    enabled: gestureEnabled && !isSpeaking && !isLoading,
-  });
-  */
+  // Clear conversation
+  const clearConversation = useCallback(() => {
+    setMessages([]);
+  }, []);
 
-  // Media capture - simplified without face detection
+  // Session ID for transcripts (generated once per session)
+  const sessionIdRef = useRef(`session_${Date.now()}`);
+  
+  // Save transcript entry to database (background)
+  const saveTranscript = useCallback(async (
+    content: string,
+    speakerType: 'user' | 'mira' | 'other',
+    speakerName?: string
+  ) => {
+    try {
+      const token = localStorage.getItem('mira_token');
+      if (!token) return;
+      
+      // Fire and forget - don't await
+      fetch('/api/transcripts', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          sessionId: sessionIdRef.current,
+          content,
+          speakerType,
+          speakerName: speakerName || (speakerType === 'mira' ? 'MIRA' : undefined),
+        }),
+      }).catch(err => console.error('[Transcript Save]', err));
+    } catch (err) {
+      console.error('[Transcript Save Error]', err);
+    }
+  }, []);
+  
+  // Initialize speaker manager when user is authenticated
+  useEffect(() => {
+    if (user?.id && !speakerManagerRef.current) {
+      speakerManagerRef.current = new SpeakerDetectionManager(
+        sessionIdRef.current,
+        user.id,
+        {
+          onUnknownSpeakerDetected: (speaker) => {
+            console.log('[Speaker Detection] New unknown speaker detected:', speaker.id);
+            setPendingUnknownSpeakers(prev => [...prev, speaker]);
+          },
+        }
+      );
+    }
+  }, [user?.id]);
+  
+  // Function to ask about unknown speakers after conversation ends
+  const askAboutUnknownSpeakers = useCallback(() => {
+    if (pendingUnknownSpeakers.length === 0) return;
+    
+    const unknownSpeaker = pendingUnknownSpeakers[0];
+    const speechSample = unknownSpeaker.speechSegments
+      .map(s => s.text)
+      .join(' ')
+      .slice(0, 200);
+    
+    // Add a system message that will trigger MIRA to ask
+    const systemMessage: Message = {
+      id: `system_${Date.now()}`,
+      role: 'system',
+      content: `[SPEAKER_IDENTIFICATION_NEEDED] I detected another person in your conversation who said: "${speechSample}". Who was that person? I'd like to remember them for future conversations.`,
+      timestamp: new Date(),
+    };
+    setMessages(prev => [...prev, systemMessage]);
+    
+    // Save to transcript as "other"
+    saveTranscript(speechSample, 'other', 'Unknown Person');
+    
+    console.log('[Speaker Detection] Asking about unknown speaker, speech sample:', speechSample);
+  }, [pendingUnknownSpeakers, saveTranscript]);
+  
+  // Store the ask function in ref so timer can access it
+  useEffect(() => {
+    askAboutSpeakersRef.current = askAboutUnknownSpeakers;
+  }, [askAboutUnknownSpeakers]);
+  
+  // Check for conversation silence and trigger speaker identification
+  const checkConversationSilence = useCallback(() => {
+    // Clear existing timer
+    if (conversationSilenceTimerRef.current) {
+      clearTimeout(conversationSilenceTimerRef.current);
+    }
+    
+    // Set new timer - wait 5 seconds of silence before asking
+    conversationSilenceTimerRef.current = setTimeout(() => {
+      if (pendingUnknownSpeakers.length > 0 && askAboutSpeakersRef.current) {
+        askAboutSpeakersRef.current();
+      }
+    }, 5000);
+  }, [pendingUnknownSpeakers.length]);
+
+  // Handle transcript from WebRTC - with speaker detection
+  const handleTranscript = useCallback((text: string) => {
+    if (!text.trim()) return;
+    
+    console.log('[MIRA] Transcript:', text);
+    
+    // Update last speech time
+    lastSpeechTimeRef.current = Date.now();
+    
+    // Process through speaker detection
+    // Note: For now we attribute to user, but the system listens for different voices
+    // In production, this would analyze audio characteristics
+    if (speakerManagerRef.current) {
+      speakerManagerRef.current.processSpeech(text, undefined, true);
+    }
+    
+    // Check if this might be someone else talking (heuristic: not directed at MIRA)
+    const isDirectedAtMira = containsWakeWord(text);
+    
+    // If not directed at MIRA and we detect conversation-like patterns
+    // This is a simplified detection - real implementation would use audio analysis
+    const conversationPatterns = [
+      /\b(yeah|yes|no|okay|sure|right|hmm|uh huh|really)\b/i,
+      /\b(what do you think|I think|in my opinion)\b/i,
+      /\b(tell me about|what about|how about)\b/i,
+    ];
+    
+    const looksLikeConversation = conversationPatterns.some(p => p.test(text));
+    
+    if (!isDirectedAtMira && looksLikeConversation && text.length > 5) {
+      // Might be another person - mark for potential speaker detection
+      console.log('[Speaker Detection] Possible other person speaking:', text);
+      // The speaker detection would ideally use audio characteristics here
+    }
+    
+    // Reset silence timer since there's activity
+    checkConversationSilence();
+    
+    // Check if user is identifying an unknown speaker
+    // Patterns like "That was John" or "His name is John" or "It's my friend John"
+    const identificationPatterns = [
+      /(?:that was|that's|it was|it's|he is|she is|his name is|her name is|they are|their name is)\s+(?:my\s+)?(?:friend|colleague|brother|sister|mom|dad|wife|husband|boss|coworker)?\s*(\w+)/i,
+      /(?:^|\s)(\w+)\s+(?:was talking|said that|mentioned)/i,
+      /(?:talking to|speaking with|chatting with)\s+(?:my\s+)?(?:friend|colleague)?\s*(\w+)/i,
+    ];
+    
+    for (const pattern of identificationPatterns) {
+      const match = text.match(pattern);
+      if (match && pendingUnknownSpeakers.length > 0) {
+        const identifiedName = match[1];
+        const speaker = pendingUnknownSpeakers[0];
+        
+        console.log('[Speaker Detection] User identified speaker as:', identifiedName);
+        
+        // Save the identified person
+        savePerson(identifiedName, speaker);
+        
+        // Remove from pending list
+        setPendingUnknownSpeakers(prev => prev.slice(1));
+        break;
+      }
+    }
+    
+    // Save transcript to database (background)
+    saveTranscript(text, 'user');
+    
+    // Add user message
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: text,
+      timestamp: new Date(),
+    };
+    setMessages(prev => [...prev, userMessage]);
+  }, [saveTranscript, checkConversationSilence, pendingUnknownSpeakers]);
+  
+  // Save identified person to database
+  const savePerson = useCallback(async (name: string, speaker: DetectedSpeaker) => {
+    try {
+      const token = localStorage.getItem('mira_token');
+      if (!token) return;
+      
+      const conversationText = speaker.speechSegments.map(s => s.text).join(' ');
+      
+      // Save to people API
+      await fetch('/api/people', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          name,
+          conversationContext: conversationText,
+          firstMet: speaker.firstDetectedAt,
+          source: 'voice_detection',
+        }),
+      });
+      
+      console.log('[Speaker Detection] Saved person:', name, 'with context:', conversationText.slice(0, 100));
+      
+      // Update speaker manager
+      if (speakerManagerRef.current) {
+        speakerManagerRef.current.identifySpeaker(speaker.id, name);
+      }
+    } catch (err) {
+      console.error('[Speaker Detection] Error saving person:', err);
+    }
+  }, []);
+
+  // Handle AI response from WebRTC
+  const handleResponse = useCallback((text: string) => {
+    if (!text.trim()) return;
+    
+    console.log('[MIRA] Response:', text);
+    
+    // Save MIRA's response to transcript database (background)
+    saveTranscript(text, 'mira', 'MIRA');
+    
+    // Add MIRA message
+    const miraMessage: Message = {
+      id: `${Date.now()}-response`,
+      role: 'mira',
+      content: text,
+      timestamp: new Date(),
+    };
+    setMessages(prev => [...prev, miraMessage]);
+  }, [saveTranscript]);
+
+  const handleError = useCallback((error: string) => {
+    console.error('[MIRA] Error:', error);
+  }, []);
+
+  // Fallback-enabled AI Engine
+  const {
+    connect: connectRealtime,
+    disconnect: disconnectRealtime,
+    isConnected,
+    isSpeaking,
+    isListening,
+    transcript,
+    lastResponse,
+    audioLevel,
+    outputAudioLevel, // MIRA's voice level
+    activeProvider // Expose active provider if needed for UI
+  } = useMIRAEngine({
+    voice: 'mira',
+    onTranscript: handleTranscript,
+    onResponse: handleResponse,
+    onError: handleError,
+  });
+
+  // Media capture
   const handleCameraFrame = useCallback(async (imageBase64: string) => {
-    // Skip on mobile devices
-    if (isMobileDevice()) {
-      return;
-    }
-    
-    // Skip processing when user is waiting for a response
-    if (isProcessingMessageRef.current) {
-      return;
-    }
-    
-    // Camera frames available for future use (gesture detection, etc.)
+    if (isMobileDevice()) return;
+    // Camera frames available for future use
   }, []);
 
   const handleScreenFrame = useCallback(async (imageBase64: string) => {
@@ -715,26 +517,29 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   } = useMediaCapture({
     onCameraFrame: handleCameraFrame,
     onScreenFrame: handleScreenFrame,
-    captureInterval: 10000, // Every 10 seconds for face detection (client-side face-api.js)
+    captureInterval: 10000,
   });
 
-  // Function to auto-start media after auth
-  const autoStartMedia = useCallback(() => {
-    if (!mediaAutoStartedRef.current) {
-      mediaAutoStartedRef.current = true;
-      
-      // Small delay to ensure component is fully mounted
+  // Auto-start WebRTC and Camera after auth
+  const autoStart = useCallback(() => {
+    if (!autoStartedRef.current) {
+      autoStartedRef.current = true;
+      // Start WebRTC immediately
       setTimeout(() => {
-        // Always start voice recording
-        startVoiceRecording();
-        console.log('[Media] Voice recording started');
-        
-        // Also start camera by default for face detection
-        startCamera();
-        console.log('[Media] Camera started');
-      }, 500);
+        connectRealtime();
+        console.log('[MIRA] WebRTC connected');
+      }, 300);
+      
+      // Start camera slightly after WebRTC (to not overwhelm browser)
+      setTimeout(() => {
+        startCamera().then(() => {
+          console.log('[MIRA] Camera started for visual recognition');
+        }).catch((err) => {
+          console.log('[MIRA] Camera auto-start failed:', err);
+        });
+      }, 800);
     }
-  }, [startVoiceRecording, startCamera]);
+  }, [connectRealtime, startCamera]);
 
   // Auth functions
   const login = useCallback(async (email: string, password: string): Promise<boolean> => {
@@ -750,14 +555,14 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         localStorage.setItem('mira_token', token);
         setUser(user);
         setIsAuthenticated(true);
-        autoStartMedia();
+        autoStart();
         return true;
       }
       return false;
     } catch {
       return false;
     }
-  }, [autoStartMedia]);
+  }, [autoStart]);
 
   const register = useCallback(async (
     email: string,
@@ -768,7 +573,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       const response = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, name, dropExisting: false }),
+        body: JSON.stringify({ email, password, name }),
       });
 
       if (response.ok) {
@@ -776,23 +581,22 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         localStorage.setItem('mira_token', token);
         setUser(user);
         setIsAuthenticated(true);
-        autoStartMedia();
+        autoStart();
         return true;
       }
       return false;
     } catch {
       return false;
     }
-  }, [autoStartMedia]);
+  }, [autoStart]);
 
   const logout = useCallback(() => {
     localStorage.removeItem('mira_token');
     setUser(null);
     setIsAuthenticated(false);
     setMessages([]);
-    setConversationId(null);
-    stopAudio();
-  }, [stopAudio]);
+    disconnectRealtime();
+  }, [disconnectRealtime]);
 
   // Check auth on mount
   useEffect(() => {
@@ -812,15 +616,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
           const { user } = await response.json();
           setUser(user);
           setIsAuthenticated(true);
-          
-          // Auto-start media on existing session
-          if (!mediaAutoStartedRef.current) {
-            mediaAutoStartedRef.current = true;
-            setTimeout(() => {
-              // Start WebRTC voice connection
-              startVoiceRecording();
-            }, 500);
-          }
+          autoStart();
         } else {
           localStorage.removeItem('mira_token');
         }
@@ -832,293 +628,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     };
 
     checkAuth();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-
-  // NOTE: MediaPipe gesture detection disabled due to WASM compatibility issues with Next.js
-  // Using Gemini Vision API for gesture detection instead (handled in handleCameraFrame)
-  // The useGestureDetection hook is kept but not actively used
-  /*
-  // Initialize MediaPipe gesture detection when camera becomes active
-  useEffect(() => {
-    if (isCameraActive && cameraVideoRef.current && gestureEnabled) {
-      console.log('[Gesture] Camera active, initializing MediaPipe gesture detection...');
-      
-      // Initialize MediaPipe hands
-      initializeHands().then(() => {
-        if (cameraVideoRef.current) {
-          // Start processing video frames for gesture detection
-          startGestureDetection(cameraVideoRef.current);
-          console.log('[Gesture] MediaPipe gesture detection started');
-        }
-      }).catch(err => {
-        console.error('[Gesture] Failed to initialize:', err);
-      });
-    }
-  }, [isCameraActive, gestureEnabled, initializeHands, startGestureDetection, cameraVideoRef]);
-
-  // Process video frames for gesture detection
-  useEffect(() => {
-    if (!isCameraActive || !cameraVideoRef.current || !isHandsLoaded || !gestureEnabled) {
-      return;
-    }
-
-    let animationId: number;
-    let lastProcessTime = 0;
-    const FRAME_INTERVAL = 100; // Process ~10 frames per second
-
-    const processLoop = async (timestamp: number) => {
-      if (timestamp - lastProcessTime >= FRAME_INTERVAL) {
-        if (cameraVideoRef.current && cameraVideoRef.current.readyState >= 2) {
-          await processGestureFrame(cameraVideoRef.current);
-        }
-        lastProcessTime = timestamp;
-      }
-      animationId = requestAnimationFrame(processLoop);
-    };
-
-    animationId = requestAnimationFrame(processLoop);
-
-    return () => {
-      if (animationId) {
-        cancelAnimationFrame(animationId);
-      }
-    };
-  }, [isCameraActive, isHandsLoaded, gestureEnabled, processGestureFrame, cameraVideoRef]);
-  */
-
-  // Send message
-  const sendMessage = useCallback(async (text: string, attachments?: FileAttachment[]) => {
-    // Prevent duplicate sends
-    if ((!text.trim() && !attachments?.length) || isLoading) {
-      console.log('[SendMessage] Blocked - empty or loading:', { text: text.trim(), isLoading });
-      return;
-    }
-
-    console.log('[SendMessage] Starting:', text, attachments?.length ? `with ${attachments.length} attachments` : '');
-    lastActivityRef.current = new Date();
-    
-    // PRIORITY: Set processing flag IMMEDIATELY to pause all background tasks
-    isProcessingMessageRef.current = true;
-    setIsLoading(true);
-
-    // Check if this is a system message (don't show to user or play thinking)
-    const isSystemPrompt = text.startsWith('[SYSTEM:');
-    
-    // Play thinking sound while processing (not for system messages)
-    if (!isSystemPrompt) {
-      playThinkingSound();
-    }
-
-    // Add user message (skip if it's a system prompt)
-    if (!isSystemPrompt) {
-      const userMessage: Message = {
-        id: Date.now().toString(),
-        role: 'user',
-        content: text,
-        timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, userMessage]);
-    }
-
-    try {
-      const token = localStorage.getItem('mira_token');
-      
-      // Build context object with datetime
-      const contextData = {
-        visualContext: visualContext.cameraDescription || visualContext.screenDescription 
-          ? visualContext 
-          : undefined,
-        dateTime: {
-          ...dateTime,
-          formattedDateTime: dateTime.formattedDateTime,
-        },
-      };
-      
-      console.log('[SendMessage] Calling /api/chat with context:', { 
-        dateTime: dateTime.formattedDateTime 
-      });
-      
-      // Check if we have interruption context to include
-      const interruptionContext = interruptedResponseRef.current ? {
-        wasInterrupted: true,
-        previousResponse: interruptedResponseRef.current.text,
-        spokenPortion: interruptedResponseRef.current.spokenPortion,
-        agent: interruptedResponseRef.current.agent,
-      } : undefined;
-      
-      // Clear interruption context after capturing it
-      if (interruptedResponseRef.current) {
-        console.log('[Interruption] Including interruption context in message');
-        interruptedResponseRef.current = null;
-      }
-      
-      const response = await fetch('/api/chat', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          message: text,
-          conversationId,
-          sessionId: sessionIdRef.current,
-          attachments: attachments || [],
-          interruptionContext, // Include interruption context if present
-          ...contextData,
-        }),
-      });
-
-      console.log('[SendMessage] Response status:', response.status);
-
-      if (response.ok) {
-        const data = await response.json();
-        
-        // Stop thinking sound - we have a response
-        stopThinkingSound();
-        
-        console.log('[SendMessage] Response data:', { 
-          agent: data.response?.agent,
-        });
-        
-        setConversationId(data.conversationId);
-
-        // Add final response
-        const responseMessage: Message = {
-          id: `${Date.now()}-response`,
-          role: data.response.agent as Message['role'],
-          content: data.response.content,
-          timestamp: new Date(),
-          emotion: data.response.emotion,
-        };
-        setMessages(prev => [...prev, responseMessage]);
-        
-        // Save response to transcript - use English names for UI display
-        const finalAgentNameMap: Record<string, string> = { 'mi': 'MI', 'ra': 'RA', 'mira': 'MIRA' };
-        saveTranscriptEntry(data.response.content, 'mira', finalAgentNameMap[data.response.agent] || data.response.agent.toUpperCase(), true);
-        
-        // Check if MIRA's response contains a question (for follow-up detection)
-        // Be very aggressive at detecting questions - any question mark or question-like phrase
-        const responseText = data.response.content;
-        const lastSentences = responseText.split(/[.!]/).slice(-3).join(' '); // Focus on last few sentences
-        
-        const hasQuestionMark = /\?/.test(responseText);
-        const hasQuestionWords = /\b(what|how|when|where|why|which|who|whose|whom)\b.*\?/i.test(responseText);
-        const hasInvitingQuestion = /\b(could you|would you|can you|do you|are you|is it|have you|will you|shall|should|tell me|let me know|thoughts|think|prefer|like to|want to|interested in)\b/i.test(lastSentences);
-        const hasOpenEnded = /\b(anything else|what else|how about|what about|any questions|more info|tell me more|go on|continue|elaborate)\b/i.test(responseText);
-        
-        const hasQuestion = hasQuestionMark || hasQuestionWords || hasInvitingQuestion || hasOpenEnded;
-        
-        console.log('[FollowUp] Question detection:', {
-          hasQuestionMark,
-          hasQuestionWords,
-          hasInvitingQuestion,
-          hasOpenEnded,
-          result: hasQuestion
-        });
-        
-        if (hasQuestion) {
-          console.log('[FollowUp] MIRA asked a follow-up question - enabling follow-up mode');
-          setMiraAskedFollowUp(true);
-        } else {
-          setMiraAskedFollowUp(false);
-        }
-
-        // Play final response audio
-        // Transform code/outputs for TTS so AI summarizes instead of reading code verbatim
-        console.log('[SendMessage] Playing final response from:', data.response.agent);
-        await playAudio(transformForTTS(data.response.content), data.response.agent as AgentType);
-        console.log('[SendMessage] Complete!');
-      } else {
-        const errorText = await response.text();
-        console.error('[SendMessage] API error:', response.status, errorText);
-        throw new Error(`API error: ${response.status}`);
-      }
-    } catch (error) {
-      console.error('[SendMessage] Error:', error);
-      stopThinkingSound(); // Stop thinking on error
-      const errorMessage: Message = {
-        id: `${Date.now()}-error`,
-        role: 'system',
-        content: 'Sorry, there was an error processing your message.',
-        timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, errorMessage]);
-    } finally {
-      isProcessingMessageRef.current = false;
-      setIsLoading(false);
-      console.log('[SendMessage] isLoading set to false');
-    }
-  }, [conversationId, visualContext, isLoading, playAudio, playAudioAndWait, saveTranscriptEntry, dateTime, playThinkingSound, stopThinkingSound, transformForTTS]);
-
-  // Keep sendMessageRef in sync
-  useEffect(() => {
-    sendMessageRef.current = sendMessage;
-  }, [sendMessage]);
-
-  const clearConversation = useCallback(() => {
-    setMessages([]);
-    setConversationId(null);
-  }, []);
-
-  // Recording controls (WebRTC handles VAD automatically)
-  const startRecording = useCallback(() => {
-    if (!realtimeConnected && !isLoading) {
-      connectRealtime();
-    }
-  }, [realtimeConnected, isLoading, connectRealtime]);
-
-  const stopRecording = useCallback(() => {
-    // With WebRTC, we don't stop - VAD handles listening automatically
-    // User can explicitly disconnect if needed
-    console.log('[Recording] stopRecording called (WebRTC VAD handles automatically)');
-  }, []);
-
-  // WebRTC handles echo cancellation and VAD automatically, no need for manual pause/resume
-  // The auto-pause/resume logic is removed since WebRTC manages this internally
-
-  // Proactive behavior - AI initiates conversation
-  useEffect(() => {
-    if (!enableProactive || !isAuthenticated) return;
-
-    proactiveIntervalRef.current = setInterval(async () => {
-      const timeSinceActivity = Date.now() - lastActivityRef.current.getTime();
-      const minutes = timeSinceActivity / 1000 / 60;
-
-      // Only initiate if idle for more than 2 minutes and not currently interacting
-      if (minutes > 2 && !isLoading && !isRecording && !isSpeaking) {
-        // Check if AI should speak
-        try {
-          const token = localStorage.getItem('mira_token');
-          const response = await fetch('/api/chat', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({
-              message: '[PROACTIVE_CHECK]',
-              conversationId,
-              visualContext,
-              proactive: true,
-            }),
-          });
-
-          // Handle proactive response if the API supports it
-          // For now, this is a placeholder
-        } catch {
-          // Ignore errors for proactive checks
-        }
-      }
-    }, 60000); // Check every minute
-
-    return () => {
-      if (proactiveIntervalRef.current) {
-        clearInterval(proactiveIntervalRef.current);
-      }
-    };
-  }, [enableProactive, isAuthenticated, isLoading, isRecording, isSpeaking, conversationId, visualContext]);
+  }, [autoStart]);
 
   const value: MIRAContextType = {
     // Auth
@@ -1131,22 +641,29 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
 
     // Conversation
     messages,
-    conversationId,
     isLoading,
-    isThinking,
     sendMessage,
     clearConversation,
 
-    // Voice
-    isRecording,
+    // Voice - Pure WebRTC
+    isConnected,
+    isMicReady: isConnected,
+    isRecording: isListening,
+    activeProvider,
     isListening,
-    isProcessing,
-    audioLevel,
-    startRecording,
-    stopRecording,
     isSpeaking,
-    speakingAgent,
-    isMicReady: realtimeConnected && hasReceivedFirstAudio,
+    speakingAgent: isSpeaking ? 'mira' : null,
+    audioLevel,
+    outputAudioLevel, // MIRA's voice level for sphere
+    transcript,
+    lastResponse,
+    connect: connectRealtime,
+    disconnect: disconnectRealtime,
+    isProcessing: isLoading,
+    startRecording: connectRealtime,
+    stopRecording: disconnectRealtime,
+    enableProactive,
+    setEnableProactive,
 
     // Media
     isCameraActive,
@@ -1158,16 +675,6 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     stopScreenCapture,
     cameraVideoRef,
     visualContext,
-
-    // Proactive
-    enableProactive,
-    setEnableProactive,
-
-    // Gesture Detection
-    currentGesture,
-    gestureEnabled,
-    setGestureEnabled,
-    isHandsLoaded,
 
     // Time
     dateTime,

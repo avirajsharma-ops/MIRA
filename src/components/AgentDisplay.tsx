@@ -15,6 +15,7 @@ export default function AgentDisplay({ showControls = true }: AgentDisplayProps)
     isListening,
     isLoading,
     audioLevel,
+    outputAudioLevel, // MIRA's voice level
     isCameraActive,
     isScreenActive,
     startCamera,
@@ -27,8 +28,12 @@ export default function AgentDisplay({ showControls = true }: AgentDisplayProps)
   const mode = 'combined';
   
   // Get audio level for sphere animation
-  // Pass audio when recording (user speaking) or AI is speaking
-  const effectiveAudioLevel = isRecording || isListening || isSpeaking ? audioLevel : 0;
+  // Use outputAudioLevel when MIRA is speaking, inputAudioLevel when user is speaking
+  const effectiveAudioLevel = isSpeaking 
+    ? outputAudioLevel  // MIRA's voice should make sphere react
+    : (isRecording || isListening) 
+      ? audioLevel  // User's voice
+      : 0;
 
   // AI is "thinking" when loading but not yet speaking
   const isThinking = isLoading && !isSpeaking;

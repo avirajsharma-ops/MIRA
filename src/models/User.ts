@@ -1,5 +1,15 @@
 import mongoose, { Schema, Document } from 'mongoose';
 
+export interface ITalioIntegration {
+  enabled: boolean;
+  tenantId: string;
+  userId: string;
+  employeeId?: string;
+  role: 'admin' | 'manager' | 'employee' | 'dept_head';
+  department?: string;
+  lastSync: Date;
+}
+
 export interface IUser extends Document {
   _id: mongoose.Types.ObjectId;
   email: string;
@@ -14,7 +24,21 @@ export interface IUser extends Document {
     autoInitiate: boolean;
   };
   lastActive: Date;
+  talioIntegration?: ITalioIntegration;
 }
+
+const TalioIntegrationSchema = new Schema<ITalioIntegration>(
+  {
+    enabled: { type: Boolean, default: false },
+    tenantId: { type: String },
+    userId: { type: String },
+    employeeId: { type: String },
+    role: { type: String, enum: ['admin', 'manager', 'employee', 'dept_head'], default: 'employee' },
+    department: { type: String },
+    lastSync: { type: Date },
+  },
+  { _id: false }
+);
 
 const UserSchema = new Schema<IUser>(
   {
@@ -43,6 +67,10 @@ const UserSchema = new Schema<IUser>(
     lastActive: {
       type: Date,
       default: Date.now,
+    },
+    talioIntegration: {
+      type: TalioIntegrationSchema,
+      default: null,
     },
   },
   {

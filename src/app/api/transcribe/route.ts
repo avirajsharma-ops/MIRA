@@ -18,14 +18,19 @@ async function transcribeAudio(audioBuffer: Buffer, language?: string): Promise<
   // Add response format for faster processing
   formData.append('response_format', 'json');
   
-  // Add prompt to help with accuracy for common phrases
-  formData.append('prompt', 'MIRA, MI, RA, Meera, hey mira, hi mira');
+  // Add prompt to help with accuracy for common phrases and names
+  // This helps Whisper recognize specific words/names more accurately
+  formData.append('prompt', 'MIRA, Meera, Hey MIRA, Hi MIRA, Aviraj, Talio. Common words: audible, hear, speaking, listening, help, please, thank you, okay, yes, no, what, why, how, when, where.');
   
+  // Set language hint for better accuracy
   if (language) {
     formData.append('language', language);
+  } else {
+    // Default to English but Whisper will auto-detect Hindi/Hinglish
+    formData.append('language', 'en');
   }
 
-  // Add temperature for more deterministic results
+  // Temperature 0 for most deterministic/accurate results
   formData.append('temperature', '0.0');
 
   const response = await fetch('https://api.openai.com/v1/audio/transcriptions', {

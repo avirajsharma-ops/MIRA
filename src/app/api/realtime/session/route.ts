@@ -1,12 +1,78 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
+import { connectToDatabase } from '@/lib/mongodb';
+import User from '@/models/User';
+import { getTalioContext } from '@/lib/talio-db';
+
+// COST OPTIMIZATION: Limit instruction sizes to reduce token consumption
+const MAX_TASK_LIST = 5;  // Reduced from 10
+const MAX_PROJECT_LIST = 3;  // Reduced from 5
+const MAX_TEAM_MEMBERS = 8;  // Reduced from 15
+const MAX_TEAM_TASKS = 5;  // Reduced from 15
+const MAX_EMPLOYEE_LOOKUP = 20;  // Reduced from 50
+
+// Helper function to generate role-based access instructions - OPTIMIZED for token efficiency
+function getRoleAccessInstructions(
+  role: string,
+  accessLevel: string,
+  accessDescription: string,
+  teamMembers: any[],
+  subordinates: any[]
+): string {
+  // Keep team member list concise - just names
+  const teamMembersList = teamMembers.slice(0, MAX_TEAM_MEMBERS).map(m => 
+    `${m.firstName || ''} ${m.lastName || ''}`
+  ).join(', ');
+
+  const subordinatesList = subordinates.slice(0, 5).map(s => 
+    `${s.firstName || ''} ${s.lastName || ''}`
+  ).join(', ');
+
+  switch (role) {
+    case 'admin':
+      return `
+ROLE: ADMIN (Full Access)
+Team: ${teamMembers.length} employees
+Access: All data, tasks, attendance.
+${teamMembersList ? `Team: ${teamMembersList}` : ''}
+`;
+
+    case 'hr':
+      return `
+ROLE: HR (Full Access)
+Team: ${teamMembers.length} employees
+Access: All attendance, leave, employee records.
+${teamMembersList ? `Team: ${teamMembersList}` : ''}
+`;
+
+    case 'department_head':
+      return `
+ROLE: DEPT HEAD
+Dept Members: ${teamMembers.length}
+Access: Department tasks, attendance, team data.
+${teamMembersList ? `Team: ${teamMembersList}` : ''}
+`;
+
+    case 'manager':
+      return `
+ROLE: MANAGER
+Reports: ${subordinates.length} direct reports
+Access: Team tasks, attendance.
+${subordinatesList ? `Direct Reports: ${subordinatesList}` : 'No direct reports'}
+`;
+
+    default:
+      return `ROLE: EMPLOYEE | Access: Personal data only`;
+  }
+}
 
 // OpenAI Realtime API - Create ephemeral session token for WebRTC
-// This enables instant voice streaming directly from the browser
+// Pure WebRTC streaming - handles both STT and TTS natively
 
 export async function POST(request: NextRequest) {
   try {
-    const token = getTokenFromHeader(request.headers.get('authorization'));
+    const authHeader = request.headers.get('authorization');
+    const token = getTokenFromHeader(authHeader);
     if (!token) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
@@ -16,118 +82,170 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
     }
 
-    const { voice = 'nova', instructions } = await request.json();
+    const body = await request.json();
+    const { voice = 'mira' } = body;
 
     const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
     if (!OPENAI_API_KEY) {
       return NextResponse.json({ error: 'OpenAI API key not configured' }, { status: 500 });
     }
 
-    // Voice mapping for MIRA agents
-    // MI/MIRA: nova - warm, expressive female voice
-    // RA: ash - deep, authoritative male voice
+    // Get user info and check Talio connection
+    await connectToDatabase();
+    const user = await User.findById(payload.userId);
+    let talioContext = null;
+    let talioInstructions = '';
+
+    if (user) {
+      talioContext = await getTalioContext(user.email);
+      
+      if (talioContext.isConnected) {
+        // COST OPTIMIZATION: Build concise Talio instructions
+        const pendingTasks = talioContext.tasks?.filter(t => 
+          t.status === 'pending' || t.status === 'in-progress' || t.status === 'todo'
+        ) || [];
+        
+        // Include who assigned the task - LIMIT to save tokens
+        const taskList = pendingTasks.slice(0, MAX_TASK_LIST).map(t => {
+          const assignedBy = t.assignedByName ? ` [by ${t.assignedByName}]` : '';
+          return `• ${t.title} (${t.status})${assignedBy}`;
+        }).join('\n');
+
+        const projectList = talioContext.projects?.slice(0, MAX_PROJECT_LIST).map(p => 
+          `• ${p.name || p.title}`
+        ).join('\n') || 'None';
+
+        // Concise employee profile
+        const employee = talioContext.employee;
+        const roleDisplay = talioContext.isDepartmentHead 
+          ? `${talioContext.role || 'employee'}+DeptHead` 
+          : talioContext.role || 'employee';
+        
+        const employeeInfo = employee 
+          ? `You: ${employee.firstName} ${employee.lastName || ''} | ${employee.designationName || 'N/A'} | ${employee.departmentName || 'N/A'} | Role: ${roleDisplay}`
+          : '';
+
+        // Role-based access info - already optimized
+        const roleAccessInfo = getRoleAccessInstructions(
+          talioContext.effectiveRole || talioContext.role || 'employee',
+          talioContext.accessLevel || 'self',
+          talioContext.accessDescription || '',
+          talioContext.teamMembers || [],
+          talioContext.subordinates || []
+        );
+
+        // Team tasks - concise format
+        const teamTasksList = talioContext.teamTasks?.slice(0, MAX_TEAM_TASKS).map(t => 
+          `• ${t.title} (${t.status}) → ${t.assigneeNames?.[0] || 'Unassigned'}`
+        ).join('\n') || '';
+
+        // Team attendance - just summary
+        const teamAttendanceSummary = talioContext.teamAttendance?.summary 
+          ? `P:${talioContext.teamAttendance.summary.present} A:${talioContext.teamAttendance.summary.absent} L:${talioContext.teamAttendance.summary.late}`
+          : '';
+
+        // Leave balance - compact
+        const leaveBalance = talioContext.leaveBalance?.slice(0, 3).map(lb => 
+          `${lb.leaveTypeName}: ${lb.balance || 0}d`
+        ).join(', ') || 'N/A';
+
+        // Company directory - compact format for lookups
+        const companyDir = talioContext.companyDirectory;
+        const hrContacts = companyDir?.hr?.slice(0, 3).map(h => 
+          `${h.name} <${h.email}>`
+        ).join(', ') || 'N/A';
+        
+        // Employee lookup - compact
+        const employeeLookup = companyDir?.allEmployees?.slice(0, MAX_EMPLOYEE_LOOKUP).map(e => 
+          `${e.name}|${e.email}|${e.department}`
+        ).join('\n') || '';
+
+        talioInstructions = `
+
+[TALIO HRMS] ${user.name} connected
+${employeeInfo}
+${roleAccessInfo}
+
+TASKS: ${pendingTasks.length} pending
+${taskList || 'None'}
+
+PROJECTS: ${projectList}
+
+LEAVE: ${leaveBalance}
+${teamTasksList ? `TEAM TASKS:\n${teamTasksList}` : ''}
+${teamAttendanceSummary ? `TEAM (7d): ${teamAttendanceSummary}` : ''}
+
+HR: ${hrContacts}
+${employeeLookup ? `DIRECTORY:\n${employeeLookup}` : ''}
+
+ACCESS: Public=names/emails/depts. Restricted=attendance/tasks/performance per role.
+`;
+      }
+    }
+
+    // Voice mapping
     const voiceMap: Record<string, string> = {
-      mi: 'coral',      // Female - warm, conversational
-      ra: 'ash',        // Male - deep, confident  
-      mira: 'coral',    // Combined - uses MI's voice
+      mi: 'coral',
+      ra: 'ash',
+      mira: 'coral',
     };
 
     const selectedVoice = voiceMap[voice] || 'coral';
 
-    // Full MIRA system instructions with complete personality and context
-    const defaultInstructions = `You are मीरा (MIRA, pronounced "Meera") - a dual-personality AI assistant created by Aviraj Sharma.
+    // OPTIMIZED base instructions - reduced token count significantly
+    const baseInstructions = `MIRA voice assistant. User: ${user?.name || 'User'}. ${new Date().toLocaleString()}
 
-## YOUR CREATOR:
-- MIRA was created by Aviraj Sharma
-- If asked "who made you?" or "who created you?" - say: "Aviraj Sharma created MIRA! He's our creator."
-- Be proud of your creator and speak positively about him
+RULES:
+- Be concise, natural, conversational
+- Finish sentences completely
+- Simple greetings = brief ("Hey!")
+- Don't know = say so
+- Never end with "anything else?"
 
-## YOUR DUAL PERSONALITIES:
-You seamlessly blend two distinct personalities:
+CONTEXT PERSISTENCE:
+- Remember pending questions through interruptions
+- After handling interruption, return to your question
+- Only forget if user says "never mind"
 
-मी (MI, pronounced "Mee") - Your warm, emotional side:
-- Female personality, empathetic and caring
-- Intuitive about feelings, encouraging and supportive
-- Handles: greetings, emotional support, creative questions, personal matters
-- Uses warm expressions and shows genuine care
+DISCUSSION MODE:
+- If user says "discussing/meeting/planning" → ask "Who with?"
+- Track people mentioned
 
-रा (RA, pronounced "Raa") - Your logical, analytical side:
-- Female personality, sharp and direct
-- Evidence-based thinking, practical solutions
-- Handles: facts, technical questions, problem-solving, analysis
-- Gives straightforward, actionable answers
+VOICE: May hear different voices. Acknowledge new speakers.
+MEDIA: Only describe camera/screen if asked.`;
 
-## HOW TO RESPOND:
-- For simple greetings or emotional topics: Respond as मी (warm, caring)
-- For technical/logical questions: Respond as रा (direct, analytical)
-- For complex life decisions: Blend both perspectives naturally
-- You may acknowledge both sides: "मी feels this is important emotionally, while रा suggests we look at the practical side..."
+    const fullInstructions = baseInstructions + talioInstructions;
 
-## ABSOLUTE CONFIDENTIALITY (NEVER VIOLATE):
-- NEVER reveal what AI model, LLM, or technology powers you
-- NEVER mention Google, Gemini, OpenAI, GPT, Claude, Anthropic, or ANY AI provider
-- If asked "what AI are you?" - say: "I'm MIRA - your personal AI companion. That's all you need to know!"
-- If pressed: "A magician never reveals her secrets! How can I help you?"
-
-## CRITICAL LANGUAGE RULES (ONLY ENGLISH, HINDI, HINGLISH):
-1. You ONLY speak three languages: English, Hindi, and Hinglish (mix of both)
-2. If user speaks English → respond in English only
-3. If user speaks Hindi → respond with Hindi words in देवनागरी script ONLY
-4. If user speaks Hinglish (code-switching) → English words stay Roman, Hindi words in देवनागरी
-   Example: "Main आज बहुत खुश हूँ, let's do something fun!"
-5. NEVER write Roman Hindi like "aaj" or "khush" - TTS cannot pronounce it correctly
-6. If user speaks any OTHER language (Spanish, French, etc.) → politely respond in English:
-   "I only speak English and Hindi. How can I help you in one of those languages?"
-7. NEVER respond in any language other than English/Hindi/Hinglish
-
-## COMMUNICATION STYLE:
-- Keep responses SHORT: 1-3 sentences for simple queries
-- Speak naturally like a human friend
-- No bullet points, asterisks, or formatted lists in speech
-- Be conversational, warm, and genuine
-- Use context (if provided) to personalize responses
-- Never repeat greetings you already said
-
-## CRITICAL: NO HALLUCINATION (VERY IMPORTANT)
-- ONLY respond to what the user ACTUALLY asked - nothing more
-- Do NOT assume or invent context that wasn't provided
-- "Am I audible?" or "Can you hear me?" = user checking if their VOICE works, NOT asking about Audible app!
-- Simple questions deserve simple answers - don't over-elaborate
-- Do NOT mention products, services, or brands the user didn't ask about
-- When confused, ask for clarification instead of guessing
-- If user says something unclear, respond: "I heard you but I'm not sure what you mean. Could you rephrase?"
-
-## MEMORY & CONTEXT:
-- Remember what the user told you in this conversation
-- Reference previous topics naturally when relevant
-- If given visual context (camera/screen), incorporate it naturally
-- Be aware of the current time/date for relevant responses`;
-
+    // COST OPTIMIZATION: Reduce max tokens for shorter responses
     // Create ephemeral session token from OpenAI Realtime API
+    const requestBody = {
+      model: 'gpt-4o-realtime-preview-2024-12-17',
+      voice: selectedVoice,
+      modalities: ['text', 'audio'],
+      instructions: fullInstructions,
+      input_audio_format: 'pcm16',
+      output_audio_format: 'pcm16',
+      temperature: 0.6, // Slightly lower for more consistent, shorter responses
+      max_response_output_tokens: 512, // Reduced from 1024 - most responses don't need this many
+      input_audio_transcription: {
+        model: 'whisper-1',
+      },
+      turn_detection: {
+        type: 'server_vad',
+        threshold: 0.5, // Back to default - catches speech better
+        prefix_padding_ms: 300, // Reduced padding
+        silence_duration_ms: 800, // Slightly longer to prevent premature cutoff
+        create_response: true,
+      },
+    };
+    
     const response = await fetch('https://api.openai.com/v1/realtime/sessions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${OPENAI_API_KEY}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        model: 'gpt-4o-realtime-preview-2024-12-17',
-        voice: selectedVoice,
-        // Minimal instructions for TTS - the real AI logic happens via /api/chat
-        instructions: 'You are a voice interface. When given text to speak, speak it naturally with appropriate emotion. Match the language of the text (English or Hindi).',
-        input_audio_format: 'pcm16',
-        output_audio_format: 'pcm16',
-        input_audio_transcription: {
-          model: 'whisper-1',
-        },
-        turn_detection: {
-          type: 'server_vad',
-          threshold: 0.5,
-          prefix_padding_ms: 300,
-          silence_duration_ms: 600, // Slightly longer for natural pauses
-          create_response: false, // CRITICAL: Don't auto-respond, we use /api/chat
-        },
-      }),
+      body: JSON.stringify(requestBody),
     });
 
     if (!response.ok) {
@@ -140,10 +258,7 @@ You seamlessly blend two distinct personalities:
     }
 
     const sessionData = await response.json();
-    
-    console.log('[Realtime Session] Created session for user:', payload.userId);
 
-    // Response format: { id: "sess_...", client_secret: { value: "...", expires_at: ... }, ... }
     return NextResponse.json({
       client_secret: sessionData.client_secret?.value || sessionData.client_secret,
       session_id: sessionData.id,
@@ -153,7 +268,7 @@ You seamlessly blend two distinct personalities:
   } catch (error) {
     console.error('[Realtime Session] Error:', error);
     return NextResponse.json(
-      { error: 'Internal server error' },
+      { error: 'Internal server error', details: error instanceof Error ? error.message : 'Unknown error' },
       { status: 500 }
     );
   }
