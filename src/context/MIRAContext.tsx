@@ -467,7 +467,6 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     lastResponse,
     audioLevel,
     outputAudioLevel, // MIRA's voice level
-    activeProvider // Expose active provider if needed for UI
   } = useMIRAEngine({
     voice: 'mira',
     onTranscript: handleTranscript,
