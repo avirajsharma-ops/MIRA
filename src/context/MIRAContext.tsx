@@ -643,7 +643,6 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     isConnected,
     isMicReady: isConnected,
     isRecording: isListening,
-    activeProvider,
     isListening,
     isSpeaking,
     speakingAgent: isSpeaking ? 'mira' : null,
