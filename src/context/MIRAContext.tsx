@@ -143,11 +143,54 @@ export function useMIRA() {
   return context;
 }
 
+// Helper to parse JWT token and extract user info
+function parseTokenPayload(token: string): { id: string; name: string; email: string } | null {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]));
+    
+    // Check if token is expired
+    if (payload.exp && payload.exp * 1000 < Date.now()) {
+      console.log('[MIRA] Token expired');
+      return null;
+    }
+    
+    if (payload.userId && payload.email && payload.name) {
+      return { id: payload.userId, email: payload.email, name: payload.name };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+// Initialize auth state from localStorage synchronously
+function getInitialAuthState(): { isAuthenticated: boolean; user: { id: string; name: string; email: string } | null } {
+  if (typeof window === 'undefined') {
+    return { isAuthenticated: false, user: null };
+  }
+  
+  const token = localStorage.getItem('mira_token');
+  if (!token) {
+    return { isAuthenticated: false, user: null };
+  }
+  
+  const user = parseTokenPayload(token);
+  if (user) {
+    console.log('[MIRA] Restored auth state from token:', user.email);
+    return { isAuthenticated: true, user };
+  }
+  
+  // Invalid token - remove it
+  localStorage.removeItem('mira_token');
+  return { isAuthenticated: false, user: null };
+}
+
 export function MIRAProvider({ children }: { children: React.ReactNode }) {
-  // Auth state
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
+  // Auth state - initialize from localStorage for immediate persistence
+  const [authState] = useState(() => getInitialAuthState());
+  const [isAuthenticated, setIsAuthenticated] = useState(authState.isAuthenticated);
   const [isAuthLoading, setIsAuthLoading] = useState(true);
-  const [user, setUser] = useState<{ id: string; name: string; email: string } | null>(null);
+  const [user, setUser] = useState<{ id: string; name: string; email: string } | null>(authState.user);
 
   // Conversation state
   const [messages, setMessages] = useState<Message[]>([]);
@@ -594,9 +637,16 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     disconnectRealtime();
   }, [disconnectRealtime]);
 
-  // Check auth on mount - restore session from localStorage
+  // Check auth on mount - validate session with server
+  // Use ref to prevent multiple runs
+  const authCheckedRef = useRef(false);
+  
   useEffect(() => {
     const checkAuth = async () => {
+      // Prevent multiple auth checks
+      if (authCheckedRef.current) return;
+      authCheckedRef.current = true;
+      
       // Only run on client side
       if (typeof window === 'undefined') {
         setIsAuthLoading(false);
@@ -604,11 +654,20 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       }
       
       const token = localStorage.getItem('mira_token');
-      console.log('[MIRA] Checking auth, token exists:', !!token);
+      console.log('[MIRA] Checking auth, token exists:', !!token, 'already authenticated:', isAuthenticated);
       
       if (!token) {
+        setIsAuthenticated(false);
+        setUser(null);
         setIsAuthLoading(false);
         return;
+      }
+
+      // If we already have auth state from initialization, just validate in background
+      // and auto-start immediately
+      if (isAuthenticated && user) {
+        console.log('[MIRA] Already authenticated from token, starting services');
+        autoStart();
       }
 
       try {
@@ -617,26 +676,51 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         });
 
         if (response.ok) {
-          const { user } = await response.json();
-          console.log('[MIRA] Session restored for:', user.email);
-          setUser(user);
+          const { user: serverUser } = await response.json();
+          console.log('[MIRA] Session validated for:', serverUser.email);
+          setUser(serverUser);
           setIsAuthenticated(true);
-          autoStart();
-        } else {
-          console.log('[MIRA] Session invalid, status:', response.status);
+          // Only call autoStart if we weren't already authenticated
+          if (!isAuthenticated) {
+            autoStart();
+          }
+        } else if (response.status === 401) {
+          // Only remove token if explicitly unauthorized (invalid/expired token)
+          console.log('[MIRA] Token invalid (401), removing');
           localStorage.removeItem('mira_token');
+          setIsAuthenticated(false);
+          setUser(null);
+        } else {
+          // Server error (500, 503, etc.) - keep token and current auth state
+          console.log('[MIRA] Server error, keeping token, status:', response.status);
+          // If we already have auth from token parsing, keep it
+          if (!isAuthenticated) {
+            const parsedUser = parseTokenPayload(token);
+            if (parsedUser) {
+              setIsAuthenticated(true);
+              setUser(parsedUser);
+              autoStart();
+            }
+          }
         }
       } catch (error) {
-        console.error('[MIRA] Session check error:', error);
-        // Don't remove token on network error - might be temporary
-        // Only remove if it was explicitly rejected
+        console.error('[MIRA] Session check error (network):', error);
+        // Network error - keep token and current auth state
+        if (!isAuthenticated) {
+          const parsedUser = parseTokenPayload(token);
+          if (parsedUser) {
+            setIsAuthenticated(true);
+            setUser(parsedUser);
+            autoStart();
+          }
+        }
       } finally {
         setIsAuthLoading(false);
       }
     };
 
     checkAuth();
-  }, [autoStart]);
+  }, []); // Empty dependency array - run once on mount
 
   const value: MIRAContextType = {
     // Auth
