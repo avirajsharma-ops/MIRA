@@ -130,8 +130,14 @@ export async function POST(request: NextRequest) {
         }).sort({ date: -1 }).limit(5).lean(),
       ]);
       
-      // Deduplicate memories
-      const allMemories = [...importantMemories, ...personMemories, ...recentMemories];
+      // Deduplicate memories - type the arrays properly
+      interface MemoryDoc {
+        _id: mongoose.Types.ObjectId;
+        type: string;
+        content: string;
+        importance: number;
+      }
+      const allMemories = [...importantMemories, ...personMemories, ...recentMemories] as unknown as MemoryDoc[];
       const uniqueMemories = allMemories.filter((mem, index, self) =>
         index === self.findIndex(m => m._id.toString() === mem._id.toString())
       ).slice(0, 20);
