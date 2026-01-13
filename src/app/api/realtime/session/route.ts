@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
 import { connectToDatabase } from '@/lib/mongodb';
 import User from '@/models/User';
+import Memory from '@/models/Memory';
+import Transcript from '@/models/Transcript';
 import { getTalioContext } from '@/lib/talio-db';
+import mongoose from 'mongoose';
 
 // COST OPTIMIZATION: Limit instruction sizes to reduce token consumption
 const MAX_TASK_LIST = 5;  // Reduced from 10
@@ -91,6 +94,84 @@ export async function POST(request: NextRequest) {
     const user = await User.findById(payload.userId);
     let talioContext = null;
     let talioInstructions = '';
+    let memoryInstructions = '';
+
+    // CRITICAL: Load user's memories for persistent knowledge
+    try {
+      const userObjectId = new mongoose.Types.ObjectId(payload.userId);
+      
+      // Fetch important memories in parallel
+      const [importantMemories, personMemories, recentMemories, recentTranscripts] = await Promise.all([
+        // High importance memories
+        Memory.find({
+          userId: userObjectId,
+          isArchived: false,
+          importance: { $gte: 7 },
+        }).sort({ importance: -1 }).limit(10).lean(),
+        
+        // People memories (names, relationships)
+        Memory.find({
+          userId: userObjectId,
+          type: 'person',
+          isArchived: false,
+        }).sort({ importance: -1, updatedAt: -1 }).limit(10).lean(),
+        
+        // Recent memories (last 7 days)
+        Memory.find({
+          userId: userObjectId,
+          isArchived: false,
+          createdAt: { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+        }).sort({ createdAt: -1 }).limit(10).lean(),
+        
+        // Recent transcripts (last 3 days) for conversation context
+        Transcript.find({
+          userId: userObjectId,
+          date: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) },
+        }).sort({ date: -1 }).limit(5).lean(),
+      ]);
+      
+      // Deduplicate memories
+      const allMemories = [...importantMemories, ...personMemories, ...recentMemories];
+      const uniqueMemories = allMemories.filter((mem, index, self) =>
+        index === self.findIndex(m => m._id.toString() === mem._id.toString())
+      ).slice(0, 20);
+      
+      if (uniqueMemories.length > 0) {
+        const memoryLines = uniqueMemories.map(m => {
+          const typeLabel = m.type === 'person' ? '👤' : 
+                           m.type === 'preference' ? '⭐' : 
+                           m.type === 'fact' ? '📝' : 
+                           m.type === 'event' ? '📅' : '💭';
+          return `${typeLabel} ${m.content}`;
+        });
+        
+        memoryInstructions = `
+[USER MEMORIES - MUST USE]
+${memoryLines.join('\n')}
+`;
+      }
+      
+      // Add transcript context for continuity
+      if (recentTranscripts.length > 0) {
+        const transcriptSummary = recentTranscripts.flatMap(t => 
+          (t.entries || []).slice(-5).map((e: any) => {
+            const speaker = e.speaker?.name || 'Unknown';
+            return `${speaker}: ${e.content?.substring(0, 100) || ''}`;
+          })
+        ).slice(0, 15);
+        
+        if (transcriptSummary.length > 0) {
+          memoryInstructions += `
+[RECENT CONVERSATIONS]
+${transcriptSummary.join('\n')}
+`;
+        }
+      }
+      
+      console.log('[Session] Loaded', uniqueMemories.length, 'memories and', recentTranscripts.length, 'transcripts for', user?.email);
+    } catch (memoryError) {
+      console.error('[Session] Error loading memories:', memoryError);
+    }
 
     if (user) {
       talioContext = await getTalioContext(user.email);
@@ -222,9 +303,22 @@ After validated conversation ends, ask IN ORDER:
 3. "What were you discussing? Need help?"
 4. "Remember [name] for future?"
 
+MEMORY & PEOPLE INSTRUCTIONS (CRITICAL):
+• When user tells you a name - ALWAYS ask to save/confirm
+• If name matches someone in memories - say "Is this the same [Name] I know?" 
+• When user says "I was talking to [Name]" - check memories, confirm if known
+• Save ALL important facts immediately - names, relationships, preferences
+• When asked "do you remember X" - check memories below and respond accurately
+• Reference past conversations naturally
+
+SAVING PEOPLE (STRICT):
+• Any new name mentioned → Ask: "Should I remember [Name]? How do you know them?"
+• Existing person mentioned → Confirm: "Is this [Name] from [previous context]?"
+• Always save relationship: friend, colleague, family, etc.
+
 MEDIA: Describe only if asked.`;
 
-    const fullInstructions = baseInstructions + talioInstructions;
+    const fullInstructions = baseInstructions + memoryInstructions + talioInstructions;
 
     // COST OPTIMIZATION: Balance between response completion and token usage
     // Create ephemeral session token from OpenAI Realtime API

@@ -11,6 +11,57 @@ import {
   createMiraSpeaker,
 } from '@/lib/transcription/transcriptionService';
 import { ITranscriptEntry, ISpeaker } from '@/models/Transcript';
+import { ContextEngine } from '@/lib/agents';
+
+// Check if content contains information worth remembering
+function shouldExtractMemory(content: string, speakerType: string): boolean {
+  if (!content || content.length < 10) return false;
+  
+  // Skip simple acknowledgements
+  const simplePatterns = /^(ok|okay|yes|no|yeah|sure|thanks|bye|hi|hello|hmm|um|uh)\s*[.!?]*$/i;
+  if (simplePatterns.test(content.trim())) return false;
+  
+  // Extract memories from user-spoken content
+  if (speakerType === 'user') {
+    // Personal info patterns
+    const personalPatterns = [
+      /\b(my name is|i am|i'm)\s+\w+/i,
+      /\b(my|i have a?)\s+(wife|husband|son|daughter|brother|sister|mom|dad|friend|colleague)\b/i,
+      /\b(i like|i love|i hate|i prefer|my favorite)\b/i,
+      /\b(i work at|i'm a|my job is)\b/i,
+      /\b(remember|don't forget|important)\b/i,
+      /\b(birthday|anniversary|meeting|appointment)\b.*\b(is on|on|at)\b/i,
+    ];
+    return personalPatterns.some(p => p.test(content));
+  }
+  
+  // Extract from conversations about people
+  if (speakerType === 'other') {
+    // Someone else is mentioned
+    return content.length > 20;
+  }
+  
+  return false;
+}
+
+// Extract memory type from content
+function detectMemoryType(content: string): 'person' | 'preference' | 'fact' | 'event' | 'task' {
+  const lower = content.toLowerCase();
+  
+  if (/\b(name is|this is|meet|friend|colleague|wife|husband|brother|sister|mom|dad)\b/.test(lower)) {
+    return 'person';
+  }
+  if (/\b(like|love|hate|prefer|favorite|enjoy)\b/.test(lower)) {
+    return 'preference';
+  }
+  if (/\b(meeting|appointment|birthday|anniversary|deadline|schedule)\b/.test(lower)) {
+    return 'event';
+  }
+  if (/\b(todo|task|remind|don't forget|remember to)\b/.test(lower)) {
+    return 'task';
+  }
+  return 'fact';
+}
 
 // POST - Save a transcript entry (background save)
 export async function POST(request: NextRequest) {
@@ -26,11 +77,14 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { sessionId, content, speakerType, speakerName, confidence, language, visualContext } = body;
+    const { sessionId, content, speakerType, speakerName, confidence, language, visualContext, timestamp } = body;
 
     if (!sessionId || !content) {
       return NextResponse.json({ error: 'sessionId and content are required' }, { status: 400 });
     }
+
+    // Use provided timestamp or current time
+    const entryTimestamp = timestamp ? new Date(timestamp) : new Date();
 
     // Determine speaker
     let speaker: ISpeaker;
@@ -52,9 +106,9 @@ export async function POST(request: NextRequest) {
     // Check if directed at MIRA
     const directedAtMira = isDirectedAtMira(content);
 
-    // Create entry
+    // Create entry with proper timestamp
     const entry: ITranscriptEntry = {
-      timestamp: new Date(),
+      timestamp: entryTimestamp,
       speaker,
       content,
       isDirectedAtMira: directedAtMira,
@@ -63,12 +117,63 @@ export async function POST(request: NextRequest) {
       visualContext,
     };
 
-    // Save to database
-    await saveTranscriptEntry(payload.userId, sessionId, entry);
+    // Save to database with retry logic
+    let saved = false;
+    let retries = 3;
+    
+    while (!saved && retries > 0) {
+      try {
+        await saveTranscriptEntry(payload.userId, sessionId, entry);
+        saved = true;
+      } catch (saveError) {
+        retries--;
+        console.error('[Transcript] Save attempt failed, retries left:', retries, saveError);
+        if (retries > 0) {
+          await new Promise(r => setTimeout(r, 500));
+        }
+      }
+    }
+    
+    if (!saved) {
+      console.error('[Transcript] Failed to save after all retries');
+      return NextResponse.json({ error: 'Failed to save transcript' }, { status: 500 });
+    }
+
+    // Extract and save memory if content is significant
+    // This is critical - save synchronously to ensure data is captured
+    if (shouldExtractMemory(content, speakerType)) {
+      try {
+        const contextEngine = new ContextEngine(payload.userId);
+        const memoryType = detectMemoryType(content);
+        
+        // Add context about who said it if it's not the user
+        const memoryContent = speakerType === 'other' && speakerName
+          ? `${speakerName} said: "${content}"`
+          : content;
+        
+        // Save memory synchronously (await) to ensure it's captured
+        await contextEngine.addMemory({
+          userId: payload.userId,
+          content: memoryContent,
+          type: memoryType,
+          source: speakerType === 'user' ? 'user' : 'inferred',
+          importance: memoryType === 'person' ? 8 : 6,
+          tags: speakerType === 'other' && speakerName ? [speakerName.toLowerCase()] : [],
+        });
+        
+        console.log('[Transcript] ✅ Memory saved:', memoryType, '-', memoryContent.substring(0, 50));
+      } catch (memErr) {
+        console.error('[Transcript] ❌ Memory save failed:', memErr);
+        // Don't fail the request, but log the error
+      }
+    }
+
+    console.log('[Transcript] ✅ Saved entry:', speakerType, '-', content.substring(0, 50), 'at', entryTimestamp.toISOString());
 
     return NextResponse.json({
       success: true,
       isDirectedAtMira: directedAtMira,
+      timestamp: entryTimestamp.toISOString(),
     });
   } catch (error) {
     console.error('Transcript save error:', error);

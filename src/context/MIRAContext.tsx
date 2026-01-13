@@ -275,34 +275,137 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   // Session ID for transcripts (generated once per session)
   const sessionIdRef = useRef(`session_${Date.now()}`);
   
-  // Save transcript entry to database (background)
+  // Conversation ID for persistent storage
+  const conversationIdRef = useRef<string | null>(null);
+  
+  // Auto-save queue for reliable saving
+  const saveQueueRef = useRef<Array<{ type: 'transcript' | 'conversation' | 'person'; data: any }>>([]);
+  const isSavingRef = useRef(false);
+  
+  // Process save queue - ensures saves happen in order and don't fail silently
+  const processSaveQueue = useCallback(async () => {
+    if (isSavingRef.current || saveQueueRef.current.length === 0) return;
+    
+    isSavingRef.current = true;
+    const token = localStorage.getItem('mira_token');
+    if (!token) {
+      isSavingRef.current = false;
+      return;
+    }
+    
+    while (saveQueueRef.current.length > 0) {
+      const item = saveQueueRef.current[0];
+      let success = false;
+      let retries = 3;
+      
+      while (retries > 0 && !success) {
+        try {
+          if (item.type === 'transcript') {
+            const response = await fetch('/api/transcripts', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`,
+              },
+              body: JSON.stringify(item.data),
+            });
+            success = response.ok;
+            if (!success) console.error('[AutoSave] Transcript save failed:', await response.text());
+          } else if (item.type === 'conversation') {
+            const response = await fetch('/api/conversations/sync', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`,
+              },
+              body: JSON.stringify(item.data),
+            });
+            if (response.ok) {
+              const result = await response.json();
+              if (result.conversationId) {
+                conversationIdRef.current = result.conversationId;
+              }
+              success = true;
+            } else {
+              console.error('[AutoSave] Conversation save failed:', await response.text());
+            }
+          } else if (item.type === 'person') {
+            const response = await fetch('/api/people', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${token}`,
+              },
+              body: JSON.stringify(item.data),
+            });
+            success = response.ok;
+            if (response.ok) {
+              const result = await response.json();
+              console.log('[AutoSave] Person saved:', result);
+            } else {
+              console.error('[AutoSave] Person save failed:', await response.text());
+            }
+          }
+        } catch (err) {
+          console.error('[AutoSave] Save error, retrying...', err);
+        }
+        
+        if (!success) {
+          retries--;
+          if (retries > 0) await new Promise(r => setTimeout(r, 1000)); // Wait 1s before retry
+        }
+      }
+      
+      if (!success) {
+        console.error('[AutoSave] Failed after 3 retries:', item);
+      }
+      
+      // Remove from queue
+      saveQueueRef.current.shift();
+    }
+    
+    isSavingRef.current = false;
+  }, []);
+  
+  // Queue a save operation
+  const queueSave = useCallback((type: 'transcript' | 'conversation' | 'person', data: any) => {
+    saveQueueRef.current.push({ type, data });
+    processSaveQueue();
+  }, [processSaveQueue]);
+  
+  // Save transcript entry to database with guaranteed delivery
   const saveTranscript = useCallback(async (
     content: string,
     speakerType: 'user' | 'mira' | 'other',
     speakerName?: string
   ) => {
-    try {
-      const token = localStorage.getItem('mira_token');
-      if (!token) return;
-      
-      // Fire and forget - don't await
-      fetch('/api/transcripts', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          sessionId: sessionIdRef.current,
-          content,
-          speakerType,
-          speakerName: speakerName || (speakerType === 'mira' ? 'MIRA' : undefined),
-        }),
-      }).catch(err => console.error('[Transcript Save]', err));
-    } catch (err) {
-      console.error('[Transcript Save Error]', err);
-    }
-  }, []);
+    if (!content.trim()) return;
+    
+    const timestamp = new Date().toISOString();
+    
+    // Queue transcript save
+    queueSave('transcript', {
+      sessionId: sessionIdRef.current,
+      content,
+      speakerType,
+      speakerName: speakerName || (speakerType === 'mira' ? 'MIRA' : undefined),
+      timestamp,
+    });
+    
+    // Also sync to conversation
+    queueSave('conversation', {
+      sessionId: sessionIdRef.current,
+      conversationId: conversationIdRef.current,
+      message: {
+        role: speakerType === 'mira' ? 'mira' : speakerType === 'user' ? 'user' : 'system',
+        content,
+        timestamp,
+        speakerName,
+      },
+    });
+    
+    console.log('[AutoSave] Queued save for:', speakerType, content.slice(0, 50));
+  }, [queueSave]);
   
   // Initialize speaker manager when user is authenticated
   useEffect(() => {
@@ -428,7 +531,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       }
     }
     
-    // Save transcript to database (background)
+    // Save transcript to database (guaranteed)
     saveTranscript(text, 'user');
     
     // Add user message
@@ -441,39 +544,105 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     setMessages(prev => [...prev, userMessage]);
   }, [saveTranscript, checkConversationSilence, pendingUnknownSpeakers]);
   
-  // Save identified person to database
-  const savePerson = useCallback(async (name: string, speaker: DetectedSpeaker) => {
+  // Check if a person with similar name exists
+  const checkExistingPerson = useCallback(async (name: string): Promise<{ exists: boolean; person?: any }> => {
     try {
       const token = localStorage.getItem('mira_token');
-      if (!token) return;
+      if (!token) return { exists: false };
       
-      const conversationText = speaker.speechSegments.map(s => s.text).join(' ');
-      
-      // Save to people API
-      await fetch('/api/people', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          name,
-          conversationContext: conversationText,
-          firstMet: speaker.firstDetectedAt,
-          source: 'voice_detection',
-        }),
+      const response = await fetch(`/api/people/check?name=${encodeURIComponent(name)}`, {
+        headers: { 'Authorization': `Bearer ${token}` },
       });
       
-      console.log('[Speaker Detection] Saved person:', name, 'with context:', conversationText.slice(0, 100));
+      if (response.ok) {
+        const result = await response.json();
+        return result;
+      }
+      return { exists: false };
+    } catch {
+      return { exists: false };
+    }
+  }, []);
+  
+  // Save identified person to database with duplicate checking
+  const savePersonToDirectory = useCallback(async (
+    name: string, 
+    conversationContext: string,
+    relationship?: string,
+    skipDuplicateCheck?: boolean
+  ): Promise<{ success: boolean; isExisting: boolean; person?: any }> => {
+    try {
+      const token = localStorage.getItem('mira_token');
+      if (!token) return { success: false, isExisting: false };
       
+      // Check for existing person first (unless skipped)
+      if (!skipDuplicateCheck) {
+        const existing = await checkExistingPerson(name);
+        if (existing.exists) {
+          // Person exists - update their record with new context
+          const response = await fetch('/api/people', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              name,
+              conversationContext,
+              relationship,
+              source: 'voice_detection',
+            }),
+          });
+          
+          if (response.ok) {
+            const result = await response.json();
+            console.log('[People] Updated existing person:', name);
+            return { success: true, isExisting: true, person: result.person };
+          }
+        }
+      }
+      
+      // Use queue save for guaranteed delivery
+      queueSave('person', {
+        name,
+        conversationContext,
+        relationship,
+        firstMet: new Date().toISOString(),
+        source: 'voice_detection',
+      });
+      
+      console.log('[People] Queued save for new person:', name);
+      return { success: true, isExisting: false };
+    } catch (err) {
+      console.error('[People] Error saving person:', err);
+      return { success: false, isExisting: false };
+    }
+  }, [checkExistingPerson, queueSave]);
+  
+  // Save identified person from speaker detection
+  const savePerson = useCallback(async (name: string, speaker: DetectedSpeaker) => {
+    const conversationText = speaker.speechSegments.map(s => s.text).join(' ');
+    
+    const result = await savePersonToDirectory(name, conversationText);
+    
+    if (result.success) {
       // Update speaker manager
       if (speakerManagerRef.current) {
         speakerManagerRef.current.identifySpeaker(speaker.id, name);
       }
-    } catch (err) {
-      console.error('[Speaker Detection] Error saving person:', err);
+      
+      // If person already existed, add a confirmation message
+      if (result.isExisting && result.person) {
+        const confirmMessage: Message = {
+          id: `confirm_${Date.now()}`,
+          role: 'system',
+          content: `[PERSON_CONFIRMED] ${name} - I've updated their record. I've talked with them before!`,
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, confirmMessage]);
+      }
     }
-  }, []);
+  }, [savePersonToDirectory]);
 
   // Handle AI response from WebRTC
   const handleResponse = useCallback((text: string) => {

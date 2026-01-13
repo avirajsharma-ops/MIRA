@@ -56,6 +56,9 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
   const audioContextRef = useRef<AudioContext | null>(null);
   const animationFrameRef = useRef<number | null>(null);
   
+  // Connection guard to prevent double connections (React state updates are async)
+  const isConnectingRef = useRef(false);
+  
   // COST OPTIMIZATION: Idle timeout tracking
   const lastActivityRef = useRef<number>(Date.now());
   const idleCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -142,16 +145,19 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
 
   // Connect to OpenAI Realtime API via WebRTC
   const connect = useCallback(async () => {
-    if (state !== 'disconnected') {
-      console.log('[Realtime] Already connected or connecting');
+    // Double-check with ref to prevent race conditions (state updates are async)
+    if (state !== 'disconnected' || isConnectingRef.current) {
+      console.log('[Realtime] Already connected or connecting, skipping');
       return;
     }
-
+    
+    isConnectingRef.current = true;
     updateState('connecting');
 
     try {
       const authToken = getAuthToken();
       if (!authToken) {
+        isConnectingRef.current = false;
         throw new Error('Not authenticated');
       }
 
@@ -190,6 +196,8 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
         audioEl.srcObject = e.streams[0];
         
         // Set up output audio analysis using the stream directly
+        // NOTE: Only connect to analyser, NOT to audioContext.destination
+        // The audio element handles playback - connecting to destination causes echo!
         if (audioContext && e.streams[0]) {
           try {
             const outputSource = audioContext.createMediaStreamSource(e.streams[0]);
@@ -197,15 +205,17 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
             outputAnalyser.fftSize = 256;
             outputAnalyser.smoothingTimeConstant = 0.3; // Faster response
             outputSource.connect(outputAnalyser);
-            // Also connect to destination to ensure audio plays
-            outputSource.connect(audioContext.destination);
+            // DO NOT connect to destination - audioEl handles playback
+            // outputSource.connect(audioContext.destination); // REMOVED - causes echo!
             outputAnalyserRef.current = outputAnalyser;
-            console.log('[Realtime] Output audio analyser set up');
+            console.log('[Realtime] Output audio analyser set up (no duplicate playback)');
           } catch (err) {
             console.error('[Realtime] Error setting up output analyser:', err);
           }
         }
         
+        // Reset connection guard on successful connection
+        isConnectingRef.current = false;
         updateState('connected');
       };
 
@@ -281,11 +291,13 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
       });
 
       console.log('[Realtime] WebRTC connection established');
+      // Reset connecting flag on success (state will be updated via ontrack)
 
     } catch (error) {
       console.error('[Realtime] Connection error:', error);
       onError?.(error instanceof Error ? error.message : 'Connection failed');
       updateState('disconnected');
+      isConnectingRef.current = false;
       cleanup();
     }
   }, [state, voice, getAuthToken, updateState, onError, startAudioLevelMonitoring]);
@@ -381,6 +393,9 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
       audioElementRef.current.srcObject = null;
       audioElementRef.current = null;
     }
+    
+    // Reset connection guard
+    isConnectingRef.current = false;
   }, []);
 
   const disconnect = useCallback(() => {
