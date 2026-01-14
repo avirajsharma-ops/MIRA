@@ -3,11 +3,13 @@
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
 import { useMediaCapture } from '@/hooks';
 import { useMIRAEngine } from '@/hooks/useMIRAEngine';
+import { useMicrophoneLevel } from '@/hooks/useMicrophoneLevel';
 import { isMobileDevice } from '@/lib/utils/deviceDetection';
 import { SpeakerDetectionManager, DetectedSpeaker } from '@/lib/voice/speakerDetection';
 import { getPhoneCallDetector, PhoneCallEvent, PhoneCallState } from '@/lib/voice/phoneCallDetection';
 import { getReminderTracker, ReminderNotification } from '@/lib/utils/reminderTracker';
 import { detectTasks, shouldAutoCreateReminder, DetectedTask, isDirectedAtMira as checkDirectedAtMira, extractTasksFromMiraResponse } from '@/lib/ai/taskDetection';
+import { getVoiceEmbeddingManager, VoiceEmbeddingManager, SpeakerMatch } from '@/lib/voice/voiceEmbedding';
 
 type AgentType = 'mira';
 
@@ -134,6 +136,48 @@ function containsWakeWord(text: string): boolean {
   return detectWakeWord(text).detected;
 }
 
+// Extract the query from a sentence containing the wake word
+// Removes the wake word but keeps the rest of the sentence
+// e.g., "Hey Mira what's the weather" -> "what's the weather"
+// e.g., "What's the weather Mira?" -> "What's the weather?"
+// e.g., "Can you Mira help me with this?" -> "Can you help me with this?"
+function extractQueryFromWakeWordSentence(text: string): string | null {
+  const lower = text.toLowerCase().trim();
+  const words = lower.split(/\s+/);
+  const originalWords = text.trim().split(/\s+/);
+  
+  // Find wake word position and remove it from the sentence
+  for (let i = 0; i < words.length; i++) {
+    // Check two-word phrase first (e.g., "hey mira")
+    if (i < words.length - 1) {
+      const phrase = `${words[i]} ${words[i + 1]}`;
+      if (MIRA_WAKE_WORDS.has(phrase.replace(/[.,!?'"]/g, ''))) {
+        // Two-word wake phrase found, remove it and return rest
+        const beforeWake = originalWords.slice(0, i);
+        const afterWake = originalWords.slice(i + 2);
+        const query = [...beforeWake, ...afterWake].join(' ').trim();
+        // Clean up any double spaces and punctuation issues
+        const cleanedQuery = query.replace(/\s+/g, ' ').replace(/^\s*[,.\s]+/, '').trim();
+        return cleanedQuery.length > 0 ? cleanedQuery : null;
+      }
+    }
+    
+    // Single word check
+    const result = isSimilarToWakeWord(words[i]);
+    if (result.match) {
+      // Wake word found at position i, remove it and return rest
+      const beforeWake = originalWords.slice(0, i);
+      const afterWake = originalWords.slice(i + 1);
+      const query = [...beforeWake, ...afterWake].join(' ').trim();
+      // Clean up any double spaces and punctuation issues
+      const cleanedQuery = query.replace(/\s+/g, ' ').replace(/^\s*[,.\s]+/, '').trim();
+      return cleanedQuery.length > 0 ? cleanedQuery : null;
+    }
+  }
+  
+  return null;
+}
+
 // Noise and irrelevant audio detection
 // Detects music, background noise, TV/radio, and other non-conversational audio
 interface NoiseAnalysis {
@@ -254,6 +298,7 @@ interface MIRAContextType {
   restingTranscript: string[]; // Transcripts collected during resting mode
   activateMira: () => void;
   deactivateMira: () => void;
+  idleTimeRemaining: number; // Seconds until idle disconnect
 
   // Conversation
   messages: Message[];
@@ -279,6 +324,18 @@ interface MIRAContextType {
   stopRecording: () => void;
   enableProactive: boolean;
   setEnableProactive: (value: boolean) => void;
+  
+  // Microphone status
+  micError: string | null;
+  attemptMicRecovery: () => Promise<boolean>;
+
+  // Voice Identification
+  isOwnerVoiceEnrolled: boolean;
+  currentSpeakerId: string | null;
+  currentSpeakerName: string | null;
+  isOwnerSpeaking: boolean;
+  startVoiceEnrollment: () => void;
+  isEnrollingVoice: boolean;
 
   // Phone Call Detection
   phoneCallState: PhoneCallState;
@@ -410,6 +467,14 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   const currentCallIdRef = useRef<string | null>(null);
   const phoneDetectorStartedRef = useRef(false);
 
+  // Voice Identification state
+  const voiceEmbeddingManagerRef = useRef<VoiceEmbeddingManager | null>(null);
+  const [isOwnerVoiceEnrolled, setIsOwnerVoiceEnrolled] = useState(false);
+  const [currentSpeakerId, setCurrentSpeakerId] = useState<string | null>(null);
+  const [currentSpeakerName, setCurrentSpeakerName] = useState<string | null>(null);
+  const [isOwnerSpeaking, setIsOwnerSpeaking] = useState(false);
+  const [isEnrollingVoice, setIsEnrollingVoice] = useState(false);
+
   // Reminders state
   const [reminders, setReminders] = useState<ReminderType[]>([]);
   const [pendingNotifications, setPendingNotifications] = useState<ReminderNotification[]>([]);
@@ -427,15 +492,26 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   // === MIRA STATE MANAGEMENT (Cost Optimization) ===
   // Always start in active mode - auto-initiate is always on
   const [miraState, setMiraState] = useState<MIRAState>('active');
+  // Ref to track current miraState for callbacks that may close over stale values
+  const miraStateRef = useRef<MIRAState>('active');
   const [restingTranscript, setRestingTranscript] = useState<string[]>([]);
   const restingSilenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const webSpeechRecognitionRef = useRef<any>(null);
   const wakeWordConfirmationTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [pendingWakeWordConfirmation, setPendingWakeWordConfirmation] = useState<string | null>(null);
   const lastActiveTimeRef = useRef<number>(Date.now());
+  // Flag to prevent reconnection when intentionally going to resting
+  const isGoingToRestingRef = useRef(false);
+  // Pending query from wake word activation - sent after connection
+  const pendingWakeWordQueryRef = useRef<string | null>(null);
   // Silence timeout - 10 seconds to both visual resting AND disconnect
   // Reconnection is optimized to be instant when wake word detected
   const SILENCE_TIMEOUT_MS = 10000; // 10 seconds of silence before going to resting
+
+  // Keep miraStateRef in sync for callbacks
+  useEffect(() => {
+    miraStateRef.current = miraState;
+  }, [miraState]);
 
   // Computed state
   const isResting = miraState === 'resting';
@@ -600,10 +676,32 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
+  // Track if recognition is starting to prevent duplicates
+  const isStartingRecognitionRef = useRef(false);
+  const recognitionRestartTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const recognitionRestartCountRef = useRef(0);
+  // Track voice activity for on-demand speech recognition
+  const voiceActivityDetectedRef = useRef(false);
+  const lastVoiceActivityTimeRef = useRef(0);
+  const VOICE_ACTIVITY_THRESHOLD = 0.15; // Audio level threshold to trigger speech recognition
+  const VOICE_ACTIVITY_COOLDOWN_MS = 3000; // Wait 3 seconds after speech recognition ends before detecting new activity
+  
   // Start real-time wake word detection using Web Speech API (lightweight, no API calls)
   // This is much more efficient than sending audio samples to Whisper
   const startRestingSpeechRecognition = useCallback(() => {
     if (typeof window === 'undefined') return;
+    
+    // Prevent concurrent starts
+    if (isStartingRecognitionRef.current) {
+      console.log('[Resting] Recognition start already in progress, skipping');
+      return;
+    }
+    
+    // Check if already running
+    if (webSpeechRecognitionRef.current) {
+      console.log('[Resting] Recognition already running');
+      return;
+    }
     
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
@@ -611,12 +709,9 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     
-    // Stop any existing recognition
-    if (webSpeechRecognitionRef.current) {
-      try { webSpeechRecognitionRef.current.stop(); } catch {}
-    }
+    isStartingRecognitionRef.current = true;
     
-    console.log('[Resting] Starting Web Speech API for real-time wake word detection');
+    console.log('[Resting] Starting Web Speech API for wake word detection');
     
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
@@ -625,6 +720,9 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     recognition.maxAlternatives = 3; // Get multiple alternatives for better wake word matching
     
     recognition.onresult = (event: any) => {
+      // Reset restart count on successful result
+      recognitionRestartCountRef.current = 0;
+      
       // Check ALL results, not just the last one
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
@@ -653,7 +751,6 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         
         // Only process final results for passive task detection (not wake word)
         if (isFinal && !wakeResult.detected) {
-          console.log('[Resting] Final transcript (no wake word):', transcript.substring(0, 50));
           setRestingTranscript(prev => [...prev.slice(-50), transcript]);
           processRestingTranscriptRef.current(transcript);
         }
@@ -661,35 +758,58 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     };
     
     recognition.onerror = (event: any) => {
-      // Ignore common non-fatal errors
+      // Ignore common non-fatal errors that don't need restart
       if (event.error === 'no-speech' || event.error === 'aborted') {
         return;
       }
+      
       console.log('[Resting] Speech recognition error:', event.error);
-      // Restart on recoverable errors
-      setTimeout(() => {
-        if (miraState === 'resting') {
-          startRestingSpeechRecognition();
-        }
-      }, 1000);
+      
+      // Clear current recognition reference since it errored
+      webSpeechRecognitionRef.current = null;
+      isStartingRecognitionRef.current = false;
+      
+      // Don't restart on network errors - they usually persist
+      if (event.error === 'network') {
+        console.log('[Resting] Network error - will retry in 5 seconds');
+        recognitionRestartCountRef.current++;
+      }
     };
     
     recognition.onend = () => {
-      console.log('[Resting] Speech recognition ended');
-      // Auto-restart if still in resting mode
-      if (miraState === 'resting') {
-        setTimeout(() => startRestingSpeechRecognition(), 100);
+      // Clear reference since recognition ended
+      webSpeechRecognitionRef.current = null;
+      isStartingRecognitionRef.current = false;
+      voiceActivityDetectedRef.current = false;
+      
+      // Set cooldown time - don't restart immediately, wait for new voice activity
+      lastVoiceActivityTimeRef.current = Date.now();
+      
+      // Clear any pending restart timeout
+      if (recognitionRestartTimeoutRef.current) {
+        clearTimeout(recognitionRestartTimeoutRef.current);
+        recognitionRestartTimeoutRef.current = null;
+      }
+      
+      // Don't restart automatically - voice activity detection will trigger restart
+      if (miraStateRef.current !== 'resting') {
+        console.log('[Resting] Speech recognition ended - no longer in resting mode');
+      } else {
+        console.log('[Resting] Speech recognition ended - waiting for voice activity to restart');
       }
     };
     
     try {
       recognition.start();
       webSpeechRecognitionRef.current = recognition;
-      console.log('[Resting] Web Speech recognition started (real-time, lightweight)');
+      isStartingRecognitionRef.current = false;
+      console.log('[Resting] Web Speech recognition started');
     } catch (e) {
       console.error('[Resting] Failed to start speech recognition:', e);
+      webSpeechRecognitionRef.current = null;
+      isStartingRecognitionRef.current = false;
     }
-  }, [miraState]);
+  }, []); // No dependencies - uses refs for current state
   
   // Keep processRestingTranscriptRef updated
   useEffect(() => {
@@ -698,12 +818,22 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
 
   // Stop resting speech recognition (Web Speech API)
   const stopRestingSpeechRecognition = useCallback(() => {
+    // Clear any pending restart timeout
+    if (recognitionRestartTimeoutRef.current) {
+      clearTimeout(recognitionRestartTimeoutRef.current);
+      recognitionRestartTimeoutRef.current = null;
+    }
+    
+    // Reset restart count
+    recognitionRestartCountRef.current = 0;
+    isStartingRecognitionRef.current = false;
+    
     // Stop Web Speech recognition
     if (webSpeechRecognitionRef.current) {
       try {
         webSpeechRecognitionRef.current.stop();
-        webSpeechRecognitionRef.current = null;
       } catch {}
+      webSpeechRecognitionRef.current = null;
     }
     
     console.log('[Resting] Speech recognition stopped');
@@ -712,6 +842,24 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   // Activate MIRA (go from resting to active) - fast reconnection
   const activateMira = useCallback((triggerText?: string) => {
     console.log('[MIRA] Activating from resting mode - enabling QUICK RECONNECT');
+    
+    // Extract query from trigger text (removes wake word, keeps rest of sentence)
+    if (triggerText) {
+      const query = extractQueryFromWakeWordSentence(triggerText);
+      if (query) {
+        console.log('[MIRA] Pending query from wake word:', query);
+        pendingWakeWordQueryRef.current = query;
+      } else {
+        // If no query extracted, send the full trigger text (minus wake word already handled above)
+        // This might happen if user just said "Mira" without additional context
+        pendingWakeWordQueryRef.current = null;
+      }
+    } else {
+      pendingWakeWordQueryRef.current = null;
+    }
+    
+    // Clear the going-to-resting flag (in case user wakes MIRA while transitioning)
+    isGoingToRestingRef.current = false;
     
     // Stop resting speech recognition immediately
     stopRestingSpeechRecognition();
@@ -746,6 +894,9 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   const deactivateMira = useCallback(() => {
     console.log('[MIRA] Going to resting mode');
     
+    // Set flag to prevent reconnection during transition
+    isGoingToRestingRef.current = true;
+    
     // Play resting sound
     playStateSound('resting');
     
@@ -758,11 +909,20 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       restingSilenceTimerRef.current = null;
     }
     
-    // The actual OpenAI disconnection will be handled by a useEffect watching miraState
-    // Start resting speech recognition
-    setTimeout(() => startRestingSpeechRecognition(), 500);
+    // Reset voice activity detection state
+    voiceActivityDetectedRef.current = false;
+    lastVoiceActivityTimeRef.current = Date.now(); // Set cooldown
     
-  }, [playStateSound, startRestingSpeechRecognition]);
+    // The actual OpenAI disconnection will be handled by a useEffect watching miraState
+    // DON'T start speech recognition immediately - voice activity detection will trigger it
+    // This prevents the constant restart loops
+    setTimeout(() => {
+      // Clear the flag after state has stabilized
+      isGoingToRestingRef.current = false;
+      console.log('[MIRA] Resting mode ready - mic monitoring will detect voice activity');
+    }, 500);
+    
+  }, [playStateSound]);
 
   // Keep deactivateMiraRef updated for use in handleTranscript goodbye detection
   useEffect(() => {
@@ -1523,12 +1683,21 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       /\b(?:ok|okay)\s*(?:mira|mirror)?\s*(?:,?\s*)?(?:that'?s?\s+(?:all|it|enough)|i'?m\s+done)\b/i,
       /\b(?:thanks?\s+)?(?:mira|mirror)\s*(?:,?\s*)?(?:bye|goodbye|later|that'?s?\s+all)\b/i,
       /\b(?:i\s+don'?t\s+need\s+you|leave\s+me\s+alone)\b/i,
+      // Additional natural goodbye phrases
+      /\b(?:go\s+away|stop|enough|quiet|hush)\b/i,
+      /\b(?:no\s+(?:more|thanks)|not\s+now)\b/i,
+      /\b(?:i'?m\s+(?:good|fine|okay)|all\s+(?:good|done|set))\b/i,
+      /\b(?:dismiss|exit|close|end\s+(?:session|conversation|chat))\b/i,
+      /\b(?:thank\s+you|thanks)[\s,]*(?:that'?s?\s+all|bye|goodbye)?\s*$/i,
     ];
     
     const isGoodbyeCommand = goodbyePatterns.some(p => p.test(lowerTextForGoodbye));
     
-    if (isGoodbyeCommand && miraState === 'active') {
-      console.log('[MIRA] Goodbye command detected:', text);
+    // Check for goodbye in any active state (active, listening, speaking, thinking)
+    const isInActiveState = miraState !== 'resting';
+    
+    if (isGoodbyeCommand && isInActiveState) {
+      console.log('[MIRA] Goodbye command detected:', text, '- current state:', miraState);
       
       // Save this to transcript
       saveTranscript(text, 'user');
@@ -1543,17 +1712,17 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       ];
       const randomGoodbye = goodbyeResponses[Math.floor(Math.random() * goodbyeResponses.length)];
       
-      // Say a quick goodbye if connected
+      // Go to resting immediately - MIRA can say goodbye as she transitions
+      // Don't wait for the speech to complete
+      console.log('[MIRA] Going to rest immediately on goodbye command');
+      
+      // Say goodbye but don't wait for it
       if (speakReminderRef.current && isVoiceConnectedRef.current) {
         speakReminderRef.current(randomGoodbye);
-        // Give time for the acknowledgement to play before going to resting
-        setTimeout(() => {
-          deactivateMiraRef.current?.();
-        }, 2000);
-      } else {
-        // If not connected, just go to resting immediately
-        deactivateMiraRef.current?.();
       }
+      
+      // Immediately go to resting
+      deactivateMiraRef.current?.();
       
       return; // Don't process further
     }
@@ -1564,6 +1733,21 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     
     // Update last speech time
     lastSpeechTimeRef.current = Date.now();
+    
+    // === DYNAMIC MEMORY SEARCH ===
+    // Search for relevant memories, conversations, and transcripts based on user query
+    // This runs asynchronously to inject context before MIRA responds
+    (async () => {
+      try {
+        const memoryContext = await searchMemoriesRef.current(text);
+        if (memoryContext && injectContextRef.current) {
+          console.log('[Memory] Injecting relevant context for:', text.substring(0, 50));
+          injectContextRef.current(memoryContext);
+        }
+      } catch (error) {
+        console.error('[Memory] Error searching memories:', error);
+      }
+    })();
     
     // === ALWAYS save transcript to database for memory ===
     // This captures everything the user says, regardless of whether it's directed at MIRA
@@ -1861,18 +2045,188 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     audioLevel,
     outputAudioLevel, // MIRA's voice level
     speak: speakReminder, // Make MIRA speak reminders aloud
+    injectContext, // Inject memory context into conversation
+    sendUserMessage, // Send a text message as if user spoke it
+    idleTimeRemaining, // Seconds until idle disconnect
   } = useMIRAEngine({
     voice: 'mira',
     onTranscript: handleTranscript,
     onResponse: handleResponse,
     onError: handleError,
+    onIdleDisconnect: () => {
+      console.log('[MIRA] Idle timeout detected - transitioning to resting state');
+      // Use the ref to avoid stale closure
+      deactivateMiraRef.current?.();
+    },
   });
+
+  // Store sendUserMessage in ref for use after connection
+  const sendUserMessageRef = useRef<((text: string) => void) | null>(null);
+  useEffect(() => {
+    sendUserMessageRef.current = sendUserMessage;
+  }, [sendUserMessage]);
+
+  // Store injectContext in ref for use in handleTranscript
+  const injectContextRef = useRef<((context: string) => void) | null>(null);
+  useEffect(() => {
+    injectContextRef.current = injectContext;
+  }, [injectContext]);
+
+  // === DYNAMIC MEMORY SEARCH ===
+  // Search memories, conversations, and transcripts based on user query
+  const searchMemories = useCallback(async (query: string): Promise<string | null> => {
+    try {
+      const token = localStorage.getItem('mira_token');
+      if (!token) return null;
+
+      const response = await fetch(`/api/memory/search?query=${encodeURIComponent(query)}&force=true`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+
+      if (!response.ok) return null;
+
+      const data = await response.json();
+      
+      if (data.contextString && data.results?.length > 0) {
+        console.log('[Memory] Found', data.totalResults, 'relevant memories for query:', query);
+        return data.contextString;
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('[Memory] Search error:', error);
+      return null;
+    }
+  }, []);
+
+  // Store searchMemories in ref for use in handleTranscript
+  const searchMemoriesRef = useRef(searchMemories);
+  useEffect(() => {
+    searchMemoriesRef.current = searchMemories;
+  }, [searchMemories]);
+
+  // === INDEPENDENT MICROPHONE MONITORING FOR RESTING STATE ===
+  // This allows the sphere to react to user voice even when WebRTC is disconnected
+  // Uses shared mic stream to avoid conflicts with Web Speech API
+  const [micError, setMicError] = useState<string | null>(null);
+  
+  const handleMicError = useCallback((error: string) => {
+    console.error('[MIRA] Mic error:', error);
+    setMicError(error);
+  }, []);
+  
+  const handleMicRecover = useCallback(() => {
+    console.log('[MIRA] Mic recovered');
+    setMicError(null);
+  }, []);
+  
+  const {
+    level: independentMicLevel,
+    startMonitoring: startMicMonitoring,
+    stopMonitoring: stopMicMonitoring,
+    isMonitoring: isMicMonitoring,
+    needsRecovery: micNeedsRecovery,
+    attemptRecovery: attemptMicRecovery,
+    error: micLevelError,
+  } = useMicrophoneLevel({
+    onMicError: handleMicError,
+    onMicRecover: handleMicRecover,
+  });
+
+  // Auto-recover mic if needed (with debouncing built into attemptRecovery)
+  useEffect(() => {
+    if (micNeedsRecovery && miraState === 'resting') {
+      console.log('[MIRA] Mic needs recovery, attempting...');
+      // Small delay to avoid rapid recovery attempts
+      const timer = setTimeout(() => {
+        attemptMicRecovery().then(success => {
+          if (success) {
+            console.log('[MIRA] Mic recovery successful');
+          } else {
+            console.warn('[MIRA] Mic recovery failed, will retry later');
+          }
+        });
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [micNeedsRecovery, miraState, attemptMicRecovery]);
+
+  // Start/stop independent mic monitoring based on MIRA state and WebRTC connection
+  // IMPORTANT: Don't use mic monitoring in resting mode - it conflicts with Web Speech API
+  // Web Speech API is priority for wake word detection in resting mode
+  useEffect(() => {
+    if (miraState === 'resting') {
+      // In resting state, KEEP mic monitoring active for voice activity detection
+      // This allows us to detect when someone starts speaking and trigger speech recognition
+      if (!isMicMonitoring && !micNeedsRecovery) {
+        console.log('[MIRA] Starting mic monitoring for voice activity detection (resting mode)');
+        startMicMonitoring();
+      }
+    } else if (isConnected) {
+      // Only stop independent monitoring once WebRTC is actually connected
+      if (isMicMonitoring) {
+        console.log('[MIRA] Stopping independent mic monitoring (WebRTC connected)');
+        stopMicMonitoring();
+      }
+    } else {
+      // Active state but not yet connected - use independent monitoring temporarily
+      if (!isMicMonitoring && !micNeedsRecovery) {
+        console.log('[MIRA] Starting independent mic monitoring (active but WebRTC not yet connected)');
+        startMicMonitoring();
+      }
+    }
+  }, [miraState, isConnected, isMicMonitoring, micNeedsRecovery, startMicMonitoring, stopMicMonitoring]);
+
+  // Voice activity detection in resting mode - triggers speech recognition when someone speaks
+  useEffect(() => {
+    if (miraState !== 'resting') return;
+    if (!isMicMonitoring) return;
+    
+    // Check if mic level indicates voice activity
+    const now = Date.now();
+    const timeSinceLastActivity = now - lastVoiceActivityTimeRef.current;
+    const isInCooldown = timeSinceLastActivity < VOICE_ACTIVITY_COOLDOWN_MS;
+    
+    if (independentMicLevel >= VOICE_ACTIVITY_THRESHOLD && !isInCooldown) {
+      // Voice activity detected and we're not in cooldown
+      if (!voiceActivityDetectedRef.current && !webSpeechRecognitionRef.current && !isStartingRecognitionRef.current) {
+        voiceActivityDetectedRef.current = true;
+        console.log('[Resting] Voice activity detected (level:', independentMicLevel.toFixed(2), ') - starting speech recognition');
+        startRestingSpeechRecognition();
+      }
+    }
+  }, [miraState, isMicMonitoring, independentMicLevel, startRestingSpeechRecognition]);
+
+  // Combined user audio level - use independent mic when in active state but WebRTC not yet connected
+  // In resting mode, show the mic level for sphere animation
+  const userAudioLevelForSphere = (miraState === 'resting') 
+    ? independentMicLevel // Show mic activity in resting mode
+    : (!isConnected ? independentMicLevel : audioLevel);
 
   // Store the speak function in ref so handleReminderNotification can use it
   useEffect(() => {
     speakReminderRef.current = speakReminder;
     isVoiceConnectedRef.current = isConnected;
   }, [speakReminder, isConnected]);
+
+  // Send pending wake word query after connection is established
+  useEffect(() => {
+    if (isConnected && pendingWakeWordQueryRef.current) {
+      const query = pendingWakeWordQueryRef.current;
+      pendingWakeWordQueryRef.current = null; // Clear it so we don't send again
+      
+      console.log('[MIRA] Connection established, sending pending wake word query:', query);
+      
+      // Small delay to ensure connection is fully ready
+      setTimeout(() => {
+        if (sendUserMessageRef.current) {
+          sendUserMessageRef.current(query);
+        }
+      }, 500);
+    }
+  }, [isConnected]);
 
   // === MIRA STATE TRANSITION EFFECTS ===
   
@@ -1881,7 +2235,8 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (miraState === 'active' || miraState === 'listening' || miraState === 'speaking' || miraState === 'thinking') {
       // Active states - ensure Realtime API is connected
-      if (!isConnected) {
+      // BUT don't reconnect if we're in the process of going to resting
+      if (!isConnected && !isGoingToRestingRef.current) {
         const useQuickReconnect = isQuickReconnectRef.current;
         console.log('[MIRA] State is active, connecting Realtime API', useQuickReconnect ? '(QUICK MODE)' : '');
         
@@ -1910,7 +2265,13 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   }, [isListening, isSpeaking, transcript, resetSilenceTimer]);
 
   // When MIRA starts speaking, update state
+  // BUT don't change state if we're going to resting or already in resting
   useEffect(() => {
+    // Don't change state if transitioning to resting or already resting
+    if (isGoingToRestingRef.current || miraState === 'resting') {
+      return;
+    }
+    
     if (isSpeaking) {
       setMiraState('speaking');
     } else if (isListening) {
@@ -2082,7 +2443,71 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     setIsAuthenticated(false);
     setMessages([]);
     disconnectRealtime();
+    // Reset voice identification state
+    setIsOwnerVoiceEnrolled(false);
+    setCurrentSpeakerId(null);
+    setCurrentSpeakerName(null);
+    setIsOwnerSpeaking(false);
   }, [disconnectRealtime]);
+
+  // Load voice embeddings when user is authenticated
+  useEffect(() => {
+    const loadVoiceEmbeddings = async () => {
+      if (!isAuthenticated || !user?.id) {
+        return;
+      }
+
+      try {
+        // Initialize voice embedding manager
+        if (!voiceEmbeddingManagerRef.current) {
+          voiceEmbeddingManagerRef.current = getVoiceEmbeddingManager();
+        }
+
+        // Load embeddings from API
+        const token = localStorage.getItem('mira_token');
+        const response = await fetch('/api/voice-embedding?includeEmbeddings=true', {
+          headers: token ? { Authorization: `Bearer ${token}` } : {},
+        });
+        if (!response.ok) {
+          if (response.status !== 401) {
+            console.error('[VoiceID] Failed to load embeddings:', response.status);
+          }
+          return;
+        }
+
+        const data = await response.json();
+        
+        // Convert API response to VoiceEmbedding format and load
+        const embeddings = data.embeddings.map((e: any) => ({
+          id: e.speakerId,
+          userId: user.id,
+          speakerId: e.speakerId,
+          speakerName: e.speakerName,
+          embedding: e.embedding,
+          mfccProfile: e.mfccProfile,
+          createdAt: new Date(e.createdAt),
+          updatedAt: new Date(e.updatedAt),
+          sampleCount: e.sampleCount,
+          isOwner: e.isOwner,
+        }));
+
+        await voiceEmbeddingManagerRef.current.loadEmbeddings(embeddings);
+        setIsOwnerVoiceEnrolled(data.hasOwner);
+
+        console.log('[VoiceID] Loaded', embeddings.length, 'voice embeddings, owner enrolled:', data.hasOwner);
+      } catch (error) {
+        console.error('[VoiceID] Error loading embeddings:', error);
+      }
+    };
+
+    loadVoiceEmbeddings();
+  }, [isAuthenticated, user?.id]);
+
+  // Function to start voice enrollment
+  const startVoiceEnrollment = useCallback(() => {
+    setIsEnrollingVoice(true);
+    console.log('[VoiceID] Starting voice enrollment');
+  }, []);
 
   // Check auth on mount - validate session with server
   // Use ref to prevent multiple runs
@@ -2184,6 +2609,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     restingTranscript,
     activateMira,
     deactivateMira,
+    idleTimeRemaining, // Seconds until idle disconnect (for visual timer)
 
     // Conversation
     messages,
@@ -2198,7 +2624,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     isListening,
     isSpeaking,
     speakingAgent: isSpeaking ? 'mira' : null,
-    audioLevel,
+    audioLevel: userAudioLevelForSphere, // Combined: independent mic in resting, WebRTC when active
     outputAudioLevel, // MIRA's voice level for sphere
     transcript,
     lastResponse,
@@ -2209,6 +2635,18 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     stopRecording: disconnectRealtime,
     enableProactive,
     setEnableProactive,
+    
+    // Microphone status
+    micError: micError || micLevelError,
+    attemptMicRecovery,
+
+    // Voice Identification
+    isOwnerVoiceEnrolled,
+    currentSpeakerId,
+    currentSpeakerName,
+    isOwnerSpeaking,
+    startVoiceEnrollment,
+    isEnrollingVoice,
 
     // Phone Call Detection
     phoneCallState,

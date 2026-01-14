@@ -2,10 +2,11 @@
 
 import { useState, useRef, useCallback, useEffect } from 'react';
 
-// COST OPTIMIZATION: Auto-disconnect after idle timeout
-// 10 seconds to save costs - reconnection is optimized to be fast
-const IDLE_TIMEOUT_MS = 10 * 1000; // 10 seconds of no activity = disconnect
-const ACTIVITY_CHECK_INTERVAL = 2 * 1000; // Check every 2 seconds
+// === SIMPLE IDLE DETECTION CONFIG ===
+const SPEECH_THRESHOLD = 0.8; // Audio level must exceed this to be considered speech
+const CONSECUTIVE_SPEECH_SAMPLES_TO_RESET = 4; // Need 4 consecutive high samples to reset timer
+const SPEECH_CHECK_INTERVAL_MS = 250; // Check audio level every 250ms (so 4 samples = 1 second)
+const IDLE_TIMEOUT_SECONDS = 10; // 10 seconds of silence = idle
 
 interface RealtimeConfig {
   voice?: 'mira' | 'aks';
@@ -31,6 +32,9 @@ interface UseRealtimeReturn {
   outputAudioLevel: number;
   resetIdleTimer: () => void; // Call this on any user activity
   speak: (text: string) => void; // Make MIRA speak this text
+  injectContext: (context: string) => void; // Inject memory context before response
+  sendUserMessage: (text: string) => void; // Send a text message as if user spoke it
+  idleTimeRemaining: number; // Seconds until idle disconnect (for visual timer)
 }
 
 export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
@@ -48,6 +52,7 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
   const [lastResponse, setLastResponse] = useState('');
   const [inputAudioLevel, setInputAudioLevel] = useState(0);
   const [outputAudioLevel, setOutputAudioLevel] = useState(0);
+  const [idleTimeRemaining, setIdleTimeRemaining] = useState(IDLE_TIMEOUT_SECONDS);
   
   const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
   const dataChannelRef = useRef<RTCDataChannel | null>(null);
@@ -65,18 +70,44 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
   const isResponseInProgressRef = useRef(false);
   const pendingSpeakQueueRef = useRef<string[]>([]);
   
-  // COST OPTIMIZATION: Idle timeout tracking
-  const lastActivityRef = useRef<number>(Date.now());
-  const idleCheckIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // === SIMPLE IDLE DETECTION STATE ===
+  const idleTimerRef = useRef<number>(IDLE_TIMEOUT_SECONDS); // Current countdown value
+  const consecutiveSpeechSamplesRef = useRef<number>(0); // Count of consecutive high audio samples
+  const lastSampleCheckTimeRef = useRef<number>(0); // Last time we checked audio sample
+  
+  // Store ALL callbacks in refs to avoid effect re-runs when callbacks change
+  const onIdleDisconnectRef = useRef(onIdleDisconnect);
+  const onStateChangeRef = useRef(onStateChange);
+  const onTranscriptRef = useRef(onTranscript);
+  const onResponseRef = useRef(onResponse);
+  const onErrorRef = useRef(onError);
+  
+  // Store state in ref for idle timer interval
+  const stateRef = useRef(state);
+  
+  // Keep refs in sync with latest values
+  useEffect(() => {
+    onIdleDisconnectRef.current = onIdleDisconnect;
+    onStateChangeRef.current = onStateChange;
+    onTranscriptRef.current = onTranscript;
+    onResponseRef.current = onResponse;
+    onErrorRef.current = onError;
+    stateRef.current = state;
+  }, [onIdleDisconnect, onStateChange, onTranscript, onResponse, onError, state]);
 
   const inputLevelRef = useRef(0);
   const outputLevelRef = useRef(0);
   const lastUpdateTimeRef = useRef(0);
   const audioMonitoringActiveRef = useRef(false);
 
-  // COST OPTIMIZATION: Reset idle timer on activity
+  // === SIMPLE IDLE TIMER FUNCTIONS ===
+  
+  // Reset idle timer back to full duration
   const resetIdleTimer = useCallback(() => {
-    lastActivityRef.current = Date.now();
+    idleTimerRef.current = IDLE_TIMEOUT_SECONDS;
+    setIdleTimeRemaining(IDLE_TIMEOUT_SECONDS);
+    consecutiveSpeechSamplesRef.current = 0;
+    console.log('[Idle] ✓ Timer RESET to', IDLE_TIMEOUT_SECONDS, 'seconds');
   }, []);
 
   // Audio level monitoring - improved for better sphere reactivity
@@ -94,6 +125,8 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
     let lastOutputLevel = 0;
     let lastInputLevel = 0;
     let debugCounter = 0;
+    let lastStateUpdateTime = 0;
+    const STATE_UPDATE_INTERVAL = 50; // Update React state at ~20fps, not 60fps
     
     const updateLevels = () => {
       // Stop if monitoring was deactivated
@@ -125,12 +158,31 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
           // Debug logging every 2 seconds
           debugCounter++;
           if (debugCounter % 120 === 0 && lastInputLevel > 0.01) {
-            console.log('[Realtime] Input audio level:', lastInputLevel.toFixed(3));
+            console.log('[Idle] Audio level:', lastInputLevel.toFixed(3), 
+              '| Speech threshold:', SPEECH_THRESHOLD,
+              '| Consecutive high:', consecutiveSpeechSamplesRef.current);
           }
           
-          // COST OPTIMIZATION: Significant audio input = activity
-          if (normalized > 0.08) {
-            lastActivityRef.current = Date.now();
+          // === SIMPLE SPEECH DETECTION ===
+          // Check every SPEECH_CHECK_INTERVAL_MS (250ms)
+          if (now - lastSampleCheckTimeRef.current >= SPEECH_CHECK_INTERVAL_MS) {
+            lastSampleCheckTimeRef.current = now;
+            
+            if (lastInputLevel >= SPEECH_THRESHOLD) {
+              // Audio is above speech threshold
+              consecutiveSpeechSamplesRef.current++;
+              
+              if (consecutiveSpeechSamplesRef.current === CONSECUTIVE_SPEECH_SAMPLES_TO_RESET) {
+                // Exactly 4 consecutive samples above 0.8 = confirmed speech, reset timer ONCE
+                console.log('[Idle] ✓ SPEECH CONFIRMED - 4 consecutive samples ≥', SPEECH_THRESHOLD);
+                idleTimerRef.current = IDLE_TIMEOUT_SECONDS;
+                // Don't reset consecutiveSpeechSamplesRef here - let it keep counting
+                // so we don't reset again until audio drops and rises again
+              }
+            } else {
+              // Audio below threshold - reset consecutive counter
+              consecutiveSpeechSamplesRef.current = 0;
+            }
           }
         } catch (err) {
           // Analyser might be disconnected
@@ -165,10 +217,8 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
             console.log('[Realtime] Output audio level:', lastOutputLevel.toFixed(3));
           }
           
-          // COST OPTIMIZATION: MIRA speaking = activity
-          if (normalized > 0.08) {
-            lastActivityRef.current = Date.now();
-          }
+          // NOTE: MIRA speaking is handled by the speak() function, NOT here
+          // Don't reset timer on output audio - it causes constant resets
         } catch (err) {
           // Analyser might be disconnected
           console.log('[Realtime] Output analyser error:', err);
@@ -179,20 +229,25 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
         outputLevelRef.current = lastOutputLevel;
       }
       
-      // Update state IMMEDIATELY for real-time reactivity
-      setInputAudioLevel(inputLevelRef.current);
-      setOutputAudioLevel(outputLevelRef.current);
+      // THROTTLE React state updates to prevent max update depth errors
+      // Only update every 50ms (~20fps) instead of every frame (~60fps)
+      if (now - lastStateUpdateTime >= STATE_UPDATE_INTERVAL) {
+        lastStateUpdateTime = now;
+        setInputAudioLevel(inputLevelRef.current);
+        setOutputAudioLevel(outputLevelRef.current);
+      }
       
       animationFrameRef.current = requestAnimationFrame(updateLevels);
     };
     
     updateLevels();
-  }, []);
+  }, []); // No dependencies - uses refs directly
 
+  // Use ref for callback to ensure stable function reference
   const updateState = useCallback((newState: RealtimeState) => {
     setState(newState);
-    onStateChange?.(newState);
-  }, [onStateChange]);
+    onStateChangeRef.current?.(newState);
+  }, []); // No dependencies - uses ref
 
   const getAuthToken = useCallback((): string | null => {
     if (typeof window === 'undefined') return null;
@@ -378,12 +433,15 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
         break;
 
       case 'input_audio_buffer.speech_started':
-        console.log('[Realtime] Speech started');
+        console.log('[Realtime] Speech started (VAD)');
         updateState('listening');
+        // NOTE: Do NOT reset idle timer here - let audio-based detection handle it
+        // The VAD can trigger on ambient noise, our confidence-based detection is more accurate
         break;
 
       case 'input_audio_buffer.speech_stopped':
-        console.log('[Realtime] Speech stopped');
+        console.log('[Realtime] Speech stopped (VAD)');
+        // NOTE: Do NOT reset idle timer here either
         break;
 
       case 'response.created':
@@ -395,17 +453,21 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
       case 'response.audio.delta':
         updateState('speaking');
         isResponseInProgressRef.current = true;
+        // NOTE: Don't reset timer here - these events fire continuously while MIRA speaks
+        // The timer reset happens once at response.done
         break;
 
       case 'response.audio_transcript.done':
         const responseText = event.transcript || '';
         setLastResponse(responseText);
-        onResponse?.(responseText);
+        onResponseRef.current?.(responseText);
         break;
 
       case 'response.done':
         console.log('[Realtime] Response complete');
         isResponseInProgressRef.current = false;
+        // Reset idle timer ONCE when MIRA finishes speaking
+        idleTimerRef.current = IDLE_TIMEOUT_SECONDS;
         setTimeout(() => {
           updateState('listening');
           // Process any queued speak requests
@@ -431,7 +493,11 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
         const userText = event.transcript || '';
         console.log('[Realtime] User said:', userText);
         setTranscript(userText);
-        onTranscript?.(userText);
+        onTranscriptRef.current?.(userText);
+        // Reset idle timer on confirmed transcription - this IS actual user speech
+        idleTimerRef.current = IDLE_TIMEOUT_SECONDS;
+        consecutiveSpeechSamplesRef.current = 0;
+        console.log('[Idle] ✓ Timer RESET - User transcription completed');
         break;
 
       case 'error':
@@ -441,7 +507,7 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
         if (!errorMsg.toLowerCase().includes('cancel') && 
             !errorMsg.toLowerCase().includes('conversation') &&
             !errorMsg.toLowerCase().includes('response in progress')) {
-          onError?.(errorMsg);
+          onErrorRef.current?.(errorMsg);
         }
         // If error was about response in progress, mark it as such
         if (errorMsg.toLowerCase().includes('response in progress')) {
@@ -449,7 +515,7 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
         }
         break;
     }
-  }, [updateState, onTranscript, onResponse, onError]);
+  }, [updateState]); // Simplified dependencies - no callback deps needed
 
   // Cleanup resources - but keep audio monitoring active for sphere reactivity
   const cleanup = useCallback(() => {
@@ -458,11 +524,9 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
     // DON'T stop audio monitoring - it should always run for sphere reactivity
     // audioMonitoringActiveRef.current = false;
     
-    // COST OPTIMIZATION: Clear idle check interval
-    if (idleCheckIntervalRef.current) {
-      clearInterval(idleCheckIntervalRef.current);
-      idleCheckIntervalRef.current = null;
-    }
+    // Reset idle detection state for next connection
+    consecutiveSpeechSamplesRef.current = 0;
+    lastSampleCheckTimeRef.current = 0;
     
     // Don't cancel animation frame - keep monitoring
     // if (animationFrameRef.current) {
@@ -507,6 +571,12 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
     // Reset connection guard
     isConnectingRef.current = false;
   }, []);
+
+  // Keep cleanup and updateState refs in sync for idle timer
+  useEffect(() => {
+    cleanupRef.current = cleanup;
+    updateStateRef.current = updateState;
+  }, [cleanup, updateState]);
 
   const disconnect = useCallback(() => {
     console.log('[Realtime] Disconnecting');
@@ -585,59 +655,155 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
       dataChannelRef.current.send(JSON.stringify(responseEvent));
       isResponseInProgressRef.current = true;
       
-      // Reset idle timer
-      resetIdleTimer();
+      // NOTE: Timer reset happens at response.done, not here
     } catch (err) {
       console.error('[Realtime] Error sending speak command:', err);
       // Fallback to browser TTS with female voice
       speakWithFemaleVoice(text);
     }
-  }, [resetIdleTimer, speakWithFemaleVoice]);
+  }, [speakWithFemaleVoice]);
 
-  // COST OPTIMIZATION: Start idle check when connected
-  useEffect(() => {
-    if (state === 'connected' || state === 'listening' || state === 'speaking') {
-      // Reset activity timer when connected
-      lastActivityRef.current = Date.now();
-      
-      // Start idle check interval
-      if (!idleCheckIntervalRef.current) {
-        console.log('[Realtime] Starting idle detection - will disconnect after', IDLE_TIMEOUT_MS / 1000, 'seconds of inactivity');
-        
-        idleCheckIntervalRef.current = setInterval(() => {
-          const idleTime = Date.now() - lastActivityRef.current;
-          
-          if (idleTime >= IDLE_TIMEOUT_MS) {
-            console.log('[Realtime] Idle timeout - disconnecting to save costs. Idle for', Math.round(idleTime / 1000), 'seconds');
-            
-            // Clear the interval first
-            if (idleCheckIntervalRef.current) {
-              clearInterval(idleCheckIntervalRef.current);
-              idleCheckIntervalRef.current = null;
-            }
-            
-            // Disconnect
-            cleanup();
-            updateState('disconnected');
-            onIdleDisconnect?.();
-          }
-        }, ACTIVITY_CHECK_INTERVAL);
-      }
-    } else {
-      // Clear interval when disconnected
-      if (idleCheckIntervalRef.current) {
-        clearInterval(idleCheckIntervalRef.current);
-        idleCheckIntervalRef.current = null;
-      }
+  // Inject memory context into the conversation
+  // This adds a system message with retrieved memories before MIRA responds
+  const injectContext = useCallback((context: string) => {
+    if (!dataChannelRef.current || dataChannelRef.current.readyState !== 'open') {
+      console.warn('[Realtime] Cannot inject context - data channel not open');
+      return;
     }
+
+    if (!context.trim()) {
+      return;
+    }
+
+    console.log('[Realtime] Injecting memory context:', context.substring(0, 100) + '...');
+    
+    try {
+      // Add a system message with the retrieved memory context
+      // This will be included in the conversation for the AI to reference
+      const contextEvent = {
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'system',
+          content: [
+            {
+              type: 'input_text',
+              text: `[RETRIEVED MEMORIES - Use this information to answer the user's question]\n${context}`,
+            },
+          ],
+        },
+      };
+      
+      dataChannelRef.current.send(JSON.stringify(contextEvent));
+      console.log('[Realtime] Memory context injected successfully');
+    } catch (err) {
+      console.error('[Realtime] Error injecting context:', err);
+    }
+  }, []);
+
+  // === SIMPLE IDLE TIMER COUNTDOWN ===
+  // Timer counts down every second. Completely independent - no state dependencies.
+  // Store cleanup and updateState in refs for use in interval
+  const cleanupRef = useRef<() => void>(() => {});
+  const updateStateRef = useRef<(s: RealtimeState) => void>(() => {});
+  
+  useEffect(() => {
+    // Start the countdown interval once and keep it running
+    const interval = setInterval(() => {
+      // Only countdown if connected (use ref to avoid stale closure)
+      const currentState = stateRef.current;
+      if (currentState === 'connected' || currentState === 'listening' || currentState === 'speaking') {
+        // Decrement timer
+        idleTimerRef.current = Math.max(0, idleTimerRef.current - 1);
+        const remaining = idleTimerRef.current;
+        setIdleTimeRemaining(remaining);
+        
+        console.log('[Idle] ⏱️', remaining + 's remaining');
+        
+        // Check if we've hit zero
+        if (remaining <= 0) {
+          console.log('[Idle] 💤 IDLE DETECTED - Going to rest');
+          setIdleTimeRemaining(0);
+          
+          // Disconnect using refs
+          cleanupRef.current();
+          updateStateRef.current('disconnected');
+          onIdleDisconnectRef.current?.();
+        }
+      }
+    }, 1000);
+    
+    console.log('[Idle] ⏱️ Idle timer interval started');
     
     return () => {
-      if (idleCheckIntervalRef.current) {
-        clearInterval(idleCheckIntervalRef.current);
-        idleCheckIntervalRef.current = null;
-      }
+      clearInterval(interval);
+      console.log('[Idle] ⏱️ Idle timer interval cleared');
     };
-  }, [state, cleanup, updateState, onIdleDisconnect]);
+  }, []); // NO DEPENDENCIES - runs once on mount
+  
+  // Initialize timer when connection starts
+  useEffect(() => {
+    if (state === 'connected' || state === 'listening' || state === 'speaking') {
+      // Only initialize if timer is at 0 (meaning we just connected)
+      if (idleTimerRef.current <= 0) {
+        idleTimerRef.current = IDLE_TIMEOUT_SECONDS;
+        setIdleTimeRemaining(IDLE_TIMEOUT_SECONDS);
+        consecutiveSpeechSamplesRef.current = 0;
+        console.log('[Idle] Timer initialized to', IDLE_TIMEOUT_SECONDS, 'seconds');
+      }
+    } else if (state === 'disconnected') {
+      // Reset timer when disconnected so next connection starts fresh
+      idleTimerRef.current = IDLE_TIMEOUT_SECONDS;
+      setIdleTimeRemaining(IDLE_TIMEOUT_SECONDS);
+    }
+  }, [state]);
+
+  // Send a text message as if the user said it (for wake word queries)
+  // This allows MIRA to respond to queries that came with the wake word
+  const sendUserMessage = useCallback((text: string) => {
+    if (!dataChannelRef.current || dataChannelRef.current.readyState !== 'open') {
+      console.warn('[Realtime] Cannot send user message - data channel not open');
+      return;
+    }
+
+    if (!text.trim()) {
+      return;
+    }
+
+    console.log('[Realtime] Sending user message:', text);
+    
+    try {
+      // Add the user's message to the conversation
+      const messageEvent = {
+        type: 'conversation.item.create',
+        item: {
+          type: 'message',
+          role: 'user',
+          content: [
+            {
+              type: 'input_text',
+              text: text,
+            },
+          ],
+        },
+      };
+      
+      dataChannelRef.current.send(JSON.stringify(messageEvent));
+      
+      // Trigger MIRA to respond
+      const responseEvent = {
+        type: 'response.create',
+      };
+      dataChannelRef.current.send(JSON.stringify(responseEvent));
+      
+      // Reset idle timer since user is interacting
+      idleTimerRef.current = IDLE_TIMEOUT_SECONDS;
+      
+      console.log('[Realtime] User message sent, response triggered');
+    } catch (err) {
+      console.error('[Realtime] Error sending user message:', err);
+    }
+  }, []);
 
   useEffect(() => {
     return () => cleanup();
@@ -656,6 +822,9 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
     outputAudioLevel,
     resetIdleTimer,
     speak,
+    injectContext,
+    sendUserMessage,
+    idleTimeRemaining,
   };
 }
 

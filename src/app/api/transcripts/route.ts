@@ -23,7 +23,7 @@ function shouldExtractMemory(content: string, speakerType: string): boolean {
   
   // Extract memories from user-spoken content
   if (speakerType === 'user') {
-    // Personal info patterns
+    // Personal info patterns - EXPANDED to catch more valuable info
     const personalPatterns = [
       /\b(my name is|i am|i'm)\s+\w+/i,
       /\b(my|i have a?)\s+(wife|husband|son|daughter|brother|sister|mom|dad|friend|colleague)\b/i,
@@ -31,6 +31,17 @@ function shouldExtractMemory(content: string, speakerType: string): boolean {
       /\b(i work at|i'm a|my job is)\b/i,
       /\b(remember|don't forget|important)\b/i,
       /\b(birthday|anniversary|meeting|appointment)\b.*\b(is on|on|at)\b/i,
+      // Pets and ownership
+      /\b(i adopted|i got|i bought|i have|my)\s+(a |an )?\s*(pet|dog|cat|bird|fish|hamster|rabbit|turtle|parrot|dinosaur)\b/i,
+      /\b(adopted|got|bought|have)\s+(a |an )?\s*(new |baby )?\s*(pet|dog|cat|bird|fish|puppy|kitten)\b/i,
+      // Possessions and things
+      /\b(i own|i bought|i got|my new|i purchased)\s/i,
+      // Life events
+      /\b(i moved|i'm moving|i live|i'm from|i grew up)\b/i,
+      /\b(i started|i'm starting|i joined|i quit|i left)\b/i,
+      // Interests and hobbies
+      /\b(i play|i enjoy|i'm interested in|my hobby)\b/i,
+      /\b(i'm learning|i want to learn|i study|i'm studying)\b/i,
     ];
     return personalPatterns.some(p => p.test(content));
   }

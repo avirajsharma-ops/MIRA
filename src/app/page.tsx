@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { MIRAProvider, useMIRA } from '@/context/MIRAContext';
-import { AuthScreen, AgentDisplay, PeopleLibraryModal, ChatHistoryModal, FaceRegistrationModal, ReminderBar } from '@/components';
+import { AuthScreen, AgentDisplay, PeopleLibraryModal, ChatHistoryModal, FaceRegistrationModal, ReminderBar, VoiceEnrollmentModal } from '@/components';
 
 // Detect if running inside an iframe
 function useIframeDetection() {
@@ -404,27 +404,52 @@ function FloatingKeyboard() {
 }
 
 function MIRAApp() {
-  const { isAuthenticated, isAuthLoading, user, logout, clearConversation, isRecording, isCameraActive, messages, isMicReady, pendingNotifications, droppedCalls, dismissNotification, acknowledgeDroppedCall, reminders, reminderJustCreated, clearReminderCreatedFlag, miraState, isResting, restingTranscript } = useMIRA();
+  const { isAuthenticated, isAuthLoading, user, logout, clearConversation, isRecording, isCameraActive, messages, isMicReady, pendingNotifications, droppedCalls, dismissNotification, acknowledgeDroppedCall, reminders, reminderJustCreated, clearReminderCreatedFlag, miraState, isResting, restingTranscript, isOwnerVoiceEnrolled, isEnrollingVoice, startVoiceEnrollment, currentSpeakerName, isOwnerSpeaking, micError, attemptMicRecovery, idleTimeRemaining, isConnected } = useMIRA();
   const [showPeopleModal, setShowPeopleModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showFaceRegistration, setShowFaceRegistration] = useState(false);
+  const [showVoiceEnrollment, setShowVoiceEnrollment] = useState(false);
   const [hasCheckedOwnerFace, setHasCheckedOwnerFace] = useState(false);
+  const [hasCheckedVoiceEnrollment, setHasCheckedVoiceEnrollment] = useState(false);
+  const [showVoiceEnrollmentPrompt, setShowVoiceEnrollmentPrompt] = useState(false);
   const [showUI, setShowUI] = useState(false); // UI hidden by default
   const [showCodePanel, setShowCodePanel] = useState(false); // Code/outputs panel
   const [showReminderBar, setShowReminderBar] = useState(false); // Reminders panel
   const [showRestingPanel, setShowRestingPanel] = useState(false); // Resting transcripts panel
+  const [isRecoveringMic, setIsRecoveringMic] = useState(false);
   const prevMessagesLengthRef = useRef(0);
   const prevRestingRef = useRef(false);
   const isInIframe = useIframeDetection();
 
+  // Check if voice enrollment is needed (show prompt if not enrolled)
+  useEffect(() => {
+    if (isAuthenticated && !hasCheckedVoiceEnrollment && !isAuthLoading) {
+      // Small delay to let the voice enrollment status load
+      const timer = setTimeout(() => {
+        if (!isOwnerVoiceEnrolled && !isEnrollingVoice) {
+          setShowVoiceEnrollmentPrompt(true);
+        }
+        setHasCheckedVoiceEnrollment(true);
+      }, 2000);
+      return () => clearTimeout(timer);
+    }
+  }, [isAuthenticated, hasCheckedVoiceEnrollment, isOwnerVoiceEnrolled, isEnrollingVoice, isAuthLoading]);
+
+  // Hide prompt when enrollment completes
+  useEffect(() => {
+    if (isOwnerVoiceEnrolled) {
+      setShowVoiceEnrollmentPrompt(false);
+    }
+  }, [isOwnerVoiceEnrolled]);
+
   // Auto-show/hide resting panel based on MIRA state
   useEffect(() => {
     if (isResting && !prevRestingRef.current) {
-      // MIRA just went to resting - show the panel
+      // MIRA just went to resting - show the ambient panel
       setShowRestingPanel(true);
     } else if (!isResting && prevRestingRef.current) {
-      // MIRA just woke up - optionally hide the panel (keep it open for reference)
-      // setShowRestingPanel(false);
+      // MIRA just woke up (active) - hide the ambient panel
+      setShowRestingPanel(false);
     }
     prevRestingRef.current = isResting;
   }, [isResting]);
@@ -513,8 +538,89 @@ function MIRAApp() {
     return <AuthScreen />;
   }
 
+  // Handle mic recovery
+  const handleMicRecovery = async () => {
+    setIsRecoveringMic(true);
+    try {
+      const success = await attemptMicRecovery();
+      if (!success) {
+        console.warn('Mic recovery failed');
+      }
+    } finally {
+      setIsRecoveringMic(false);
+    }
+  };
+
   return (
     <div className={`min-h-screen app-container ${isInIframe ? 'bg-transparent' : 'bg-black'}`}>
+      {/* Voice Enrollment Prompt - Show before user can use MIRA */}
+      {showVoiceEnrollmentPrompt && !isOwnerVoiceEnrolled && (
+        <div className="fixed inset-0 z-[110] flex items-center justify-center bg-black/80 backdrop-blur-sm">
+          <div className="bg-gradient-to-br from-gray-900 to-black border border-purple-500/30 rounded-3xl px-8 py-8 shadow-2xl max-w-md mx-4">
+            <div className="flex flex-col items-center gap-5 text-center">
+              <div className="w-16 h-16 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 flex items-center justify-center">
+                <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                  <line x1="12" y1="19" x2="12" y2="23" />
+                  <line x1="8" y1="23" x2="16" y2="23" />
+                </svg>
+              </div>
+              <div>
+                <h2 className="text-white text-xl font-semibold mb-2">Set Up Your Voice</h2>
+                <p className="text-white/70 text-sm leading-relaxed">
+                  MIRA needs to learn your voice to recognize you. This takes about 30 seconds and helps MIRA distinguish you from others.
+                </p>
+              </div>
+              <div className="flex flex-col gap-3 w-full mt-2">
+                <button
+                  onClick={() => {
+                    setShowVoiceEnrollmentPrompt(false);
+                    setShowVoiceEnrollment(true);
+                  }}
+                  className="w-full py-3 px-6 bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-medium rounded-xl transition-all shadow-lg hover:shadow-purple-500/25"
+                >
+                  Enroll My Voice
+                </button>
+                <button
+                  onClick={() => setShowVoiceEnrollmentPrompt(false)}
+                  className="w-full py-2 px-6 bg-white/10 hover:bg-white/20 text-white/70 hover:text-white text-sm rounded-xl transition-all"
+                >
+                  Skip for now
+                </button>
+              </div>
+              <p className="text-white/40 text-xs mt-1">
+                You can always enroll later from the Voice ID button
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Mic Error Recovery Toast */}
+      {micError && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 z-[80] animate-slide-in">
+          <div className="bg-red-500/20 border border-red-500/50 rounded-xl px-4 py-3 shadow-xl backdrop-blur-sm flex items-center gap-3">
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-red-400">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+              <line x1="1" y1="1" x2="23" y2="23" />
+            </svg>
+            <div className="flex-1">
+              <p className="text-white text-sm font-medium">Microphone Issue</p>
+              <p className="text-white/60 text-xs">{micError}</p>
+            </div>
+            <button
+              onClick={handleMicRecovery}
+              disabled={isRecoveringMic}
+              className="px-3 py-1.5 bg-red-500/30 hover:bg-red-500/50 text-white text-xs rounded-lg transition-colors disabled:opacity-50"
+            >
+              {isRecoveringMic ? 'Recovering...' : 'Retry'}
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* MIRA Getting Ready Loading Dialog - hide when mic is ready, recording, or in resting mode */}
       {!isMicReady && !isRecording && !isResting && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
@@ -662,6 +768,25 @@ function MIRAApp() {
               <span className="hidden sm:inline">People</span>
             </button>
 
+            {/* Voice Enrollment Button */}
+            <button
+              onClick={() => setShowVoiceEnrollment(true)}
+              className={`flex items-center justify-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 border rounded-lg text-xs sm:text-sm transition-colors min-w-[36px] sm:min-w-0 min-h-[36px] ${
+                isOwnerVoiceEnrolled 
+                  ? 'bg-green-500/10 hover:bg-green-500/20 border-green-500/30 text-green-400' 
+                  : 'bg-amber-500/10 hover:bg-amber-500/20 border-amber-500/30 text-amber-400 animate-pulse'
+              }`}
+              title={isOwnerVoiceEnrolled ? 'Voice Enrolled ✓' : 'Enroll Your Voice'}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+                <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                <line x1="12" y1="19" x2="12" y2="23" />
+                <line x1="8" y1="23" x2="16" y2="23" />
+              </svg>
+              <span className="hidden sm:inline">{isOwnerVoiceEnrolled ? 'Voice ✓' : 'Voice ID'}</span>
+            </button>
+
             {/* Chat History Button */}
             <button
               onClick={() => setShowHistoryModal(true)}
@@ -803,6 +928,23 @@ function MIRAApp() {
         </div>
       )}
 
+      {/* Fixed Idle Timer - Bottom Left Corner */}
+      {isConnected && !isResting && (
+        <div className={`fixed bottom-4 left-4 z-50 flex items-center gap-2 px-3 py-2 rounded-full text-sm font-medium shadow-lg backdrop-blur-sm transition-all ${
+          idleTimeRemaining <= 2 
+            ? 'bg-red-500/30 border border-red-500/50 text-red-400 animate-pulse' 
+            : idleTimeRemaining <= 3 
+              ? 'bg-amber-500/25 border border-amber-500/40 text-amber-400' 
+              : 'bg-white/10 border border-white/20 text-white/70'
+        }`} title="Time until MIRA goes to sleep">
+          <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="opacity-80">
+            <circle cx="12" cy="12" r="10" />
+            <polyline points="12 6 12 12 16 14" />
+          </svg>
+          <span>{idleTimeRemaining}s</span>
+        </div>
+      )}
+
       {/* Modals */}
       <PeopleLibraryModal 
         isOpen={showPeopleModal} 
@@ -818,6 +960,12 @@ function MIRAApp() {
         onSuccess={() => setShowFaceRegistration(false)}
         userName={user?.name || 'User'}
         isNewAccount={!hasCheckedOwnerFace}
+      />
+      <VoiceEnrollmentModal
+        isOpen={showVoiceEnrollment}
+        onClose={() => setShowVoiceEnrollment(false)}
+        onComplete={() => setShowVoiceEnrollment(false)}
+        userName={user?.name || 'User'}
       />
     </div>
   );

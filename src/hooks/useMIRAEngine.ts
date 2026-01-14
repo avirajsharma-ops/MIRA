@@ -62,11 +62,23 @@ export function useMIRAEngine(config: EngineConfig = {}) {
     openAI.speak(text);
   }, [openAI]);
 
+  // Inject memory context into conversation
+  const injectContext = useCallback((context: string) => {
+    openAI.injectContext(context);
+  }, [openAI]);
+
+  // Send a user message as text (for wake word queries)
+  const sendUserMessage = useCallback((text: string) => {
+    openAI.sendUserMessage(text);
+  }, [openAI]);
+
   return {
     connect,
     disconnect,
     resetIdleTimer,
     speak,
+    injectContext,
+    sendUserMessage,
     status,
     isConnected: openAI.isConnected,
     isListening: openAI.isListening,
@@ -75,5 +87,6 @@ export function useMIRAEngine(config: EngineConfig = {}) {
     lastResponse: openAI.lastResponse,
     audioLevel: openAI.inputAudioLevel,
     outputAudioLevel: openAI.outputAudioLevel,
+    idleTimeRemaining: openAI.idleTimeRemaining,
   };
 }

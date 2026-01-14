@@ -232,6 +232,15 @@ export default function FullScreenSpheres({
     const currentMiraAudioLevel = miraAudioLevelRef.current;
     const currentUserAudioLevel = userAudioLevelRef.current;
     
+    // Debug logging every 2 seconds when there's audio activity
+    debugCounterRef.current++;
+    if (debugCounterRef.current % 120 === 0) {
+      const state = miraStateRef.current;
+      if (currentMiraAudioLevel > 0.01 || currentUserAudioLevel > 0.01) {
+        console.log(`[Sphere Animation] State: ${state}, MIRA: ${currentMiraAudioLevel.toFixed(3)}, User: ${currentUserAudioLevel.toFixed(3)}`);
+      }
+    }
+    
     // Audio threshold for detecting voice activity - lower threshold for better sensitivity
     const AUDIO_THRESHOLD = 0.02;
     const miraSpeaking = currentMiraAudioLevel > AUDIO_THRESHOLD;

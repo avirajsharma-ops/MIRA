@@ -593,32 +593,62 @@ MEDIA: Describe only if asked.`;
       },
     };
     
-    const response = await fetch('https://api.openai.com/v1/realtime/sessions', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${OPENAI_API_KEY}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(requestBody),
-    });
+    // Retry logic for transient network failures
+    const MAX_RETRIES = 3;
+    const RETRY_DELAYS = [1000, 2000, 4000]; // Exponential backoff
+    
+    let lastError: Error | null = null;
+    
+    for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
+      try {
+        if (attempt > 0) {
+          console.log(`[Realtime Session] Retry attempt ${attempt + 1}/${MAX_RETRIES}...`);
+          await new Promise(resolve => setTimeout(resolve, RETRY_DELAYS[attempt - 1]));
+        }
+        
+        const response = await fetch('https://api.openai.com/v1/realtime/sessions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${OPENAI_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+        });
 
-    if (!response.ok) {
-      const error = await response.text();
-      console.error('[Realtime Session] Failed to create session:', error);
-      return NextResponse.json(
-        { error: 'Failed to create realtime session', details: error },
-        { status: response.status }
-      );
+        if (!response.ok) {
+          const error = await response.text();
+          console.error('[Realtime Session] Failed to create session:', error);
+          return NextResponse.json(
+            { error: 'Failed to create realtime session', details: error },
+            { status: response.status }
+          );
+        }
+
+        const sessionData = await response.json();
+
+        return NextResponse.json({
+          client_secret: sessionData.client_secret?.value || sessionData.client_secret,
+          session_id: sessionData.id,
+          expires_at: sessionData.client_secret?.expires_at,
+          voice: selectedVoice,
+        });
+      } catch (fetchError) {
+        lastError = fetchError instanceof Error ? fetchError : new Error(String(fetchError));
+        const isSocketError = lastError.message.includes('fetch failed') || 
+                              lastError.message.includes('socket') ||
+                              (lastError.cause as any)?.code === 'UND_ERR_SOCKET';
+        
+        if (isSocketError && attempt < MAX_RETRIES - 1) {
+          console.warn(`[Realtime Session] Network error (attempt ${attempt + 1}):`, lastError.message);
+          continue; // Retry
+        }
+        
+        throw lastError; // Give up after max retries or non-retryable error
+      }
     }
-
-    const sessionData = await response.json();
-
-    return NextResponse.json({
-      client_secret: sessionData.client_secret?.value || sessionData.client_secret,
-      session_id: sessionData.id,
-      expires_at: sessionData.client_secret?.expires_at,
-      voice: selectedVoice,
-    });
+    
+    // Should not reach here, but just in case
+    throw lastError || new Error('Failed after max retries');
   } catch (error) {
     console.error('[Realtime Session] Error:', error);
     return NextResponse.json(
