@@ -2,10 +2,13 @@
 
 import { useEffect, useRef, useCallback } from 'react';
 
+export type MIRAState = 'resting' | 'active' | 'listening' | 'speaking' | 'thinking';
+
 interface MIRACombinedSphereProps {
   isSpeaking: boolean;
   size?: number;
   audioLevel?: number; // Now properly receives MIRA's output audio level when speaking
+  miraState?: MIRAState; // MIRA's current state for visual feedback
 }
 
 interface Particle {
@@ -27,17 +30,23 @@ export default function MIRACombinedSphere({
   isSpeaking,
   size = 400,
   audioLevel = 0, // Receives proper MIRA output level from context
+  miraState = 'active', // Default to active
 }: MIRACombinedSphereProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const particlesRef = useRef<Particle[]>([]);
   const animationRef = useRef<number | undefined>(undefined);
   const mouseRef = useRef({ x: 0, y: 0, isActive: false });
   const audioLevelRef = useRef(0);
+  const miraStateRef = useRef<MIRAState>('active');
   
-  // Update audio level ref when prop changes
+  // Update refs when props change
   useEffect(() => {
     audioLevelRef.current = audioLevel;
   }, [audioLevel]);
+  
+  useEffect(() => {
+    miraStateRef.current = miraState;
+  }, [miraState]);
 
   // Initialize particles with mixed colors - OPTIMIZED for performance
   const initParticles = useCallback(() => {
@@ -106,17 +115,26 @@ export default function MIRACombinedSphere({
     const time = now * 0.001;
     const currentAudioLevel = audioLevelRef.current;
     const voiceActive = currentAudioLevel > 0.05;
+    const currentState = miraStateRef.current;
     
-    // Smoother rotation - slower base speed for stability
-    const rotationSpeed = (isSpeaking || voiceActive) ? 0.4 : 0.25;
+    // Rotation speed based on state
+    let baseSpeed = 0.25;
+    if (currentState === 'resting') {
+      baseSpeed = 0.08; // Very slow rotation when resting - sleeping orb
+    } else if (currentState === 'listening') {
+      baseSpeed = 0.35; // Slightly faster when listening
+    } else if (currentState === 'speaking' || isSpeaking || voiceActive) {
+      baseSpeed = 0.4; // Faster when speaking
+    }
+    const rotationSpeed = baseSpeed;
     const rotTime = time * rotationSpeed;
     
     // No pulse/zoom effect - keep sphere size constant for stability
     const pulseScale = 1;
 
-    // Increased spring stiffness and friction for stability
-    const SPRING = (isSpeaking || voiceActive) ? 0.08 : 0.06;
-    const FRICTION = 0.88; // Slightly higher friction for more stability
+    // Spring stiffness and friction based on state
+    const SPRING = currentState === 'resting' ? 0.03 : (isSpeaking || voiceActive) ? 0.08 : 0.06;
+    const FRICTION = currentState === 'resting' ? 0.95 : 0.88; // More friction when resting for calmer movement
     const Z_PERSPECTIVE = 800;
     const interactionRadius = size * 0.5; // Reduced interaction radius
     
@@ -226,10 +244,42 @@ export default function MIRACombinedSphere({
         const voiceGlowBoost = voiceActive ? (1 + currentAudioLevel * 0.6) : 1;
         const glowAlpha = isSpeaking ? alpha * 1.3 : alpha * voiceGlowBoost;
         
-        // Blend colors based on particle type
-        const { r, g, b } = p.colorType === 'mi'
-          ? { r: 200, g: 100, b: 255 } // Purple for MI
-          : { r: 100, g: 200, b: 255 }; // Cyan for RA
+        // Colors based on state and particle type
+        const currentState = miraStateRef.current;
+        let r: number, g: number, b: number;
+        
+        if (currentState === 'resting') {
+          // Dimmed, dark red/maroon when resting
+          if (p.colorType === 'mi') {
+            r = 120; g = 40; b = 80; // Dark magenta
+          } else {
+            r = 80; g = 40; b = 60; // Dark burgundy
+          }
+        } else if (currentState === 'listening') {
+          // Bright active listening colors
+          if (p.colorType === 'mi') {
+            r = 180; g = 120; b = 255; // Bright purple
+          } else {
+            r = 120; g = 220; b = 255; // Bright cyan
+          }
+        } else if (currentState === 'speaking') {
+          // Warm speaking colors
+          if (p.colorType === 'mi') {
+            r = 220; g = 100; b = 255; // Vibrant purple
+          } else {
+            r = 100; g = 220; b = 200; // Teal-cyan
+          }
+        } else {
+          // Default active colors
+          if (p.colorType === 'mi') {
+            r = 200; g = 100; b = 255; // Purple for MI
+          } else {
+            r = 100; g = 200; b = 255; // Cyan for RA
+          }
+        }
+        
+        // Apply additional dimming when resting
+        const stateDimming = currentState === 'resting' ? 0.5 : 1;
 
         ctx.beginPath();
         ctx.arc(
@@ -239,7 +289,7 @@ export default function MIRACombinedSphere({
           0,
           Math.PI * 2
         );
-        ctx.fillStyle = `rgba(${r},${g},${b},${Math.min(1, glowAlpha)})`;
+        ctx.fillStyle = `rgba(${r},${g},${b},${Math.min(1, glowAlpha * stateDimming)})`;
         ctx.fill();
       }
     });

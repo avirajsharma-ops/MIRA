@@ -2,6 +2,8 @@
 
 import { useEffect, useRef, useCallback, useState } from 'react';
 
+export type MIRAState = 'resting' | 'active' | 'listening' | 'speaking' | 'thinking';
+
 interface FullScreenSpheresProps {
   mode: 'separate' | 'combined';
   speakingAgent: 'mira' | null; // MIRA is a single unified entity
@@ -9,6 +11,7 @@ interface FullScreenSpheresProps {
   miraAudioLevel: number;  // MIRA's voice level - for distortion effect
   userAudioLevel: number;  // User's voice level - for spin effect
   isThinking?: boolean;
+  miraState?: MIRAState;   // MIRA's current state for visual feedback
 }
 
 interface Particle {
@@ -46,6 +49,7 @@ export default function FullScreenSpheres({
   miraAudioLevel,
   userAudioLevel,
   isThinking = false,
+  miraState = 'active',
 }: FullScreenSpheresProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const particlesRef = useRef<Particle[]>([]);
@@ -57,16 +61,32 @@ export default function FullScreenSpheres({
   const mouseRef = useRef({ x: 0, y: 0, isActive: false });
   const isSpeakingRef = useRef(isSpeaking);
   const isThinkingRef = useRef(isThinking);
+  const miraStateRef = useRef<MIRAState>(miraState);
   const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
   const initializedRef = useRef(false);
+  const debugCounterRef = useRef(0);
   
-  // Smooth audio level transitions - use refs to avoid callback recreation
+  // Smooth audio level transitions - update refs immediately
   useEffect(() => {
     miraAudioLevelRef.current = miraAudioLevel;
+    // Debug log when audio level changes significantly
+    if (miraAudioLevel > 0.02) {
+      debugCounterRef.current++;
+      if (debugCounterRef.current % 30 === 0) {
+        console.log('[Sphere] MIRA audio level:', miraAudioLevel.toFixed(3));
+      }
+    }
   }, [miraAudioLevel]);
 
   useEffect(() => {
     userAudioLevelRef.current = userAudioLevel;
+    // Debug log when audio level changes significantly
+    if (userAudioLevel > 0.02) {
+      debugCounterRef.current++;
+      if (debugCounterRef.current % 30 === 0) {
+        console.log('[Sphere] User audio level:', userAudioLevel.toFixed(3));
+      }
+    }
   }, [userAudioLevel]);
 
   // Update mode ref for animation
@@ -83,6 +103,11 @@ export default function FullScreenSpheres({
   useEffect(() => {
     isThinkingRef.current = isThinking;
   }, [isThinking]);
+
+  // Update MIRA state ref
+  useEffect(() => {
+    miraStateRef.current = miraState;
+  }, [miraState]);
 
   // Handle window resize
   useEffect(() => {
@@ -207,8 +232,8 @@ export default function FullScreenSpheres({
     const currentMiraAudioLevel = miraAudioLevelRef.current;
     const currentUserAudioLevel = userAudioLevelRef.current;
     
-    // Audio threshold for detecting voice activity
-    const AUDIO_THRESHOLD = 0.05;
+    // Audio threshold for detecting voice activity - lower threshold for better sensitivity
+    const AUDIO_THRESHOLD = 0.02;
     const miraSpeaking = currentMiraAudioLevel > AUDIO_THRESHOLD;
     const userSpeaking = currentUserAudioLevel > AUDIO_THRESHOLD;
     const aiThinking = isThinkingRef.current;
@@ -245,16 +270,20 @@ export default function FullScreenSpheres({
 
     // Physics constants for MIRA distortion
     const Z_PERSPECTIVE = 1200;
-    const FRICTION = 0.88;
+    const currentState = miraStateRef.current;
+    // Slower movement when resting
+    const FRICTION = currentState === 'resting' ? 0.95 : 0.88;
 
     particlesRef.current.forEach((p) => {
       // No pulse scale - keep sphere size constant
       const pulseScale = 1;
       
       // Organic intensity - subtle movement during thinking, boosted when MIRA speaks
-      const thinkingBoost = aiThinking ? 8 + thinkingPulse * 12 : 0;
-      const miraBoost = miraSpeaking ? 25 + currentMiraAudioLevel * 40 : 0;
-      const organicIntensity = 10 + thinkingBoost + miraBoost;
+      // Reduced when resting
+      const stateMultiplier = currentState === 'resting' ? 0.3 : 1;
+      const thinkingBoost = aiThinking ? (8 + thinkingPulse * 12) * stateMultiplier : 0;
+      const miraBoost = miraSpeaking ? (25 + currentMiraAudioLevel * 40) * stateMultiplier : 0;
+      const organicIntensity = (currentState === 'resting' ? 3 : 10) + thinkingBoost + miraBoost;
       
       // Calculate target center based on transition progress
       const miCenter = { x: centers.mi.x * dpr, y: centers.mi.y * dpr };
@@ -386,10 +415,42 @@ export default function FullScreenSpheres({
         const miraGlow = miraSpeaking ? Math.min(0.8, currentMiraAudioLevel * 1.0) : 0;
         const glowAlpha = depthAlpha * (1 + thinkingGlow + userGlow + miraGlow);
 
-        // Colors
-        const { r, g, b } = p.colorType === 'mi'
-          ? { r: 200, g: 100, b: 255 } // Purple for MI
-          : { r: 100, g: 200, b: 255 }; // Cyan for RA
+        // Colors based on state
+        const currentState = miraStateRef.current;
+        let r: number, g: number, b: number;
+        
+        if (currentState === 'resting') {
+          // Bright red/coral when resting - easily visible
+          if (p.colorType === 'mi') {
+            r = 220; g = 80; b = 100; // Bright coral red
+          } else {
+            r = 200; g = 60; b = 80; // Bright rose red
+          }
+        } else if (currentState === 'listening') {
+          // Bright active listening colors
+          if (p.colorType === 'mi') {
+            r = 180; g = 120; b = 255; // Bright purple
+          } else {
+            r = 120; g = 220; b = 255; // Bright cyan
+          }
+        } else if (currentState === 'speaking') {
+          // Warm speaking colors
+          if (p.colorType === 'mi') {
+            r = 220; g = 100; b = 255; // Vibrant purple
+          } else {
+            r = 100; g = 220; b = 200; // Teal-cyan
+          }
+        } else {
+          // Default active colors
+          if (p.colorType === 'mi') {
+            r = 200; g = 100; b = 255; // Purple for MI
+          } else {
+            r = 100; g = 200; b = 255; // Cyan for RA
+          }
+        }
+        
+        // Apply additional dimming when resting - subtle dimming only
+        const stateDimming = currentState === 'resting' ? 0.75 : 1;
 
         const screenX = cx + p.x * finalScale;
         const screenY = cy + p.y * finalScale;
@@ -397,7 +458,9 @@ export default function FullScreenSpheres({
         const thinkingSizeBoost = aiThinking ? 1 + thinkingPulse * 0.15 : 1;
         const userSizeBoost = userSpeaking ? 1 + currentUserAudioLevel * 0.15 : 1;
         const miraSizeBoost = miraSpeaking ? 1 + currentMiraAudioLevel * 0.3 : 1;
-        const particleSize = p.size * finalScale * thinkingSizeBoost * userSizeBoost * miraSizeBoost;
+        // Smaller particles when resting
+        const restingScale = currentState === 'resting' ? 0.85 : 1;
+        const particleSize = p.size * finalScale * thinkingSizeBoost * userSizeBoost * miraSizeBoost * restingScale;
 
         // Draw outer glow during thinking phase
         if (aiThinking && thinkingPulse > 0.3) {
@@ -415,7 +478,7 @@ export default function FullScreenSpheres({
         // Draw main particle
         ctx.beginPath();
         ctx.arc(screenX, screenY, particleSize, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(${r},${g},${b},${Math.min(1, glowAlpha)})`;
+        ctx.fillStyle = `rgba(${r},${g},${b},${Math.min(1, glowAlpha * stateDimming)})`;
         ctx.fill();
       }
     });

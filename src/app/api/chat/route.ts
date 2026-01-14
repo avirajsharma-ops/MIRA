@@ -8,6 +8,7 @@ import { getRecentTranscriptEntries } from '@/lib/transcription/transcriptionSer
 import { unifiedSmartChat } from '@/lib/ai/gemini-chat';
 import { analyzeImageWithGemini } from '@/lib/vision';
 import { handleTalioQuery, isTalioQuery, TalioMiraUser } from '@/lib/talio/talioMiraIntegration';
+import { shouldSearchWeb, extractSearchQuery, isGeneralKnowledge } from '@/lib/ai/webSearch';
 
 // File attachment interface
 interface FileAttachment {
@@ -327,6 +328,52 @@ export async function POST(request: NextRequest) {
       }
     }
 
+    // =================
+    // WEB SEARCH FOR REAL-TIME INFORMATION
+    // =================
+    let webSearchContext = '';
+    if (!simpleMsg && shouldSearchWeb(message) && !isGeneralKnowledge(message)) {
+      try {
+        console.log('[Chat] Detected web search need');
+        const searchQuery = extractSearchQuery(message);
+        
+        // Perform web search via Perplexity
+        const PERPLEXITY_API_KEY = process.env.PERPLEXITY_API_KEY;
+        if (PERPLEXITY_API_KEY) {
+          const searchResponse = await fetch('https://api.perplexity.ai/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Authorization': `Bearer ${PERPLEXITY_API_KEY}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              model: 'llama-3.1-sonar-small-128k-online',
+              messages: [
+                { role: 'system', content: 'Provide accurate, current information. Be concise. Include sources when relevant.' },
+                { role: 'user', content: searchQuery },
+              ],
+              temperature: 0.2,
+              max_tokens: 800,
+            }),
+          });
+
+          if (searchResponse.ok) {
+            const searchData = await searchResponse.json();
+            const searchResult = searchData.choices?.[0]?.message?.content || '';
+            const citations = searchData.citations || [];
+            
+            if (searchResult) {
+              webSearchContext = `\n[WEB SEARCH RESULTS]\nQuery: ${searchQuery}\nFindings: ${searchResult}${citations.length > 0 ? `\nSources: ${citations.slice(0, 3).join(', ')}` : ''}\n[END WEB SEARCH]\n`;
+              console.log('[Chat] Web search successful');
+            }
+          }
+        }
+      } catch (searchError) {
+        console.error('[Chat] Web search failed:', searchError);
+        // Continue without web search data
+      }
+    }
+
     // Build context string for unified chat
     const contextParts: string[] = [];
     
@@ -356,6 +403,11 @@ export async function POST(request: NextRequest) {
     // Add Talio HRMS data context if available
     if (talioContext) {
       contextParts.push(talioContext);
+    }
+    
+    // Add web search results if available
+    if (webSearchContext) {
+      contextParts.push(webSearchContext);
     }
     
     // Add interruption context if user interrupted MIRA mid-response

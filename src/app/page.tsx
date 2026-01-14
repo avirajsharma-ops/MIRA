@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { MIRAProvider, useMIRA } from '@/context/MIRAContext';
-import { AuthScreen, AgentDisplay, PeopleLibraryModal, ChatHistoryModal, FaceRegistrationModal } from '@/components';
+import { AuthScreen, AgentDisplay, PeopleLibraryModal, ChatHistoryModal, FaceRegistrationModal, ReminderBar } from '@/components';
 
 // Detect if running inside an iframe
 function useIframeDetection() {
@@ -164,6 +164,103 @@ function CodeOutputsPanel({ isOpen, onClose }: { isOpen: boolean; onClose: () =>
   );
 }
 
+// Resting Transcripts Panel - Shows ambient conversation during resting mode
+function RestingTranscriptsPanel({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
+  const { restingTranscript, isResting, miraState } = useMIRA();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  
+  // Auto-scroll to bottom when new transcripts come in
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [restingTranscript]);
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="fixed left-4 top-16 bottom-20 w-80 sm:w-96 z-[55] bg-black/90 border border-white/20 rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
+        <div className="flex items-center gap-2">
+          <div className={`w-2 h-2 rounded-full ${isResting ? 'bg-amber-400 animate-pulse' : 'bg-green-400'}`} />
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-amber-400">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+            <line x1="12" y1="19" x2="12" y2="23" />
+            <line x1="8" y1="23" x2="16" y2="23" />
+          </svg>
+          <span className="text-white font-medium">
+            {isResting ? 'Listening (Resting)' : 'Ambient Audio'}
+          </span>
+          <span className="text-white/40 text-xs">({restingTranscript.length})</span>
+        </div>
+        <button
+          onClick={onClose}
+          className="p-1.5 hover:bg-white/10 rounded-lg transition-colors"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white/60">
+            <path d="M18 6L6 18" />
+            <path d="M6 6L18 18" />
+          </svg>
+        </button>
+      </div>
+      
+      {/* Status bar */}
+      <div className={`px-4 py-2 text-xs border-b border-white/10 ${isResting ? 'bg-amber-500/10 text-amber-300' : 'bg-green-500/10 text-green-300'}`}>
+        <div className="flex items-center gap-2">
+          {isResting ? (
+            <>
+              <span className="animate-pulse">●</span>
+              <span>MIRA is resting - Say "Hey MIRA" to wake up</span>
+            </>
+          ) : (
+            <>
+              <span>●</span>
+              <span>MIRA is {miraState} - Ambient listening paused</span>
+            </>
+          )}
+        </div>
+      </div>
+      
+      {/* Content */}
+      <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-2">
+        {restingTranscript.length === 0 ? (
+          <div className="flex flex-col items-center justify-center h-full text-white/40 text-sm">
+            <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="mb-3 opacity-50">
+              <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+              <line x1="12" y1="19" x2="12" y2="23" />
+              <line x1="8" y1="23" x2="16" y2="23" />
+            </svg>
+            <p>No ambient audio detected yet</p>
+            <p className="text-xs mt-1">Transcripts will appear here when MIRA is resting</p>
+          </div>
+        ) : (
+          restingTranscript.map((text, index) => (
+            <div 
+              key={index} 
+              className="bg-white/5 rounded-lg p-3 border border-white/10 animate-fade-in"
+            >
+              <div className="flex items-start gap-2">
+                <span className="text-amber-400/70 text-xs mt-0.5">#{index + 1}</span>
+                <p className="text-white/80 text-sm flex-1">{text}</p>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+      
+      {/* Footer with info */}
+      <div className="px-4 py-2 border-t border-white/10 bg-white/5">
+        <p className="text-white/40 text-xs text-center">
+          Ambient transcripts are saved for context
+        </p>
+      </div>
+    </div>
+  );
+}
+
 function FloatingKeyboard() {
   const [isOpen, setIsOpen] = useState(false);
   const [text, setText] = useState('');
@@ -307,15 +404,47 @@ function FloatingKeyboard() {
 }
 
 function MIRAApp() {
-  const { isAuthenticated, isAuthLoading, user, logout, clearConversation, enableProactive, setEnableProactive, isRecording, isCameraActive, messages, isMicReady } = useMIRA();
+  const { isAuthenticated, isAuthLoading, user, logout, clearConversation, isRecording, isCameraActive, messages, isMicReady, pendingNotifications, droppedCalls, dismissNotification, acknowledgeDroppedCall, reminders, reminderJustCreated, clearReminderCreatedFlag, miraState, isResting, restingTranscript } = useMIRA();
   const [showPeopleModal, setShowPeopleModal] = useState(false);
   const [showHistoryModal, setShowHistoryModal] = useState(false);
   const [showFaceRegistration, setShowFaceRegistration] = useState(false);
   const [hasCheckedOwnerFace, setHasCheckedOwnerFace] = useState(false);
   const [showUI, setShowUI] = useState(false); // UI hidden by default
   const [showCodePanel, setShowCodePanel] = useState(false); // Code/outputs panel
+  const [showReminderBar, setShowReminderBar] = useState(false); // Reminders panel
+  const [showRestingPanel, setShowRestingPanel] = useState(false); // Resting transcripts panel
   const prevMessagesLengthRef = useRef(0);
+  const prevRestingRef = useRef(false);
   const isInIframe = useIframeDetection();
+
+  // Auto-show/hide resting panel based on MIRA state
+  useEffect(() => {
+    if (isResting && !prevRestingRef.current) {
+      // MIRA just went to resting - show the panel
+      setShowRestingPanel(true);
+    } else if (!isResting && prevRestingRef.current) {
+      // MIRA just woke up - optionally hide the panel (keep it open for reference)
+      // setShowRestingPanel(false);
+    }
+    prevRestingRef.current = isResting;
+  }, [isResting]);
+
+  // Auto-open ReminderBar when reminder is created
+  useEffect(() => {
+    if (reminderJustCreated) {
+      setShowReminderBar(true);
+      clearReminderCreatedFlag();
+    }
+  }, [reminderJustCreated, clearReminderCreatedFlag]);
+
+  // Count urgent reminders for badge
+  const urgentReminderCount = reminders.filter(r => {
+    const now = new Date();
+    const due = new Date(r.dueDate);
+    const diff = due.getTime() - now.getTime();
+    const hoursLeft = diff / (1000 * 60 * 60);
+    return hoursLeft <= 1 || diff < 0;
+  }).length;
 
   // Auto-open code panel when AI sends code or structured output
   useEffect(() => {
@@ -386,8 +515,8 @@ function MIRAApp() {
 
   return (
     <div className={`min-h-screen app-container ${isInIframe ? 'bg-transparent' : 'bg-black'}`}>
-      {/* MIRA Getting Ready Loading Dialog - hide when mic is ready or recording */}
-      {!isMicReady && !isRecording && (
+      {/* MIRA Getting Ready Loading Dialog - hide when mic is ready, recording, or in resting mode */}
+      {!isMicReady && !isRecording && !isResting && (
         <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
           <div className="bg-black/90 border border-white/20 rounded-3xl px-8 py-6 shadow-2xl">
             <div className="flex flex-col items-center gap-4">
@@ -409,6 +538,28 @@ function MIRAApp() {
       )}
       {/* Top center toggle buttons */}
       <div className="fixed top-3 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-2">
+        {/* Reminders Panel Toggle Button (Left side) */}
+        <button
+          onClick={() => setShowReminderBar(!showReminderBar)}
+          className={`p-2 border rounded-full transition-all relative ${
+            showReminderBar 
+              ? 'bg-amber-500/30 border-amber-500/50 text-amber-400' 
+              : 'bg-black/40 hover:bg-black/60 border-white/20 text-white/70 hover:text-white'
+          }`}
+          title={showReminderBar ? 'Hide Reminders' : 'Show Reminders'}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M6 2L3 6v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V6l-3-4z" />
+            <line x1="3" y1="6" x2="21" y2="6" />
+            <path d="M16 10a4 4 0 0 1-8 0" />
+          </svg>
+          {urgentReminderCount > 0 && (
+            <span className="absolute -top-1 -right-1 w-4 h-4 bg-red-500 text-white text-[10px] font-bold rounded-full flex items-center justify-center animate-pulse">
+              {urgentReminderCount}
+            </span>
+          )}
+        </button>
+
         {/* UI Toggle Button */}
         <button
           onClick={() => setShowUI(!showUI)}
@@ -428,7 +579,32 @@ function MIRAApp() {
           )}
         </button>
 
-        {/* Code/Outputs Panel Toggle Button */}
+        {/* Resting Transcripts Panel Toggle (Left side) */}
+        <button
+          onClick={() => setShowRestingPanel(!showRestingPanel)}
+          className={`relative p-2 border rounded-full transition-all ${
+            showRestingPanel 
+              ? 'bg-amber-500/30 border-amber-500/50 text-amber-400' 
+              : isResting
+                ? 'bg-amber-500/20 border-amber-500/40 text-amber-400 animate-pulse'
+                : 'bg-black/40 hover:bg-black/60 border-white/20 text-white/70 hover:text-white'
+          }`}
+          title={showRestingPanel ? 'Hide Ambient Audio' : 'Show Ambient Audio'}
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />
+            <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+            <line x1="12" y1="19" x2="12" y2="23" />
+            <line x1="8" y1="23" x2="16" y2="23" />
+          </svg>
+          {restingTranscript.length > 0 && (
+            <span className="absolute -top-1 -right-1 bg-amber-500 text-black text-xs font-bold rounded-full w-4 h-4 flex items-center justify-center">
+              {restingTranscript.length > 9 ? '9+' : restingTranscript.length}
+            </span>
+          )}
+        </button>
+
+        {/* Code/Outputs Panel Toggle Button (Right side) */}
         <button
           onClick={() => setShowCodePanel(!showCodePanel)}
           className={`p-2 border rounded-full transition-all ${
@@ -500,22 +676,11 @@ function MIRAApp() {
 
             <div className="w-px h-6 bg-white/10 hidden sm:block" />
 
-            {/* Proactive toggle */}
-            <label className="hidden sm:flex items-center gap-2 cursor-pointer">
-              <span className="text-white/50 text-sm hidden lg:inline">Auto-initiate</span>
-              <div
-                className={`w-10 h-5 rounded-full transition-colors ${
-                  enableProactive ? 'bg-green-500' : 'bg-white/20'
-                }`}
-                onClick={() => setEnableProactive(!enableProactive)}
-              >
-                <div
-                  className={`w-4 h-4 bg-white rounded-full transition-transform mt-0.5 ${
-                    enableProactive ? 'translate-x-5' : 'translate-x-1'
-                  }`}
-                />
-              </div>
-            </label>
+            {/* Auto-initiate indicator - always on, no toggle */}
+            <div className="hidden sm:flex items-center gap-2">
+              <span className="text-white/50 text-sm hidden lg:inline">Always Listening</span>
+              <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" title="MIRA is always ready" />
+            </div>
 
             <button
               onClick={clearConversation}
@@ -547,11 +712,96 @@ function MIRAApp() {
       {/* Floating keyboard button */}
       <FloatingKeyboard />
 
-      {/* Code & Outputs Panel */}
+      {/* Reminder Bar (Left side) */}
+      <ReminderBar 
+        isOpen={showReminderBar} 
+        onClose={() => setShowReminderBar(false)} 
+      />
+
+      {/* Code & Outputs Panel (Right side) */}
       <CodeOutputsPanel 
         isOpen={showCodePanel} 
         onClose={() => setShowCodePanel(false)} 
       />
+
+      {/* Resting Transcripts Panel (Left side) */}
+      <RestingTranscriptsPanel 
+        isOpen={showRestingPanel} 
+        onClose={() => setShowRestingPanel(false)} 
+      />
+
+      {/* Reminder Notifications Toast */}
+      {pendingNotifications.length > 0 && (
+        <div className="fixed bottom-24 right-4 z-[70] flex flex-col gap-2 max-w-sm">
+          {pendingNotifications.slice(0, 3).map((notification) => (
+            <div
+              key={notification.id}
+              className={`p-3 rounded-xl border shadow-xl backdrop-blur-sm animate-slide-in ${
+                notification.urgency === 'overdue' ? 'bg-red-500/20 border-red-500/50' :
+                notification.urgency === 'urgent' ? 'bg-orange-500/20 border-orange-500/50' :
+                notification.urgency === 'warning' ? 'bg-yellow-500/20 border-yellow-500/50' :
+                'bg-blue-500/20 border-blue-500/50'
+              }`}
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">
+                      {notification.urgency === 'overdue' ? '🚨' :
+                       notification.urgency === 'urgent' ? '⚠️' :
+                       notification.urgency === 'warning' ? '⏰' : '📋'}
+                    </span>
+                    <span className="text-white font-medium text-sm">{notification.title}</span>
+                  </div>
+                  <p className="text-white/70 text-xs mt-1">{notification.message}</p>
+                </div>
+                <button
+                  onClick={() => dismissNotification(notification.id)}
+                  className="p-1 hover:bg-white/10 rounded transition-colors"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white/60">
+                    <path d="M18 6L6 18" />
+                    <path d="M6 6L18 18" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Dropped Calls Toast */}
+      {droppedCalls.length > 0 && (
+        <div className="fixed bottom-24 left-4 z-[70] flex flex-col gap-2 max-w-sm">
+          {droppedCalls.slice(0, 2).map((call) => (
+            <div
+              key={call.id}
+              className="p-3 rounded-xl border shadow-xl backdrop-blur-sm bg-purple-500/20 border-purple-500/50 animate-slide-in"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">📞</span>
+                    <span className="text-white font-medium text-sm">Dropped Call</span>
+                  </div>
+                  <p className="text-white/70 text-xs mt-1">
+                    {call.callerInfo || 'Unknown caller'} • {call.timestamp.toLocaleTimeString()}
+                  </p>
+                </div>
+                <button
+                  onClick={() => acknowledgeDroppedCall(call.id)}
+                  className="p-1 hover:bg-white/10 rounded transition-colors"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-white/60">
+                    <path d="M18 6L6 18" />
+                    <path d="M6 6L18 18" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Modals */}
       <PeopleLibraryModal 

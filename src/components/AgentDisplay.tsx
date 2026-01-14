@@ -2,6 +2,7 @@
 
 import { useMIRA } from '@/context/MIRAContext';
 import FullScreenSpheres from './FullScreenSpheres';
+import { useEffect, useRef } from 'react';
 
 interface AgentDisplayProps {
   showControls?: boolean;
@@ -22,7 +23,19 @@ export default function AgentDisplay({ showControls = true }: AgentDisplayProps)
     stopCamera,
     startScreenCapture,
     stopScreenCapture,
+    miraState, // MIRA's current state
   } = useMIRA();
+
+  // Debug logging for audio levels
+  const debugCounterRef = useRef(0);
+  useEffect(() => {
+    if (audioLevel > 0.02 || outputAudioLevel > 0.02) {
+      debugCounterRef.current++;
+      if (debugCounterRef.current % 60 === 0) {
+        console.log('[AgentDisplay] Audio levels - User:', audioLevel.toFixed(3), 'MIRA:', outputAudioLevel.toFixed(3));
+      }
+    }
+  }, [audioLevel, outputAudioLevel]);
 
   // Display mode - always combined now (unified agent, no more debate separation)
   const mode = 'combined';
@@ -38,12 +51,18 @@ export default function AgentDisplay({ showControls = true }: AgentDisplayProps)
         speakingAgent={speakingAgent}
         isSpeaking={isSpeaking}
         miraAudioLevel={outputAudioLevel}  // MIRA's voice level for distortion effect
-        userAudioLevel={isRecording || isListening ? audioLevel : 0}  // User's voice for spin effect
+        userAudioLevel={audioLevel}  // Always pass audio level - sphere handles when to react
         isThinking={isThinking}
+        miraState={miraState}  // Pass state for visual feedback
       />
 
       {/* Status overlay */}
       <div className="absolute inset-0 flex flex-col items-center justify-end pb-24 sm:pb-32 pointer-events-none z-10 status-overlay-mobile">
+        {miraState === 'resting' && (
+          <p className="text-amber-400/60 text-sm sm:text-lg mb-4 px-4 text-center">
+            Say &quot;Hey Mira&quot; to wake me up
+          </p>
+        )}
         {isSpeaking && (
           <p className="text-white/70 text-sm sm:text-lg mb-4 px-4 text-center">
             MIRA is speaking...
@@ -59,7 +78,7 @@ export default function AgentDisplay({ showControls = true }: AgentDisplayProps)
             Recording speech...
           </p>
         )}
-        {isListening && !isRecording && !isSpeaking && !isThinking && (
+        {isListening && !isRecording && !isSpeaking && !isThinking && miraState !== 'resting' && (
           <p className="text-green-400/50 text-xs sm:text-sm">
             Listening...
           </p>

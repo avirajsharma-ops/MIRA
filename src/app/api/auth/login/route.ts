@@ -3,6 +3,18 @@ import { connectToDatabase } from '@/lib/mongodb';
 import User from '@/models/User';
 import { verifyPassword, generateToken } from '@/lib/auth';
 import { getTalioUserInfo, authenticateTalioUser } from '@/lib/talio';
+import { getTalioContext } from '@/lib/talio-db';
+
+// Pre-warm Talio cache in background after login
+async function prewarmTalioCache(email: string): Promise<void> {
+  try {
+    console.log('[Login] Pre-warming Talio cache for:', email);
+    await getTalioContext(email);
+    console.log('[Login] Talio cache pre-warmed for:', email);
+  } catch (err) {
+    console.error('[Login] Failed to pre-warm Talio cache:', err);
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -110,6 +122,12 @@ export async function POST(request: NextRequest) {
     
     // Generate token
     const token = generateToken(user);
+    
+    // Pre-warm Talio cache in background (don't await - non-blocking)
+    // This ensures the cache is ready when user starts their first conversation
+    if (user.talioIntegration?.isConnected || talioAuthenticated) {
+      prewarmTalioCache(email.toLowerCase()).catch(() => {}); // Fire and forget
+    }
     
     return NextResponse.json({
       message: 'Login successful',

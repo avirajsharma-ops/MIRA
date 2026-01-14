@@ -41,10 +41,10 @@ export function useMIRAEngine(config: EngineConfig = {}) {
     },
   });
 
-  const connect = useCallback(async () => {
-    console.log('[MIRAEngine] Connecting to OpenAI Realtime...');
+  const connect = useCallback(async (quickReconnect: boolean = false) => {
+    console.log('[MIRAEngine] Connecting to OpenAI Realtime...', quickReconnect ? '(QUICK MODE)' : '');
     setStatus('connecting');
-    await openAI.connect();
+    await openAI.connect(quickReconnect);
   }, [openAI]);
 
   const disconnect = useCallback(() => {
@@ -57,10 +57,16 @@ export function useMIRAEngine(config: EngineConfig = {}) {
     openAI.resetIdleTimer();
   }, [openAI]);
 
+  // Make MIRA speak out loud
+  const speak = useCallback((text: string) => {
+    openAI.speak(text);
+  }, [openAI]);
+
   return {
     connect,
     disconnect,
     resetIdleTimer,
+    speak,
     status,
     isConnected: openAI.isConnected,
     isListening: openAI.isListening,
