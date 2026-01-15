@@ -3,10 +3,10 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 
 // === SIMPLE IDLE DETECTION CONFIG ===
-const SPEECH_THRESHOLD = 0.8; // Audio level must exceed this to be considered speech
+const SPEECH_THRESHOLD = 0.68; // Audio level must exceed this to be considered speech
 const CONSECUTIVE_SPEECH_SAMPLES_TO_RESET = 4; // Need 4 consecutive high samples to reset timer
 const SPEECH_CHECK_INTERVAL_MS = 250; // Check audio level every 250ms (so 4 samples = 1 second)
-const IDLE_TIMEOUT_SECONDS = 10; // 10 seconds of silence = idle
+const IDLE_TIMEOUT_SECONDS = 15; // 10 seconds of silence = idle
 
 interface RealtimeConfig {
   voice?: 'mira' | 'aks';
@@ -245,6 +245,8 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
 
   // Use ref for callback to ensure stable function reference
   const updateState = useCallback((newState: RealtimeState) => {
+    // Update ref IMMEDIATELY so timer interval sees the new state right away
+    stateRef.current = newState;
     setState(newState);
     onStateChangeRef.current?.(newState);
   }, []); // No dependencies - uses ref
@@ -702,26 +704,46 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
   }, []);
 
   // === SIMPLE IDLE TIMER COUNTDOWN ===
-  // Timer counts down every second. Completely independent - no state dependencies.
+  // Timer counts down every 500ms for more responsive state detection.
   // Store cleanup and updateState in refs for use in interval
   const cleanupRef = useRef<() => void>(() => {});
   const updateStateRef = useRef<(s: RealtimeState) => void>(() => {});
+  const lastTimerTickRef = useRef<number>(Date.now());
   
   useEffect(() => {
-    // Start the countdown interval once and keep it running
+    // Start the countdown interval - runs every 500ms for responsive state detection
     const interval = setInterval(() => {
       // Only countdown if connected (use ref to avoid stale closure)
       const currentState = stateRef.current;
-      if (currentState === 'connected' || currentState === 'listening' || currentState === 'speaking') {
-        // Decrement timer
-        idleTimerRef.current = Math.max(0, idleTimerRef.current - 1);
-        const remaining = idleTimerRef.current;
+      
+      // PAUSE timer while MIRA is connecting (getting ready), speaking, OR response is in progress
+      // Check both state AND isResponseInProgressRef for reliability
+      if (currentState === 'connecting' || currentState === 'speaking' || isResponseInProgressRef.current) {
+        // MIRA is getting ready, speaking, or generating response - don't countdown, keep timer paused
+        // Reset last tick time so we don't count the paused time
+        lastTimerTickRef.current = Date.now();
+        console.log('[Idle] ⏸️ Timer PAUSED (state:', currentState, 'responseInProgress:', isResponseInProgressRef.current, ')');
+        return;
+      }
+      
+      if (currentState === 'connected' || currentState === 'listening') {
+        // Calculate actual elapsed time since last tick (more accurate than assuming fixed interval)
+        const now = Date.now();
+        const elapsed = (now - lastTimerTickRef.current) / 1000; // Convert to seconds
+        lastTimerTickRef.current = now;
+        
+        // Decrement timer by actual elapsed time
+        idleTimerRef.current = Math.max(0, idleTimerRef.current - elapsed);
+        const remaining = Math.ceil(idleTimerRef.current); // Round up for display
         setIdleTimeRemaining(remaining);
         
-        console.log('[Idle] ⏱️', remaining + 's remaining');
+        // Only log every second to reduce console spam
+        if (Math.abs(idleTimerRef.current - Math.round(idleTimerRef.current)) < 0.3) {
+          console.log('[Idle] ⏱️', remaining + 's remaining');
+        }
         
         // Check if we've hit zero
-        if (remaining <= 0) {
+        if (idleTimerRef.current <= 0) {
           console.log('[Idle] 💤 IDLE DETECTED - Going to rest');
           setIdleTimeRemaining(0);
           
@@ -731,9 +753,9 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
           onIdleDisconnectRef.current?.();
         }
       }
-    }, 1000);
+    }, 500); // Check every 500ms for more responsive state detection
     
-    console.log('[Idle] ⏱️ Idle timer interval started');
+    console.log('[Idle] ⏱️ Idle timer interval started (500ms sampling)');
     
     return () => {
       clearInterval(interval);

@@ -485,6 +485,14 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   const savePersonRef = useRef<((name: string, speaker: any) => void) | null>(null);
   const deactivateMiraRef = useRef<(() => void) | null>(null);
   
+  // Cooldown for asking about people (to avoid spamming)
+  const personAskCooldownRef = useRef<Map<string, number>>(new Map());
+  // Track pending relationship info requests
+  const pendingRelationshipInfoRef = useRef<{ name: string; askedAt: number } | null>(null);
+  // Refs for person directory functions (to use in handleTranscript before they're defined)
+  const checkExistingPersonRef = useRef<((name: string) => Promise<{ exists: boolean; person?: any }>) | null>(null);
+  const savePersonToDirectoryRef = useRef<((name: string, context: string, relationship?: string, skipCheck?: boolean) => Promise<{ success: boolean; isExisting: boolean; person?: any }>) | null>(null);
+  
   // Track reminders without timeline to ask about later
   const pendingTimelineQuestionsRef = useRef<Array<{ id: string; title: string; isDirectRequest: boolean; createdAt: number }>>([]);
   const timelineQuestionTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -506,7 +514,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   const pendingWakeWordQueryRef = useRef<string | null>(null);
   // Silence timeout - 10 seconds to both visual resting AND disconnect
   // Reconnection is optimized to be instant when wake word detected
-  const SILENCE_TIMEOUT_MS = 10000; // 10 seconds of silence before going to resting
+  const SILENCE_TIMEOUT_MS = 15000; // 15 seconds of silence before going to resting
 
   // Keep miraStateRef in sync for callbacks
   useEffect(() => {
@@ -685,6 +693,12 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   const lastVoiceActivityTimeRef = useRef(0);
   const VOICE_ACTIVITY_THRESHOLD = 0.15; // Audio level threshold to trigger speech recognition
   const VOICE_ACTIVITY_COOLDOWN_MS = 3000; // Wait 3 seconds after speech recognition ends before detecting new activity
+  // Keepalive interval to ensure continuous recognition
+  const recognitionKeepaliveRef = useRef<NodeJS.Timeout | null>(null);
+  const lastRecognitionActivityRef = useRef<number>(Date.now());
+  const MAX_RESTART_ATTEMPTS = 10;
+  const KEEPALIVE_CHECK_INTERVAL = 5000; // Check every 5 seconds
+  const MAX_SILENCE_BEFORE_RESTART = 30000; // Restart if no activity for 30 seconds
   
   // Start real-time wake word detection using Web Speech API (lightweight, no API calls)
   // This is much more efficient than sending audio samples to Whisper
@@ -703,6 +717,20 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       return;
     }
     
+    // Check max restart attempts with exponential backoff
+    if (recognitionRestartCountRef.current >= MAX_RESTART_ATTEMPTS) {
+      console.log('[Resting] Max restart attempts reached, waiting before retry...');
+      // Reset after longer delay
+      setTimeout(() => {
+        recognitionRestartCountRef.current = 0;
+        if (miraStateRef.current === 'resting') {
+          console.log('[Resting] Retry limit reset, attempting to start again');
+          startRestingSpeechRecognition();
+        }
+      }, 30000); // 30 second cooldown after max retries
+      return;
+    }
+    
     const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
       console.log('[Resting] Web Speech API not supported');
@@ -711,7 +739,9 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     
     isStartingRecognitionRef.current = true;
     
-    console.log('[Resting] Starting Web Speech API for wake word detection');
+    // Calculate backoff delay based on restart count
+    const backoffDelay = Math.min(500 * Math.pow(1.5, recognitionRestartCountRef.current), 10000);
+    console.log('[Resting] Starting Web Speech API (attempt', recognitionRestartCountRef.current + 1, '/', MAX_RESTART_ATTEMPTS, ', backoff:', backoffDelay, 'ms)');
     
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
@@ -719,15 +749,24 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     recognition.lang = 'en-IN'; // Support Hinglish
     recognition.maxAlternatives = 3; // Get multiple alternatives for better wake word matching
     
-    recognition.onresult = (event: any) => {
-      // Reset restart count on successful result
+    recognition.onstart = () => {
+      console.log('[Resting] ✓ Speech recognition started successfully');
+      // Reset restart count on successful start
       recognitionRestartCountRef.current = 0;
+      lastRecognitionActivityRef.current = Date.now();
+    };
+    
+    recognition.onresult = (event: any) => {
+      // Update activity timestamp
+      lastRecognitionActivityRef.current = Date.now();
       
       // Check ALL results, not just the last one
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const result = event.results[i];
         const transcript = result[0].transcript;
         const isFinal = result.isFinal;
+        
+        console.log('[Resting] Transcript:', isFinal ? '(FINAL)' : '(interim)', transcript);
         
         // Check for wake word on BOTH interim and final results for instant response
         const wakeResult = detectWakeWord(transcript);
@@ -757,33 +796,74 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       }
     };
     
+    recognition.onspeechstart = () => {
+      console.log('[Resting] Speech detected');
+      lastRecognitionActivityRef.current = Date.now();
+    };
+    
+    recognition.onspeechend = () => {
+      console.log('[Resting] Speech ended');
+      lastRecognitionActivityRef.current = Date.now();
+    };
+    
     recognition.onerror = (event: any) => {
-      // Ignore common non-fatal errors that don't need restart
-      if (event.error === 'no-speech' || event.error === 'aborted') {
-        return;
-      }
+      lastRecognitionActivityRef.current = Date.now();
       
-      console.log('[Resting] Speech recognition error:', event.error);
+      // Handle different error types
+      switch (event.error) {
+        case 'no-speech':
+          // This is normal - no speech detected for a while
+          // Don't increment restart count, just log
+          console.log('[Resting] No speech detected (normal, continuing...)');
+          return;
+          
+        case 'aborted':
+          // Recognition was aborted - this is intentional
+          console.log('[Resting] Recognition aborted');
+          return;
+          
+        case 'audio-capture':
+          // Microphone not available
+          console.error('[Resting] ❌ Audio capture error - microphone not available');
+          recognitionRestartCountRef.current++;
+          break;
+          
+        case 'not-allowed':
+          // Permission denied
+          console.error('[Resting] ❌ Microphone permission denied');
+          // Don't retry - permission issue won't resolve itself
+          recognitionRestartCountRef.current = MAX_RESTART_ATTEMPTS;
+          break;
+          
+        case 'network':
+          // Network error
+          console.error('[Resting] ❌ Network error - will retry');
+          recognitionRestartCountRef.current++;
+          break;
+          
+        case 'service-not-allowed':
+          // Service not allowed
+          console.error('[Resting] ❌ Speech service not allowed');
+          recognitionRestartCountRef.current++;
+          break;
+          
+        default:
+          console.error('[Resting] ❌ Speech recognition error:', event.error);
+          recognitionRestartCountRef.current++;
+      }
       
       // Clear current recognition reference since it errored
       webSpeechRecognitionRef.current = null;
       isStartingRecognitionRef.current = false;
-      
-      // Don't restart on network errors - they usually persist
-      if (event.error === 'network') {
-        console.log('[Resting] Network error - will retry in 5 seconds');
-        recognitionRestartCountRef.current++;
-      }
     };
     
     recognition.onend = () => {
+      const wasRunning = webSpeechRecognitionRef.current !== null;
+      
       // Clear reference since recognition ended
       webSpeechRecognitionRef.current = null;
       isStartingRecognitionRef.current = false;
       voiceActivityDetectedRef.current = false;
-      
-      // Set cooldown time - don't restart immediately, wait for new voice activity
-      lastVoiceActivityTimeRef.current = Date.now();
       
       // Clear any pending restart timeout
       if (recognitionRestartTimeoutRef.current) {
@@ -791,11 +871,25 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
         recognitionRestartTimeoutRef.current = null;
       }
       
-      // Don't restart automatically - voice activity detection will trigger restart
-      if (miraStateRef.current !== 'resting') {
-        console.log('[Resting] Speech recognition ended - no longer in resting mode');
+      // CONTINUOUS MODE: Auto-restart if still in resting mode
+      if (miraStateRef.current === 'resting') {
+        // Increment restart count if it ended unexpectedly
+        if (wasRunning) {
+          recognitionRestartCountRef.current++;
+        }
+        
+        // Calculate backoff delay
+        const delay = Math.min(500 * Math.pow(1.5, recognitionRestartCountRef.current), 10000);
+        console.log('[Resting] Speech recognition ended - auto-restarting in', delay, 'ms (attempt', recognitionRestartCountRef.current + 1, ')');
+        
+        // Restart with backoff delay
+        recognitionRestartTimeoutRef.current = setTimeout(() => {
+          if (miraStateRef.current === 'resting' && !webSpeechRecognitionRef.current && !isStartingRecognitionRef.current) {
+            startRestingSpeechRecognition();
+          }
+        }, delay);
       } else {
-        console.log('[Resting] Speech recognition ended - waiting for voice activity to restart');
+        console.log('[Resting] Speech recognition ended - no longer in resting mode');
       }
     };
     
@@ -803,13 +897,81 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       recognition.start();
       webSpeechRecognitionRef.current = recognition;
       isStartingRecognitionRef.current = false;
-      console.log('[Resting] Web Speech recognition started');
-    } catch (e) {
-      console.error('[Resting] Failed to start speech recognition:', e);
+    } catch (e: any) {
+      console.error('[Resting] Failed to start speech recognition:', e.message || e);
       webSpeechRecognitionRef.current = null;
       isStartingRecognitionRef.current = false;
+      recognitionRestartCountRef.current++;
+      
+      // Retry after backoff delay
+      const delay = Math.min(1000 * Math.pow(1.5, recognitionRestartCountRef.current), 15000);
+      if (miraStateRef.current === 'resting' && recognitionRestartCountRef.current < MAX_RESTART_ATTEMPTS) {
+        console.log('[Resting] Will retry in', delay, 'ms');
+        recognitionRestartTimeoutRef.current = setTimeout(() => {
+          if (miraStateRef.current === 'resting') {
+            startRestingSpeechRecognition();
+          }
+        }, delay);
+      }
     }
   }, []); // No dependencies - uses refs for current state
+  
+  // Keepalive mechanism - ensures recognition stays active in resting mode
+  const startRecognitionKeepalive = useCallback(() => {
+    // Clear existing keepalive
+    if (recognitionKeepaliveRef.current) {
+      clearInterval(recognitionKeepaliveRef.current);
+    }
+    
+    console.log('[Resting] Starting keepalive monitor');
+    
+    recognitionKeepaliveRef.current = setInterval(() => {
+      // Only check if in resting mode
+      if (miraStateRef.current !== 'resting') {
+        return;
+      }
+      
+      const timeSinceActivity = Date.now() - lastRecognitionActivityRef.current;
+      const isRecognitionActive = webSpeechRecognitionRef.current !== null;
+      const isStarting = isStartingRecognitionRef.current;
+      
+      console.log('[Resting] Keepalive check - active:', isRecognitionActive, 'starting:', isStarting, 'silence:', Math.round(timeSinceActivity / 1000), 's');
+      
+      // If recognition is not active and not starting, restart it
+      if (!isRecognitionActive && !isStarting) {
+        console.log('[Resting] ⚠️ Recognition not active - restarting');
+        startRestingSpeechRecognition();
+        return;
+      }
+      
+      // If recognition has been silent for too long, restart it
+      // (Web Speech API can stop silently without firing onend)
+      if (isRecognitionActive && timeSinceActivity > MAX_SILENCE_BEFORE_RESTART) {
+        console.log('[Resting] ⚠️ Recognition silent for', Math.round(timeSinceActivity / 1000), 's - forcing restart');
+        
+        // Force stop current recognition
+        try {
+          webSpeechRecognitionRef.current?.stop();
+        } catch {}
+        webSpeechRecognitionRef.current = null;
+        
+        // Restart after short delay
+        setTimeout(() => {
+          if (miraStateRef.current === 'resting') {
+            startRestingSpeechRecognition();
+          }
+        }, 500);
+      }
+    }, KEEPALIVE_CHECK_INTERVAL);
+  }, [startRestingSpeechRecognition]);
+  
+  const stopRecognitionKeepalive = useCallback(() => {
+    if (recognitionKeepaliveRef.current) {
+      clearInterval(recognitionKeepaliveRef.current);
+      recognitionKeepaliveRef.current = null;
+      console.log('[Resting] Keepalive monitor stopped');
+    }
+  }, []);
   
   // Keep processRestingTranscriptRef updated
   useEffect(() => {
@@ -818,6 +980,9 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
 
   // Stop resting speech recognition (Web Speech API)
   const stopRestingSpeechRecognition = useCallback(() => {
+    // Stop keepalive monitor
+    stopRecognitionKeepalive();
+    
     // Clear any pending restart timeout
     if (recognitionRestartTimeoutRef.current) {
       clearTimeout(recognitionRestartTimeoutRef.current);
@@ -1870,28 +2035,163 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     // Reset silence timer since there's activity
     checkConversationSilence();
     
-    // === DETERMINE IF MIRA SHOULD ADD TO VISIBLE MESSAGES ===
-    // Only add to visible message list if directed at MIRA or important event
-    if (taskResult.isDirectedAtMira || taskResult.shouldRespond || taskResult.isPhoneCall) {
-      const userMessage: Message = {
-        id: Date.now().toString(),
-        role: 'user',
-        content: text,
-        timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, userMessage]);
-    } else if (!taskResult.isPassiveConversation) {
-      // For non-passive conversation that's not directly to MIRA,
-      // still show it but mark it as background
-      const bgMessage: Message = {
-        id: Date.now().toString(),
-        role: 'user',
-        content: `[Background] ${text}`,
-        timestamp: new Date(),
-      };
-      setMessages(prev => [...prev, bgMessage]);
+    // === PROACTIVE NAME DETECTION AND PEOPLE SAVING ===
+    // Detect when user mentions a person's name and save to People directory
+    // This ensures we capture all names mentioned in conversation
+    const nameDetectionPatterns = [
+      // Direct introductions: "This is John", "Meet Sarah", "His name is Mike"
+      /(?:this is|that's|meet|his name is|her name is|their name is|called)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i,
+      // Possessive mentions: "my friend John", "my brother Mike", "my colleague Sarah"
+      /(?:my|our)\s+(?:friend|colleague|coworker|boss|brother|sister|mom|dad|mother|father|wife|husband|son|daughter|uncle|aunt|cousin|neighbor|roommate|boyfriend|girlfriend|partner|fiancee?)\s+([A-Z][a-z]+)/i,
+      // Talking about someone: "John said", "Sarah thinks", "Mike told me"
+      /([A-Z][a-z]+)\s+(?:said|told|thinks|wants|asked|called|texted|messaged|mentioned)/i,
+      // Actions with someone: "met John", "saw Sarah", "talked to Mike", "with Emily"
+      /(?:met|saw|visited|called|texted|messaged|talked to|spoke with|with|from)\s+([A-Z][a-z]+)/i,
+      // Simple mentions in context: "John and I", "me and Sarah"
+      /([A-Z][a-z]+)\s+and\s+(?:I|me|we)/i,
+      /(?:I|me|we)\s+and\s+([A-Z][a-z]+)/i,
+    ];
+    
+    // Common words that look like names but aren't
+    const nonNameWords = new Set([
+      'the', 'this', 'that', 'what', 'when', 'where', 'which', 'who', 'why', 'how',
+      'mira', 'mirror', 'okay', 'sure', 'yes', 'yeah', 'great', 'good', 'nice',
+      'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday',
+      'january', 'february', 'march', 'april', 'may', 'june', 'july', 'august',
+      'september', 'october', 'november', 'december', 'today', 'tomorrow', 'yesterday',
+      'morning', 'afternoon', 'evening', 'night', 'hello', 'hey', 'hi', 'bye',
+      'please', 'thanks', 'thank', 'sorry', 'just', 'really', 'actually', 'basically',
+    ]);
+    
+    // Detect names from patterns
+    for (const pattern of nameDetectionPatterns) {
+      const match = text.match(pattern);
+      if (match && match[1]) {
+        const detectedName = match[1].trim();
+        const lowerName = detectedName.toLowerCase();
+        
+        // Skip if it's a common word or too short
+        if (nonNameWords.has(lowerName) || detectedName.length < 2) {
+          continue;
+        }
+        
+        console.log('[People] Detected name in conversation:', detectedName);
+        
+        // Check if this person already exists in our People directory
+        (async () => {
+          try {
+            if (!checkExistingPersonRef.current || !savePersonToDirectoryRef.current) {
+              console.log('[People] Refs not ready yet, skipping person detection');
+              return;
+            }
+            
+            const existingCheck = await checkExistingPersonRef.current(detectedName);
+            
+            if (existingCheck.exists && existingCheck.person) {
+              // Person exists - confirm if talking about the same person
+              console.log('[People] Found existing person:', existingCheck.person.name);
+              
+              // If relationship is known, MIRA can mention it
+              if (existingCheck.person.relationship) {
+                console.log('[People] Known relationship:', existingCheck.person.relationship);
+                // Don't need to ask, we know who they are
+              } else {
+                // We have the name but no relationship - could ask to confirm
+                // But only if we haven't asked recently (use cooldown)
+                const lastAskTime = personAskCooldownRef.current.get(lowerName) || 0;
+                const now = Date.now();
+                const cooldownMs = 5 * 60 * 1000; // 5 minute cooldown
+                
+                if (now - lastAskTime > cooldownMs && speakReminderRef.current && isVoiceConnectedRef.current) {
+                  personAskCooldownRef.current.set(lowerName, now);
+                  // Optionally ask about relationship - but not every time
+                }
+              }
+            } else {
+              // NEW PERSON - Ask about relationship and save immediately
+              console.log('[People] New person detected:', detectedName, '- will ask about relationship');
+              
+              // Check cooldown to avoid asking repeatedly
+              const lastAskTime = personAskCooldownRef.current.get(lowerName) || 0;
+              const now = Date.now();
+              const cooldownMs = 60 * 1000; // 1 minute cooldown for new person prompts
+              
+              if (now - lastAskTime > cooldownMs) {
+                personAskCooldownRef.current.set(lowerName, now);
+                
+                // Save the person immediately with basic info
+                await savePersonToDirectoryRef.current(detectedName, text, undefined, true);
+                
+                // Ask MIRA to inquire about the relationship
+                if (speakReminderRef.current && isVoiceConnectedRef.current) {
+                  const askPrompt = `I noticed you mentioned ${detectedName}! Who is ${detectedName} to you? Are they a friend, family member, colleague? I'd love to remember them for you!`;
+                  speakReminderRef.current(askPrompt);
+                  
+                  // Mark that we're expecting relationship info for this person
+                  pendingRelationshipInfoRef.current = { name: detectedName, askedAt: now };
+                }
+              }
+            }
+          } catch (err) {
+            console.error('[People] Error checking/saving person:', err);
+          }
+        })();
+        
+        // Only process first name found to avoid spam
+        break;
+      }
     }
-    // Passive conversation (small talk with others) is saved to transcripts but not shown in chat
+    
+    // === CHECK IF USER IS PROVIDING RELATIONSHIP INFO ===
+    // If we recently asked about someone, check if this response contains relationship info
+    if (pendingRelationshipInfoRef.current) {
+      const { name: pendingName, askedAt } = pendingRelationshipInfoRef.current;
+      const timeSinceAsk = Date.now() - askedAt;
+      
+      // Only process if within 30 seconds of asking
+      if (timeSinceAsk < 30000) {
+        const relationshipPatterns = [
+          /(?:he|she|they)'?s?\s+(?:my|a)\s+(friend|colleague|coworker|boss|brother|sister|mom|dad|mother|father|wife|husband|son|daughter|uncle|aunt|cousin|neighbor|roommate|boyfriend|girlfriend|partner|fiancee?)/i,
+          /(?:my|a)\s+(friend|colleague|coworker|boss|brother|sister|mom|dad|mother|father|wife|husband|son|daughter|uncle|aunt|cousin|neighbor|roommate|boyfriend|girlfriend|partner|fiancee?)/i,
+          /(friend|colleague|coworker|boss|brother|sister|mom|dad|mother|father|wife|husband|son|daughter|uncle|aunt|cousin|neighbor|roommate|boyfriend|girlfriend|partner|fiancee?)\s+(?:of mine|from work)/i,
+        ];
+        
+        for (const pattern of relationshipPatterns) {
+          const match = text.match(pattern);
+          if (match && match[1]) {
+            const relationship = match[1].toLowerCase();
+            console.log('[People] Got relationship info for', pendingName, ':', relationship);
+            
+            // Update the person with relationship info
+            if (savePersonToDirectoryRef.current) {
+              savePersonToDirectoryRef.current(pendingName, text, relationship, true);
+            }
+            
+            // Confirm to user
+            if (speakReminderRef.current && isVoiceConnectedRef.current) {
+              speakReminderRef.current(`Got it! I'll remember that ${pendingName} is your ${relationship}!`);
+            }
+            
+            // Clear pending
+            pendingRelationshipInfoRef.current = null;
+            break;
+          }
+        }
+      } else {
+        // Timeout - clear pending
+        pendingRelationshipInfoRef.current = null;
+      }
+    }
+    
+    // === ADD ALL TRANSCRIPTIONS TO VISIBLE MESSAGES ===
+    // Show everything in the chat panel - user wants complete transcript history
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      role: 'user',
+      content: text,
+      timestamp: new Date(),
+    };
+    setMessages(prev => [...prev, userMessage]);
     
   }, [saveTranscript, checkConversationSilence, pendingUnknownSpeakers, autoCreateReminderFromTask, queueSave, pendingNotifications, refreshReminders]);
   
@@ -1999,6 +2299,12 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     savePersonRef.current = savePerson;
   }, [savePerson]);
+
+  // Store checkExistingPerson and savePersonToDirectory in refs for handleTranscript
+  useEffect(() => {
+    checkExistingPersonRef.current = checkExistingPerson;
+    savePersonToDirectoryRef.current = savePersonToDirectory;
+  }, [checkExistingPerson, savePersonToDirectory]);
 
   // Handle AI response from WebRTC
   const handleResponse = useCallback((text: string) => {
@@ -2179,25 +2485,22 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     }
   }, [miraState, isConnected, isMicMonitoring, micNeedsRecovery, startMicMonitoring, stopMicMonitoring]);
 
-  // Voice activity detection in resting mode - triggers speech recognition when someone speaks
+  // CONTINUOUS speech recognition in resting mode - start immediately when entering resting
+  // No voice activity threshold - capture everything for accurate transcription
   useEffect(() => {
-    if (miraState !== 'resting') return;
-    if (!isMicMonitoring) return;
-    
-    // Check if mic level indicates voice activity
-    const now = Date.now();
-    const timeSinceLastActivity = now - lastVoiceActivityTimeRef.current;
-    const isInCooldown = timeSinceLastActivity < VOICE_ACTIVITY_COOLDOWN_MS;
-    
-    if (independentMicLevel >= VOICE_ACTIVITY_THRESHOLD && !isInCooldown) {
-      // Voice activity detected and we're not in cooldown
-      if (!voiceActivityDetectedRef.current && !webSpeechRecognitionRef.current && !isStartingRecognitionRef.current) {
-        voiceActivityDetectedRef.current = true;
-        console.log('[Resting] Voice activity detected (level:', independentMicLevel.toFixed(2), ') - starting speech recognition');
+    if (miraState === 'resting') {
+      // Start speech recognition immediately when entering resting mode
+      if (!webSpeechRecognitionRef.current && !isStartingRecognitionRef.current) {
+        console.log('[Resting] Entering resting mode - starting continuous speech recognition');
+        lastRecognitionActivityRef.current = Date.now(); // Reset activity timestamp
         startRestingSpeechRecognition();
+        startRecognitionKeepalive(); // Start the keepalive monitor
       }
+    } else {
+      // Stop keepalive when leaving resting mode
+      stopRecognitionKeepalive();
     }
-  }, [miraState, isMicMonitoring, independentMicLevel, startRestingSpeechRecognition]);
+  }, [miraState, startRestingSpeechRecognition, startRecognitionKeepalive, stopRecognitionKeepalive]);
 
   // Combined user audio level - use independent mic when in active state but WebRTC not yet connected
   // In resting mode, show the mic level for sphere animation
