@@ -296,6 +296,7 @@ interface MIRAContextType {
   miraState: MIRAState;
   isResting: boolean;
   restingTranscript: string[]; // Transcripts collected during resting mode
+  liveTranscript: string; // Current live/interim transcript being spoken
   activateMira: () => void;
   deactivateMira: () => void;
   idleTimeRemaining: number; // Seconds until idle disconnect
@@ -503,6 +504,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   // Ref to track current miraState for callbacks that may close over stale values
   const miraStateRef = useRef<MIRAState>('active');
   const [restingTranscript, setRestingTranscript] = useState<string[]>([]);
+  const [liveTranscript, setLiveTranscript] = useState<string>(''); // Live interim transcript
   const restingSilenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const webSpeechRecognitionRef = useRef<any>(null);
   const wakeWordConfirmationTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -760,13 +762,22 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       // Update activity timestamp
       lastRecognitionActivityRef.current = Date.now();
       
+      // Build full transcript from all results for live display
+      let fullInterimTranscript = '';
+      
       // Check ALL results, not just the last one
-      for (let i = event.resultIndex; i < event.results.length; i++) {
+      for (let i = 0; i < event.results.length; i++) {
         const result = event.results[i];
         const transcript = result[0].transcript;
         const isFinal = result.isFinal;
         
-        console.log('[Resting] Transcript:', isFinal ? '(FINAL)' : '(interim)', transcript);
+        // Build the complete live transcript (combining all interim + final)
+        fullInterimTranscript += transcript + ' ';
+        
+        // Only log new results (from resultIndex onwards)
+        if (i >= event.resultIndex) {
+          console.log('[Resting] Transcript:', isFinal ? '(FINAL)' : '(interim)', transcript);
+        }
         
         // Check for wake word on BOTH interim and final results for instant response
         const wakeResult = detectWakeWord(transcript);
@@ -776,6 +787,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
           if (wakeResult.confidence >= 0.8) {
             console.log('[Resting] Wake word detected!', isFinal ? '(final)' : '(interim)', 
               'Confidence:', wakeResult.confidence, 'Text:', transcript);
+            setLiveTranscript(''); // Clear live transcript on activation
             activateMiraRef.current(transcript);
             return;
           }
@@ -783,17 +795,21 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
           // Medium confidence on final - still activate
           if (isFinal && wakeResult.confidence >= 0.5) {
             console.log('[Resting] Wake word detected (final)! Confidence:', wakeResult.confidence);
+            setLiveTranscript(''); // Clear live transcript on activation
             activateMiraRef.current(transcript);
             return;
           }
         }
         
         // Only process final results for passive task detection (not wake word)
-        if (isFinal && !wakeResult.detected) {
+        if (isFinal && !wakeResult.detected && i >= event.resultIndex) {
           setRestingTranscript(prev => [...prev.slice(-50), transcript]);
           processRestingTranscriptRef.current(transcript);
         }
       }
+      
+      // Update live transcript with all current speech in real-time
+      setLiveTranscript(fullInterimTranscript.trim());
     };
     
     recognition.onspeechstart = () => {
@@ -804,6 +820,8 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     recognition.onspeechend = () => {
       console.log('[Resting] Speech ended');
       lastRecognitionActivityRef.current = Date.now();
+      // Clear live transcript when speech ends (it should have become final by now)
+      setLiveTranscript('');
     };
     
     recognition.onerror = (event: any) => {
@@ -2910,6 +2928,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     miraState,
     isResting,
     restingTranscript,
+    liveTranscript,
     activateMira,
     deactivateMira,
     idleTimeRemaining, // Seconds until idle disconnect (for visual timer)

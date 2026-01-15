@@ -166,15 +166,15 @@ function CodeOutputsPanel({ isOpen, onClose }: { isOpen: boolean; onClose: () =>
 
 // Resting Transcripts Panel - Shows ambient conversation during resting mode
 function RestingTranscriptsPanel({ isOpen, onClose }: { isOpen: boolean; onClose: () => void }) {
-  const { restingTranscript, isResting, miraState } = useMIRA();
+  const { restingTranscript, liveTranscript, isResting, miraState } = useMIRA();
   const scrollRef = useRef<HTMLDivElement>(null);
   
-  // Auto-scroll to bottom when new transcripts come in
+  // Auto-scroll to bottom when new transcripts come in or live transcript updates
   useEffect(() => {
     if (scrollRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
-  }, [restingTranscript]);
+  }, [restingTranscript, liveTranscript]);
 
   if (!isOpen) return null;
 
@@ -225,7 +225,20 @@ function RestingTranscriptsPanel({ isOpen, onClose }: { isOpen: boolean; onClose
       
       {/* Content */}
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-2">
-        {restingTranscript.length === 0 ? (
+        {/* Live transcript - shows real-time speech as it's being spoken */}
+        {liveTranscript && (
+          <div className="bg-amber-500/10 rounded-lg p-3 border border-amber-500/30 animate-pulse">
+            <div className="flex items-start gap-2">
+              <span className="text-amber-400 text-xs mt-0.5 animate-pulse">●</span>
+              <div className="flex-1">
+                <p className="text-amber-200 text-sm font-medium">{liveTranscript}</p>
+                <p className="text-amber-400/60 text-xs mt-1">Speaking now...</p>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {restingTranscript.length === 0 && !liveTranscript ? (
           <div className="flex flex-col items-center justify-center h-full text-white/40 text-sm">
             <svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" className="mb-3 opacity-50">
               <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" />

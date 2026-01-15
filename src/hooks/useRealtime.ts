@@ -716,13 +716,21 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
       // Only countdown if connected (use ref to avoid stale closure)
       const currentState = stateRef.current;
       
+      // Check if MIRA is actively outputting audio (more reliable than state alone)
+      const miraOutputLevel = outputLevelRef.current;
+      const isMiraAudioPlaying = miraOutputLevel > 0.1; // MIRA audio threshold
+      
       // PAUSE timer while MIRA is connecting (getting ready), speaking, OR response is in progress
-      // Check both state AND isResponseInProgressRef for reliability
-      if (currentState === 'connecting' || currentState === 'speaking' || isResponseInProgressRef.current) {
+      // Check state, isResponseInProgressRef, AND actual output audio level for maximum reliability
+      if (currentState === 'connecting' || currentState === 'speaking' || isResponseInProgressRef.current || isMiraAudioPlaying) {
         // MIRA is getting ready, speaking, or generating response - don't countdown, keep timer paused
         // Reset last tick time so we don't count the paused time
         lastTimerTickRef.current = Date.now();
-        console.log('[Idle] ⏸️ Timer PAUSED (state:', currentState, 'responseInProgress:', isResponseInProgressRef.current, ')');
+        // Also reset the idle timer to full duration while MIRA is speaking
+        // This ensures timer starts fresh AFTER MIRA finishes
+        idleTimerRef.current = IDLE_TIMEOUT_SECONDS;
+        setIdleTimeRemaining(IDLE_TIMEOUT_SECONDS);
+        console.log('[Idle] ⏸️ Timer PAUSED & RESET (state:', currentState, 'responseInProgress:', isResponseInProgressRef.current, 'miraAudio:', miraOutputLevel.toFixed(3), ')');
         return;
       }
       
