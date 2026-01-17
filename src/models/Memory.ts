@@ -21,6 +21,8 @@ export interface IMemory extends Document {
   lastAccessed: Date;
   accessCount: number;
   isArchived: boolean;
+  // Vector embedding for semantic search
+  embedding?: number[];
 }
 
 const MemorySchema = new Schema<IMemory>(
@@ -82,6 +84,11 @@ const MemorySchema = new Schema<IMemory>(
     isArchived: {
       type: Boolean,
       default: false,
+    },
+    // Vector embedding for semantic search (1536 dimensions for text-embedding-3-small)
+    embedding: {
+      type: [Number],
+      select: false, // Don't include in normal queries by default
     },
   },
   {

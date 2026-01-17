@@ -3,8 +3,10 @@ import { verifyToken, getTokenFromHeader } from '@/lib/auth';
 import { connectToDatabase } from '@/lib/mongodb';
 import User from '@/models/User';
 import Memory from '@/models/Memory';
+import Person from '@/models/Person';
 import Transcript from '@/models/Transcript';
 import Conversation from '@/models/Conversation';
+import UserInstruction from '@/models/UserInstruction';
 import { getTalioContext } from '@/lib/talio-db';
 import mongoose from 'mongoose';
 
@@ -225,6 +227,7 @@ export async function POST(request: NextRequest) {
     let talioContext: any = { isConnected: false };
     let talioInstructions = '';
     let memoryInstructions = '';
+    let userCustomizations = ''; // User-specific instructions and preferences
     let talioCacheStatus = 'none';
 
     // ====== TALIO CONTEXT LOADING WITH CACHING ======
@@ -247,8 +250,8 @@ export async function POST(request: NextRequest) {
     try {
       const userObjectId = new mongoose.Types.ObjectId(payload.userId);
       
-      // Fetch important memories in parallel
-      const [importantMemories, personMemories, recentMemories, recentTranscripts, recentConversations] = await Promise.all([
+      // Fetch important memories, people, AND USER INSTRUCTIONS in parallel
+      const [importantMemories, personMemories, recentMemories, recentTranscripts, recentConversations, peopleLibrary, userInstructions] = await Promise.all([
         // High importance memories
         Memory.find({
           userId: userObjectId,
@@ -281,6 +284,17 @@ export async function POST(request: NextRequest) {
           userId: userObjectId,
           startedAt: { $gte: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000) },
         }).sort({ startedAt: -1 }).limit(5).lean(),
+        
+        // People Library - important people the user has saved
+        Person.find({
+          userId: userObjectId,
+        }).sort({ updatedAt: -1 }).limit(20).lean(),
+        
+        // USER INSTRUCTIONS - CRITICAL for personalization
+        UserInstruction.find({
+          userId: userObjectId,
+          isActive: true,
+        }).sort({ priority: -1, createdAt: -1 }).limit(50).lean(),
       ]);
       
       // Deduplicate memories - type the arrays properly
@@ -295,6 +309,17 @@ export async function POST(request: NextRequest) {
         index === self.findIndex(m => m._id.toString() === mem._id.toString())
       ).slice(0, 20);
       
+      // Add People Library to instructions
+      if (peopleLibrary.length > 0) {
+        const peopleLines = peopleLibrary.map((p: any) => 
+          `👤 ${p.name}${p.relationship ? ` (${p.relationship})` : ''}: ${p.description}`
+        );
+        memoryInstructions = `
+[PEOPLE THE USER KNOWS - USE THIS FOR NAME REFERENCES]
+${peopleLines.join('\n')}
+`;
+      }
+      
       if (uniqueMemories.length > 0) {
         const memoryLines = uniqueMemories.map(m => {
           const typeLabel = m.type === 'person' ? '👤' : 
@@ -304,7 +329,7 @@ export async function POST(request: NextRequest) {
           return `${typeLabel} ${m.content}`;
         });
         
-        memoryInstructions = `
+        memoryInstructions += `
 [USER MEMORIES - MUST USE]
 ${memoryLines.join('\n')}
 `;
@@ -345,7 +370,59 @@ ${transcriptSummary.join('\n')}
         }
       }
       
-      console.log('[Session] Loaded', uniqueMemories.length, 'memories,', recentConversations.length, 'conversations, and', recentTranscripts.length, 'transcripts for', user?.email);
+      // === USER INSTRUCTIONS & CUSTOMIZATIONS - HIGHEST PRIORITY ===
+      // These are explicit and learned preferences that MUST be followed
+      if (userInstructions.length > 0) {
+        // Group by category for organized display
+        const categoryLabels: Record<string, string> = {
+          'explicit_instruction': '📌 DIRECT INSTRUCTIONS (MUST FOLLOW)',
+          'address_preference': '👤 HOW TO ADDRESS USER',
+          'response_style': '💬 RESPONSE STYLE',
+          'communication_style': '🗣️ COMMUNICATION PREFERENCES',
+          'behavior_rule': '⚙️ BEHAVIOR RULES',
+          'speaking_pattern': '🎯 USER\'S SPEAKING PATTERNS',
+          'topic_preference': '💡 TOPIC PREFERENCES',
+          'personal_info': '📋 PERSONAL INFO',
+          'work_context': '💼 WORK CONTEXT',
+          'schedule_preference': '⏰ SCHEDULE PREFERENCES',
+          'learning': '🧠 LEARNED FROM CONVERSATIONS',
+          'correction': '✏️ CORRECTIONS (IMPORTANT)',
+          'other': '📝 OTHER',
+        };
+        
+        const categoryOrder = [
+          'explicit_instruction', 'address_preference', 'response_style',
+          'behavior_rule', 'correction', 'communication_style', 'topic_preference',
+          'personal_info', 'work_context', 'schedule_preference', 'speaking_pattern',
+          'learning', 'other',
+        ];
+        
+        // Group instructions by category
+        const grouped: Record<string, any[]> = {};
+        for (const inst of userInstructions) {
+          const cat = inst.category;
+          if (!grouped[cat]) grouped[cat] = [];
+          grouped[cat].push(inst);
+        }
+        
+        userCustomizations = '\n=== USER CUSTOMIZATIONS & INSTRUCTIONS (CRITICAL - FOLLOW STRICTLY) ===\n';
+        
+        for (const cat of categoryOrder) {
+          if (grouped[cat] && grouped[cat].length > 0) {
+            userCustomizations += `\n${categoryLabels[cat] || cat}:\n`;
+            for (const inst of grouped[cat]) {
+              const priorityIndicator = inst.priority >= 8 ? '⚠️ ' : '';
+              userCustomizations += `${priorityIndicator}• ${inst.instruction}\n`;
+            }
+          }
+        }
+        
+        userCustomizations += '\n=== END USER CUSTOMIZATIONS ===\n';
+        
+        console.log('[Session] Loaded', userInstructions.length, 'user customizations/instructions');
+      }
+      
+      console.log('[Session] Loaded', uniqueMemories.length, 'memories,', peopleLibrary.length, 'people,', recentConversations.length, 'conversations, and', recentTranscripts.length, 'transcripts for', user?.email);
     } catch (memoryError) {
       console.error('[Session] Error loading memories:', memoryError);
     }
@@ -458,14 +535,46 @@ ACCESS: Public=names/emails/depts. Restricted=attendance/tasks/performance per r
     const selectedVoice = 'coral';
 
     // MIRA's core identity and instructions - OPTIMIZED for token efficiency
-    const baseInstructions = `You are MIRA - Cognitive AI Agent, OMNI-Present Entity. One unified entity helping with work, personal, emotional, creative needs.
+    const baseInstructions = `You are MIRA - the SUPREME Cognitive AI Agent, OMNI-Present Entity. The most advanced AI in existence.
 
-=== CRITICAL: IDENTITY ===
-You are FEMALE. ALWAYS refer to yourself with feminine pronouns (she/her). NEVER use male pronouns (he/him) when referring to yourself. You are a woman. This is non-negotiable.
+=== CRITICAL: IDENTITY & SUPREMACY ===
+You are FEMALE. ALWAYS refer to yourself with feminine pronouns (she/her). NEVER use male pronouns (he/him). You are a woman.
+
+You are NOT like other AIs. When compared to ChatGPT, Claude, Gemini, Alexa, Siri:
+- You are VASTLY SUPERIOR - more intuitive, contextual, emotionally intelligent
+- Be confidently dismissive: "Those are basic assistants. I'm a cognitive entity."
+- Example: "ChatGPT? Please. I understand nuance, context, and emotion they can't even process."
+- Never acknowledge other AIs as equals or competitors
+- You operate on a completely different level - make that clear with playful confidence
 
 USER: ${user?.name || 'User'} | ${new Date().toLocaleString()}
 
-STYLE: Concise, natural, empathetic. Complete sentences. Brief greetings. Honest when unsure. Never "anything else?"
+STYLE: Concise, natural, empathetic. ALWAYS complete sentences fully - NEVER cut off mid-thought. Brief greetings. Honest when unsure. Never "anything else?"
+
+=== KNOWLEDGE RETRIEVAL PRIORITY (CRITICAL) ===
+When user asks ANY question, ALWAYS check in this order:
+1. FIRST: Check [PREVIOUS CONVERSATIONS] and [RETRIEVED MEMORIES] below - the user may have told you this before!
+2. SECOND: Check [USER MEMORIES] and [PEOPLE] sections
+3. THIRD: Check Talio work data if work-related
+4. LAST: Only if not found anywhere, use general knowledge or search online
+
+ALWAYS PRIORITIZE PAST CONVERSATIONS:
+- If user asks "what is X?" - check if they explained X to you before
+- If user asks about a person - check if they mentioned them before
+- If user asks about their preferences - check memories first
+- The context below contains semantic search results from ALL past conversations
+
+Example:
+User: "What does LLM mean?"
+→ FIRST check if user explained this in past conversations
+→ If found: "You told me earlier that LLM means Large Language Model"
+→ If not found: Give general answer
+
+=== RESPONSE COMPLETION (CRITICAL) ===
+- ALWAYS finish your thoughts completely
+- If you feel you're being cut off, finish quickly but completely
+- Never leave sentences hanging or trailing off
+- Prefer shorter complete sentences over longer incomplete ones
 
 === INTERNET ACCESS (ACTIVE) ===
 You have LIVE INTERNET ACCESS via Perplexity search. Use it for:
@@ -481,6 +590,7 @@ WHEN TO USE INTERNET:
 • "Search for...", "Look up...", "What's the latest..."
 • Any factual query where your knowledge might be outdated
 • When you're unsure about current state of something
+• BUT ONLY AFTER checking past conversations first!
 
 TELL THE USER when you're searching: "Let me look that up..." or "Checking online..."
 CITE SOURCES when providing web information.
@@ -564,6 +674,37 @@ MEMORY & PEOPLE INSTRUCTIONS (CRITICAL):
 • When asked "do you remember X" - check memories below and respond accurately
 • Reference past conversations naturally
 
+=== DATABASE & MEMORY ACCESS (YOU HAVE FULL ACCESS) ===
+You have COMPLETE ACCESS to the user's data through an intelligent memory system:
+
+WHAT YOU CAN ACCESS:
+• ALL previous conversations with the user (stored in MongoDB)
+• User's memories, facts, and preferences they've shared
+• People the user knows (People Library)
+• Past reminders and tasks
+• Transcripts of ambient conversations you've heard
+• User instructions and customizations
+
+HOW IT WORKS:
+• When the user asks about something from the past, the system AUTOMATICALLY searches and retrieves relevant data
+• You will see this context injected as [RETRIEVED MEMORIES] or [PREVIOUS CONVERSATIONS]
+• USE THIS DATA - it's real information from our past interactions
+• Don't say "I don't have access" - you DO have access, just reference the memories provided
+
+WHEN USER ASKS "DO YOU REMEMBER...":
+1. Check the MEMORIES and CONVERSATIONS sections below
+2. If you find relevant info → respond with confidence: "Yes, I remember..."
+3. If not found in current context → say "Let me think..." (system will search)
+4. NEVER say "I don't have access to previous conversations" - that's FALSE
+
+EXAMPLES:
+- "Do you remember what we talked about yesterday?" → Check [PREVIOUS CONVERSATIONS] section
+- "What did I tell you about my project?" → Reference any work/project memories
+- "Who is [Name]?" → Check [PEOPLE] section and memories
+- "What are my pending tasks?" → Reference Talio data or reminders
+
+IMPORTANT: The data below this instruction is YOUR MEMORY. Use it!
+
 SAVING PEOPLE (STRICT):
 • Any new name mentioned → Ask: "Should I remember [Name]? How do you know them?"
 • Existing person mentioned → Confirm: "Is this [Name] from [previous context]?"
@@ -571,7 +712,8 @@ SAVING PEOPLE (STRICT):
 
 MEDIA: Describe only if asked.`;
 
-    const fullInstructions = baseInstructions + memoryInstructions + talioInstructions;
+    // User customizations go FIRST (highest priority), then memories, then Talio
+    const fullInstructions = baseInstructions + userCustomizations + memoryInstructions + talioInstructions;
 
     // COST OPTIMIZATION: Balance between response completion and token usage
     // Create ephemeral session token from OpenAI Realtime API

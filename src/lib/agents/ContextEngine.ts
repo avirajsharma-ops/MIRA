@@ -1,8 +1,10 @@
 import { connectToDatabase } from '@/lib/mongodb';
 import Memory, { IMemory } from '@/models/Memory';
+import Person from '@/models/Person';
 import Conversation from '@/models/Conversation';
 import mongoose from 'mongoose';
 import OpenAI from 'openai';
+import { generateEmbedding, cosineSimilarity } from '@/lib/ai/embeddings';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -32,6 +34,14 @@ export class ContextEngine {
     // Auto-generate tags and emotions if not provided
     const analysis = await this.analyzeMemory(input.content);
 
+    // Generate embedding for vector search
+    let embedding: number[] | undefined;
+    try {
+      embedding = await generateEmbedding(input.content);
+    } catch (error) {
+      console.warn('[ContextEngine] Failed to generate embedding:', error);
+    }
+
     const memory = await Memory.create({
       userId: new mongoose.Types.ObjectId(input.userId),
       type: input.type,
@@ -50,6 +60,7 @@ export class ContextEngine {
         timestamp: new Date(),
         visualContext: input.visualContext,
       },
+      embedding,
     });
 
     return memory;
@@ -100,69 +111,237 @@ Respond in JSON format:
     }
   }
 
+  /**
+   * Get relevant memories using semantic vector search
+   * This is the PRIMARY memory retrieval method - should be used for ALL queries
+   */
   async getRelevantMemories(
     query: string,
     limit: number = 10
   ): Promise<IMemory[]> {
     await connectToDatabase();
 
-    // First, try text search
-    const textSearchResults = await Memory.find(
-      {
+    try {
+      // Generate embedding for the query
+      const queryEmbedding = await generateEmbedding(query);
+
+      // Try MongoDB Atlas Vector Search first (if available)
+      const db = mongoose.connection.db;
+      if (db) {
+        try {
+          const vectorResults = await db.collection('memories').aggregate([
+            {
+              $vectorSearch: {
+                index: 'memory_vector_index',
+                path: 'embedding',
+                queryVector: queryEmbedding,
+                numCandidates: limit * 10,
+                limit: limit * 2,
+                filter: {
+                  userId: new mongoose.Types.ObjectId(this.userId),
+                  isArchived: { $ne: true },
+                },
+              },
+            },
+            {
+              $project: {
+                _id: 1,
+                userId: 1,
+                type: 1,
+                content: 1,
+                importance: 1,
+                source: 1,
+                tags: 1,
+                emotions: 1,
+                context: 1,
+                lastAccessed: 1,
+                accessCount: 1,
+                isArchived: 1,
+                createdAt: 1,
+                updatedAt: 1,
+                score: { $meta: 'vectorSearchScore' },
+              },
+            },
+          ]).toArray();
+
+          if (vectorResults.length > 0) {
+            console.log(`[ContextEngine] Vector search found ${vectorResults.length} memories`);
+            // Update access times in background
+            Memory.updateMany(
+              { _id: { $in: vectorResults.map(m => m._id) } },
+              { $set: { lastAccessed: new Date() }, $inc: { accessCount: 1 } }
+            ).catch(() => {});
+            return vectorResults.slice(0, limit) as unknown as IMemory[];
+          }
+        } catch (vectorError) {
+          // Vector search index not available, fall back to manual similarity
+          console.log('[ContextEngine] Vector search not available, using fallback');
+        }
+      }
+
+      // Fallback: Manual vector similarity search
+      const memoriesWithEmbeddings = await Memory.find({
         userId: new mongoose.Types.ObjectId(this.userId),
         isArchived: false,
-        $text: { $search: query },
-      },
-      { score: { $meta: 'textScore' } }
-    )
-      .sort({ score: { $meta: 'textScore' } })
-      .limit(limit);
+        embedding: { $exists: true, $ne: [] },
+      }).select('+embedding').limit(200);
 
-    if (textSearchResults.length >= limit / 2) {
-      // Skip access time update for speed - do it async
-      Memory.updateMany(
-        { _id: { $in: textSearchResults.map(m => m._id) } },
-        { $set: { lastAccessed: new Date() }, $inc: { accessCount: 1 } }
-      ).catch(() => {}); // Fire and forget
-      return textSearchResults;
+      if (memoriesWithEmbeddings.length > 0) {
+        // Calculate similarity scores
+        const scored = memoriesWithEmbeddings.map(mem => ({
+          memory: mem,
+          similarity: mem.embedding ? cosineSimilarity(queryEmbedding, mem.embedding) : 0,
+        }));
+
+        // Sort by similarity and return top results
+        scored.sort((a, b) => b.similarity - a.similarity);
+        const topMemories = scored.slice(0, limit).map(s => s.memory);
+
+        // Update access times in background
+        Memory.updateMany(
+          { _id: { $in: topMemories.map(m => m._id) } },
+          { $set: { lastAccessed: new Date() }, $inc: { accessCount: 1 } }
+        ).catch(() => {});
+
+        return topMemories;
+      }
+
+      // Last fallback: text search + importance-based retrieval
+      return this.getMemoriesFallback(query, limit);
+    } catch (error) {
+      console.error('[ContextEngine] Memory retrieval error:', error);
+      return this.getMemoriesFallback(query, limit);
+    }
+  }
+
+  /**
+   * Fallback memory retrieval using text search and importance
+   */
+  private async getMemoriesFallback(query: string, limit: number): Promise<IMemory[]> {
+    // Try text search first
+    try {
+      const textSearchResults = await Memory.find(
+        {
+          userId: new mongoose.Types.ObjectId(this.userId),
+          isArchived: false,
+          $text: { $search: query },
+        },
+        { score: { $meta: 'textScore' } }
+      )
+        .sort({ score: { $meta: 'textScore' } })
+        .limit(limit);
+
+      if (textSearchResults.length >= limit / 2) {
+        return textSearchResults;
+      }
+    } catch {
+      // Text search may not be available
     }
 
-    // Fallback: Get high-importance recent memories
-    const recentImportant = await Memory.find({
+    // Get high-importance recent memories
+    return Memory.find({
       userId: new mongoose.Types.ObjectId(this.userId),
       isArchived: false,
     })
       .sort({ importance: -1, lastAccessed: -1 })
       .limit(limit);
-
-    return recentImportant;
   }
 
-  // FAST memory retrieval - no text search, just high-importance recent
+  /**
+   * Get people from the people library for context
+   */
+  async getPeopleContext(limit: number = 10): Promise<string[]> {
+    await connectToDatabase();
+    
+    const people = await Person.find({
+      userId: new mongoose.Types.ObjectId(this.userId),
+    })
+      .sort({ updatedAt: -1 })
+      .limit(limit)
+      .lean();
+
+    return people.map(p => 
+      `${p.name}${p.relationship ? ` (${p.relationship})` : ''}: ${p.description}`
+    );
+  }
+
+  /**
+   * ALWAYS get memory context for any query - this should be called for EVERY chat
+   * Returns memories, people, and recent context
+   */
+  async getFullContext(query: string): Promise<{
+    memories: IMemory[];
+    people: string[];
+    recentTopics: string[];
+  }> {
+    await connectToDatabase();
+
+    // Get all context in parallel
+    const [memories, people, recentContext] = await Promise.all([
+      this.getRelevantMemories(query, 8),
+      this.getPeopleContext(10),
+      this.getRecentConversationContext(2),
+    ]);
+
+    return {
+      memories,
+      people,
+      recentTopics: recentContext.topicsDiscussed,
+    };
+  }
+
+  // FAST memory retrieval - for real-time voice, still does semantic search but lighter
   async getRelevantMemoriesFast(
     query: string,
     limit: number = 5
   ): Promise<IMemory[]> {
     await connectToDatabase();
 
-    // Quick keyword extraction from query
-    const keywords = query.toLowerCase().split(/\s+/).filter(w => w.length > 3);
-    
-    // Build simple regex for keyword matching
-    const keywordRegex = keywords.length > 0 
-      ? new RegExp(keywords.slice(0, 3).join('|'), 'i') 
-      : null;
+    try {
+      // Generate embedding for semantic search
+      const queryEmbedding = await generateEmbedding(query);
 
-    // Single fast query - combine text match with importance
-    const memories = await Memory.find({
-      userId: new mongoose.Types.ObjectId(this.userId),
-      isArchived: false,
-      ...(keywordRegex ? { content: { $regex: keywordRegex } } : {}),
-    })
-      .sort({ importance: -1 })
-      .limit(limit);
+      // Get memories with embeddings (limited for speed)
+      const memoriesWithEmbeddings = await Memory.find({
+        userId: new mongoose.Types.ObjectId(this.userId),
+        isArchived: false,
+        embedding: { $exists: true, $ne: [] },
+      }).select('+embedding').limit(100);
 
-    return memories;
+      if (memoriesWithEmbeddings.length > 0) {
+        // Calculate similarity scores
+        const scored = memoriesWithEmbeddings.map(mem => ({
+          memory: mem,
+          similarity: mem.embedding ? cosineSimilarity(queryEmbedding, mem.embedding) : 0,
+        }));
+
+        // Sort by similarity and return top results
+        scored.sort((a, b) => b.similarity - a.similarity);
+        return scored.slice(0, limit).map(s => s.memory);
+      }
+
+      // Fallback to keyword search
+      const keywords = query.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+      const keywordRegex = keywords.length > 0 
+        ? new RegExp(keywords.slice(0, 3).join('|'), 'i') 
+        : null;
+
+      return Memory.find({
+        userId: new mongoose.Types.ObjectId(this.userId),
+        isArchived: false,
+        ...(keywordRegex ? { content: { $regex: keywordRegex } } : {}),
+      })
+        .sort({ importance: -1 })
+        .limit(limit);
+    } catch {
+      // On any error, fall back to importance-based
+      return Memory.find({
+        userId: new mongoose.Types.ObjectId(this.userId),
+        isArchived: false,
+      })
+        .sort({ importance: -1, lastAccessed: -1 })
+        .limit(limit);
+    }
   }
 
   async getMemoriesByType(type: IMemory['type'], limit: number = 20): Promise<IMemory[]> {

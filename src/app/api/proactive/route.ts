@@ -44,7 +44,7 @@ export async function POST(request: NextRequest) {
 
     // Check if AI should proactively speak
     const lastActivity = new Date(lastActivityTime || Date.now() - 120000);
-    const result = await agent.generateProactiveMessage(lastActivity, visualContext);
+    const result = await agent.generateProactiveMessage(lastActivity);
 
     if (result.shouldSpeak && result.message) {
       return NextResponse.json({

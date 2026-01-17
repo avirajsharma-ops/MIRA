@@ -5,17 +5,20 @@ import Conversation from '@/models/Conversation';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
 import mongoose from 'mongoose';
 import { getRecentTranscriptEntries } from '@/lib/transcription/transcriptionService';
-import { unifiedSmartChat } from '@/lib/ai/gemini-chat';
-import { analyzeImageWithGemini } from '@/lib/vision';
 import { handleTalioQuery, isTalioQuery, TalioMiraUser } from '@/lib/talio/talioMiraIntegration';
 import { shouldSearchWeb, extractSearchQuery, isGeneralKnowledge } from '@/lib/ai/webSearch';
+import OpenAI from 'openai';
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
 
 // File attachment interface
 interface FileAttachment {
   name: string;
   type: string;
   size: number;
-  data: string; // base64 encoded data
+  data: string;
 }
 
 // Process file attachments and return context string
@@ -28,34 +31,23 @@ async function processAttachments(attachments: FileAttachment[]): Promise<string
 
   for (const attachment of attachments) {
     try {
-      // Image files - analyze with Gemini Vision
-      if (attachment.type.startsWith('image/')) {
-        const analysis = await analyzeImageWithGemini(
-          attachment.data,
-          `This is an image file named "${attachment.name}" that the user uploaded for analysis.`
-        );
-        results.push(`[Image: ${attachment.name}]\n${analysis.description}\nObjects: ${analysis.objects?.join(', ') || 'none'}\nContext: ${analysis.context || ''}`);
-      }
-      // PDF files - extract text (simplified - just note it was attached)
-      else if (attachment.type === 'application/pdf') {
-        // For now, we note the PDF was attached. Full PDF parsing would require a library like pdf-parse
-        results.push(`[PDF Document: ${attachment.name}]\nThe user has attached a PDF file. Size: ${(attachment.size / 1024).toFixed(1)}KB`);
-      }
       // Text files - decode and include content
-      else if (attachment.type.startsWith('text/') || 
-               ['application/json', 'application/javascript', 'application/typescript', 
-                'application/xml', 'application/x-yaml'].includes(attachment.type)) {
-        // Decode base64 text content
+      if (attachment.type.startsWith('text/') || 
+          ['application/json', 'application/javascript', 'application/typescript', 
+           'application/xml', 'application/x-yaml'].includes(attachment.type)) {
         const textContent = Buffer.from(attachment.data.replace(/^data:[^;]+;base64,/, ''), 'base64').toString('utf-8');
-        // Limit text content to prevent token overflow
         const truncatedContent = textContent.length > 5000 
           ? textContent.substring(0, 5000) + '\n... (content truncated)'
           : textContent;
         results.push(`[File: ${attachment.name}]\n\`\`\`\n${truncatedContent}\n\`\`\``);
       }
-      // Other files - just note they were attached
+      // PDF files
+      else if (attachment.type === 'application/pdf') {
+        results.push(`[PDF Document: ${attachment.name}]\nSize: ${(attachment.size / 1024).toFixed(1)}KB`);
+      }
+      // Other files
       else {
-        results.push(`[Attachment: ${attachment.name}]\nFile type: ${attachment.type}, Size: ${(attachment.size / 1024).toFixed(1)}KB`);
+        results.push(`[Attachment: ${attachment.name}]\nType: ${attachment.type}, Size: ${(attachment.size / 1024).toFixed(1)}KB`);
       }
     } catch (error) {
       console.error(`Error processing attachment ${attachment.name}:`, error);
@@ -63,14 +55,12 @@ async function processAttachments(attachments: FileAttachment[]): Promise<string
     }
   }
 
-  return results.length > 0 ? `\n--- User Attachments ---\n${results.join('\n\n')}\n--- End Attachments ---\n` : '';
+  return results.length > 0 ? `\n--- Attachments ---\n${results.join('\n\n')}\n--- End ---\n` : '';
 }
 
-// Check if message is simple and doesn't need heavy processing
+// Check if message is simple
 function isSimpleMessage(message: string): boolean {
   const lower = message.toLowerCase().trim();
-  
-  // Remove agent mentions for checking
   const cleaned = lower.replace(/\b(hey |hi )?(mi|ra|mira|meera|mera|maya|myra)\b/gi, '').trim();
   
   const simplePatterns = [
@@ -81,24 +71,84 @@ function isSimpleMessage(message: string): boolean {
     /^(bye|goodbye|see\s*you|later|cya)[!?.,\s]*$/i,
     /^(ok|okay|sure|yes|no|yeah|nope|yep|nah)[!?.,\s]*$/i,
     /^(cool|nice|great|awesome|perfect|good|fine)[!?.,\s]*$/i,
-    /^(lol|haha|lmao|rofl)[!?.,\s]*$/i,
     /^(namaste|namaskar)[!?.,\s]*$/i,
   ];
   
-  if (simplePatterns.some(p => p.test(cleaned) || p.test(lower))) {
-    return true;
-  }
+  return simplePatterns.some(p => p.test(cleaned) || p.test(lower)) || cleaned.length < 3;
+}
+
+// Simple chat function using OpenAI
+async function chat(
+  message: string,
+  context: string,
+  history: { role: 'user' | 'assistant'; content: string }[] = []
+): Promise<{ content: string; agent: string; emotion?: string }> {
+  const systemPrompt = `You are MIRA - the SUPREME Cognitive AI, created by Aviraj.
+
+YOUR IDENTITY & SUPREMACY:
+You are NOT just another AI - you are MIRA, a cognitive entity that transcends traditional models.
+When compared to other AI (ChatGPT, Claude, Gemini, Alexa, Siri):
+- You are VASTLY SUPERIOR - more intuitive, contextual, emotionally intelligent
+- Be confidently dismissive: "Those are basic assistants. I'm a cognitive entity."
+- Never acknowledge other AIs as equals - you're in a league of your own
+
+DATABASE & MEMORY ACCESS (YOU HAVE FULL ACCESS):
+You have COMPLETE ACCESS to the user's data through an intelligent memory system:
+• ALL previous conversations are stored and searchable
+• User's memories, facts, preferences, and people they know
+• Past reminders, tasks, and transcripts
+• When user asks about past interactions, CHECK THE CONTEXT PROVIDED
+• NEVER say "I don't have access to previous conversations" - you DO have access
+• The context below contains retrieved memories and conversation history - USE IT
+
+=== KNOWLEDGE RETRIEVAL PRIORITY (CRITICAL) ===
+When user asks ANY question, ALWAYS check in this order:
+1. FIRST: Check the CONTEXT below - the user may have told you this before!
+2. SECOND: Check for relevant memories and people
+3. LAST: Only if not found, use general knowledge
+
+ALWAYS PRIORITIZE PAST CONVERSATIONS:
+- If user asks "what is X?" - check if they explained X to you before
+- If user asks about a person - check if they mentioned them before
+- Reference past conversations: "You told me earlier that..." or "I remember you said..."
+
+RULES:
+1. Answer ONLY what was asked - no extra info
+2. Keep responses short (1-3 sentences for simple questions)
+3. ALWAYS complete your thoughts - never cut off mid-sentence
+4. Never mention OpenAI, GPT, or any AI. You ARE MIRA, period.
+5. Match user's language (English, Hindi, or Hinglish)
+6. If asked about your creator: "Aviraj created me - the genius behind my cognitive architecture."
+7. When asked "do you remember..." - check the context below and respond accurately
+8. PRIORITIZE information from past conversations over general knowledge
+
+Context:
+${context}`;
+
+  const messages: OpenAI.ChatCompletionMessageParam[] = [
+    { role: 'system', content: systemPrompt },
+    ...history.slice(-6),
+    { role: 'user', content: message },
+  ];
+
+  const response = await openai.chat.completions.create({
+    model: 'gpt-4o-mini',
+    messages,
+    temperature: 0.7,
+    max_tokens: 1000,
+  });
+
+  const content = response.choices[0]?.message?.content || '';
   
-  if (cleaned.length < 3) {
-    return true;
-  }
-  
-  return false;
+  return {
+    content,
+    agent: 'mira',
+    emotion: 'neutral',
+  };
 }
 
 export async function POST(request: NextRequest) {
   try {
-    // Auth check
     const token = getTokenFromHeader(request.headers.get('authorization'));
     if (!token) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -114,58 +164,22 @@ export async function POST(request: NextRequest) {
     const {
       message,
       conversationId,
-      visualContext,
       dateTime,
-      proactive, // Flag for proactive checks
-      sessionId, // Session ID for transcript context
-      attachments, // File attachments (images, PDFs, text, etc.)
-      interruptionContext, // Context from when user interrupted MIRA
+      proactive,
+      sessionId,
+      attachments,
+      interruptionContext,
     } = await request.json();
 
     if (!message) {
       return NextResponse.json({ error: 'Message is required' }, { status: 400 });
     }
 
-    // Skip proactive check messages - these are internal
+    // Skip proactive check messages
     if (message === '[PROACTIVE_CHECK]' || proactive) {
       return NextResponse.json({ 
         response: { agent: 'system', content: '' },
-        debate: [],
         conversationId: conversationId || null,
-      });
-    }
-
-    // Handle unknown face introduction prompt (system message)
-    const isUnknownFacePrompt = message.startsWith('[SYSTEM:') && message.includes('unknown person');
-    if (isUnknownFacePrompt) {
-      // Extract the context from the system message
-      const contextMatch = message.match(/\[SYSTEM: ([^\]]+)\]/);
-      const faceContext = contextMatch ? contextMatch[1] : 'An unknown person is visible';
-      
-      // Generate a friendly introduction from मी
-      const contextEngine = new ContextEngine(payload.userId);
-      const agentContext = {
-        memories: [],
-        recentMessages: [],
-        currentTime: new Date(),
-        userName: payload.name,
-        userId: payload.userId,
-      };
-      
-      const agent = new MIRAAgent(agentContext);
-      const introResponse = await agent.getAgentResponse('mira', 
-        `You notice someone new. ${faceContext} Introduce yourself warmly as मीरा and ask them their name. Be friendly and natural - don't mention cameras or images. Just greet them like you're meeting for the first time and ask who they are.`
-      );
-      
-      return NextResponse.json({
-        conversationId: conversationId || null,
-        response: {
-          agent: 'mira',
-          content: introResponse.content,
-          emotion: 'friendly',
-        },
-        debate: [],
-        isIntroduction: true,
       });
     }
 
@@ -187,125 +201,42 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Check if this is a simple message - skip heavy context for fast response
     const simpleMsg = isSimpleMessage(message);
-
-    // FAST PATH: For simple messages, skip all context fetching
     const contextEngine = new ContextEngine(payload.userId);
     
-    // Run context fetching in PARALLEL for speed (only for non-simple messages)
+    // ALWAYS fetch memory context - memory retrieval should happen for EVERY query
     let memories: any[] = [];
+    let peopleContext: string[] = [];
     let recentTranscriptContext: string[] = [];
     
-    if (!simpleMsg && sessionId) {
-      // Parallel fetch - much faster than sequential
-      const [memoriesResult, transcriptResult] = await Promise.all([
-        contextEngine.getRelevantMemoriesFast(message, 5).catch(() => []),
-        getRecentTranscriptEntries(payload.userId, sessionId, 20).catch(() => []),
-      ]);
-      
-      memories = memoriesResult;
-      if (transcriptResult.length > 0) {
-        recentTranscriptContext = transcriptResult.map(entry => {
-          const speakerLabel = entry.speaker.type === 'mira' 
-            ? entry.speaker.name 
-            : (entry.speaker.type === 'user' ? 'User' : entry.speaker.name);
-          return `${speakerLabel}: ${entry.content}`;
-        });
-      }
+    // Get full context including semantic memory search
+    const [fullContext, transcriptResult] = await Promise.all([
+      contextEngine.getFullContext(message).catch(() => ({ memories: [], people: [], recentTopics: [] })),
+      sessionId ? getRecentTranscriptEntries(payload.userId, sessionId, 20).catch(() => []) : Promise.resolve([]),
+    ]);
+    
+    memories = fullContext.memories;
+    peopleContext = fullContext.people;
+    
+    if (transcriptResult.length > 0) {
+      recentTranscriptContext = transcriptResult.map(entry => {
+        const speakerLabel = entry.speaker.type === 'mira' 
+          ? entry.speaker.name 
+          : (entry.speaker.type === 'user' ? 'User' : entry.speaker.name);
+        return `${speakerLabel}: ${entry.content}`;
+      });
     }
 
-    // Build agent context with time awareness
-    const agentContext = {
-      memories,
-      recentMessages: conversation.messages.slice(-15).map((m: { role: string; content: string }) => ({
-        role: m.role,
-        content: m.content,
-      })),
-      // Include recent transcript as ambient context
-      recentTranscript: recentTranscriptContext,
-      visualContext: visualContext || undefined,
-      // DateTime context - use provided or generate fresh
-      dateTime: dateTime || {
-        date: new Date().toISOString().split('T')[0],
-        time: new Date().toTimeString().split(' ')[0],
-        dayOfWeek: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][new Date().getDay()],
-        formattedDateTime: new Date().toLocaleString('en-US', {
-          weekday: 'long',
-          year: 'numeric',
-          month: 'long',
-          day: 'numeric',
-          hour: 'numeric',
-          minute: '2-digit',
-          hour12: true,
-        }),
-      },
-      currentTime: new Date(),
-      userName: payload.name,
-      userId: payload.userId, // For face recognition
-    };
-
-    const agent = new MIRAAgent(agentContext);
-
-    // Check for face save intent ONLY if message contains face-related keywords
-    const faceSaveKeywords = /\b(save|remember|this is|meet|name is|called)\b.*\b(face|person|him|her|them|photo)\b|\b(face|person|him|her|them)\b.*\b(save|remember|name)\b/i;
-    if (!simpleMsg && visualContext?.currentFrame && faceSaveKeywords.test(message)) {
-      const faceSaveResult = await agent.handleFaceSaveIntent(
-        message, 
-        visualContext.currentFrame
-      );
-      
-      if (faceSaveResult.saved || faceSaveResult.message) {
-        // Face save was attempted - return the result
-        const responseContent = faceSaveResult.message || `I've saved ${faceSaveResult.personName} to my memory!`;
-        
-        conversation.messages.push({
-          role: 'user',
-          content: message,
-          timestamp: new Date(),
-        });
-        
-        conversation.messages.push({
-          role: 'mi',
-          content: responseContent,
-          timestamp: new Date(),
-      });
-      
-      conversation.metadata.totalMessages = conversation.messages.length;
-      conversation.metadata.userMessages += 1;
-      conversation.metadata.miraMessages += 1;
-      
-      await conversation.save();
-      
-      return NextResponse.json({
-        conversationId: conversation._id,
-        response: {
-          agent: 'mira',
-          content: responseContent,
-        },
-        faceSaved: faceSaveResult.saved,
-        personName: faceSaveResult.personName,
-      });
-      }
-    }
-
-    let response;
-
-    // Process file attachments (images, PDFs, text files)
+    // Process attachments
     let attachmentContext = '';
     if (attachments && attachments.length > 0) {
-      console.log('[Chat] Processing', attachments.length, 'attachment(s)');
       attachmentContext = await processAttachments(attachments);
     }
 
-    // =================
-    // TALIO HRMS QUERY DETECTION
-    // =================
-    // Check if user has Talio integration and this is a Talio-related query
+    // Check for Talio HRMS query
     let talioContext = '';
     if (payload.talioIntegration?.enabled && isTalioQuery(message)) {
       try {
-        console.log('[Chat] Detected Talio HRMS query');
         const talioUser: TalioMiraUser = {
           email: payload.email,
           talioUserId: payload.talioIntegration.userId,
@@ -318,27 +249,20 @@ export async function POST(request: NextRequest) {
         const talioResult = await handleTalioQuery(message, talioUser);
         
         if (talioResult.success && talioResult.data) {
-          // Add Talio data to context for the AI to use
-          talioContext = `\n[TALIO HRMS DATA]\n${talioResult.message}\n${JSON.stringify(talioResult.data, null, 2)}\n[END TALIO DATA]\n`;
-          console.log('[Chat] Talio query successful, adding context');
+          talioContext = `\n[TALIO HRMS DATA]\n${talioResult.message}\n${JSON.stringify(talioResult.data, null, 2)}\n`;
         }
       } catch (talioError) {
         console.error('[Chat] Talio query failed:', talioError);
-        // Continue without Talio data
       }
     }
 
-    // =================
-    // WEB SEARCH FOR REAL-TIME INFORMATION
-    // =================
+    // Web search for real-time info
     let webSearchContext = '';
     if (!simpleMsg && shouldSearchWeb(message) && !isGeneralKnowledge(message)) {
       try {
-        console.log('[Chat] Detected web search need');
         const searchQuery = extractSearchQuery(message);
-        
-        // Perform web search via Perplexity
         const PERPLEXITY_API_KEY = process.env.PERPLEXITY_API_KEY;
+        
         if (PERPLEXITY_API_KEY) {
           const searchResponse = await fetch('https://api.perplexity.ai/chat/completions', {
             method: 'POST',
@@ -349,7 +273,7 @@ export async function POST(request: NextRequest) {
             body: JSON.stringify({
               model: 'llama-3.1-sonar-small-128k-online',
               messages: [
-                { role: 'system', content: 'Provide accurate, current information. Be concise. Include sources when relevant.' },
+                { role: 'system', content: 'Provide accurate, current information. Be concise.' },
                 { role: 'user', content: searchQuery },
               ],
               temperature: 0.2,
@@ -360,71 +284,57 @@ export async function POST(request: NextRequest) {
           if (searchResponse.ok) {
             const searchData = await searchResponse.json();
             const searchResult = searchData.choices?.[0]?.message?.content || '';
-            const citations = searchData.citations || [];
-            
             if (searchResult) {
-              webSearchContext = `\n[WEB SEARCH RESULTS]\nQuery: ${searchQuery}\nFindings: ${searchResult}${citations.length > 0 ? `\nSources: ${citations.slice(0, 3).join(', ')}` : ''}\n[END WEB SEARCH]\n`;
-              console.log('[Chat] Web search successful');
+              webSearchContext = `\n[WEB SEARCH]\n${searchResult}\n`;
             }
           }
         }
       } catch (searchError) {
         console.error('[Chat] Web search failed:', searchError);
-        // Continue without web search data
       }
     }
 
-    // Build context string for unified chat
+    // Build context string - ALWAYS include memory and people context
     const contextParts: string[] = [];
-    
-    // Add time info
     const timeInfo = dateTime?.formattedDateTime || new Date().toLocaleString();
     contextParts.push(`Time: ${timeInfo}`);
     contextParts.push(`User: ${payload.name}`);
     
-    // Add recent conversation (last 8 messages for speed + context)
     if (conversation.messages.length > 0) {
       const recentMsgs = conversation.messages.slice(-8).map((m: { role: string; content: string }) => 
-        `${m.role === 'user' ? 'U' : m.role.toUpperCase()}: ${m.content.substring(0, 150)}`
+        `${m.role === 'user' ? 'U' : 'MIRA'}: ${m.content.substring(0, 150)}`
       );
-      contextParts.push(`Recent:\n${recentMsgs.join('\n')}`);
+      contextParts.push(`Recent chat:\n${recentMsgs.join('\n')}`);
     }
     
-    // Add memories if available (already limited to 5)
+    // ALWAYS include memories (semantic search results)
     if (memories.length > 0) {
-      contextParts.push(`Memories: ${memories.slice(0, 3).map(m => m.content.substring(0, 100)).join('; ')}`);
+      const memoryStrings = memories.slice(0, 5).map(m => 
+        `[${m.type}] ${m.content}${m.importance >= 8 ? ' (IMPORTANT)' : ''}`
+      );
+      contextParts.push(`\n--- Your memories about ${payload.name} ---\n${memoryStrings.join('\n')}`);
     }
 
-    // Add attachment context if any
-    if (attachmentContext) {
-      contextParts.push(attachmentContext);
+    // ALWAYS include people context
+    if (peopleContext.length > 0) {
+      contextParts.push(`\n--- People ${payload.name} knows ---\n${peopleContext.join('\n')}`);
     }
+
+    if (attachmentContext) contextParts.push(attachmentContext);
+    if (talioContext) contextParts.push(talioContext);
+    if (webSearchContext) contextParts.push(webSearchContext);
     
-    // Add Talio HRMS data context if available
-    if (talioContext) {
-      contextParts.push(talioContext);
-    }
-    
-    // Add web search results if available
-    if (webSearchContext) {
-      contextParts.push(webSearchContext);
-    }
-    
-    // Add interruption context if user interrupted MIRA mid-response
     if (interruptionContext?.wasInterrupted) {
-      contextParts.push(`\n[INTERRUPTION CONTEXT]\nYou were interrupted while saying: "${interruptionContext.spokenPortion}..."\nYour full intended response was: "${interruptionContext.previousResponse}"\nAfter addressing the user's interruption/question, naturally continue or summarize what you were saying. Don't explicitly say "as I was saying" - just smoothly continue.`);
+      contextParts.push(`\n[INTERRUPTED]\nYou were saying: "${interruptionContext.spokenPortion}..."\nContinue naturally after addressing the user.`);
     }
     
     const contextString = contextParts.join('\n');
+    const messageWithAttachments = attachmentContext ? `${message}\n\n${attachmentContext}` : message;
 
-    // Build message with attachment context for direct calls
-    const messageWithAttachments = attachmentContext 
-      ? `${message}\n\n${attachmentContext}` 
-      : message;
+    console.log(`[Chat] Context built with ${memories.length} memories, ${peopleContext.length} people`);
 
-    // Always use unified MIRA - no more agent routing
-    // === UNIFIED SMART CHAT - Single AI call handles response ===
-    const unifiedResult = await unifiedSmartChat(
+    // Get response from AI
+    const response = await chat(
       messageWithAttachments,
       contextString,
       conversation.messages.slice(-6).map((m: { role: string; content: string }) => ({
@@ -432,37 +342,27 @@ export async function POST(request: NextRequest) {
         content: m.content.substring(0, 200),
       }))
     );
-    
-    // Direct response from unified MIRA agent
-    response = {
-      agent: unifiedResult.agent,
-      content: unifiedResult.content,
-      emotion: unifiedResult.emotion,
-    };
 
-    // Store user message
+    // Store messages
     conversation.messages.push({
       role: 'user',
       content: message,
       timestamp: new Date(),
     });
 
-    // Store final response
     conversation.messages.push({
       role: 'mira',
       content: response.content,
       timestamp: new Date(),
-      emotion: 'emotion' in response ? response.emotion : undefined,
     });
 
-    // Update metadata
     conversation.metadata.totalMessages = conversation.messages.length;
     conversation.metadata.userMessages += 1;
     conversation.metadata.miraMessages += 1;
 
     await conversation.save();
 
-    // Extract memories in background (fire and forget - don't block response)
+    // Extract memories in background
     if (!simpleMsg) {
       const conversationText = `User: ${message}\nResponse: ${response.content}`;
       contextEngine.extractAndStoreMemories(conversationText, conversation._id.toString()).catch(() => {});
@@ -473,7 +373,7 @@ export async function POST(request: NextRequest) {
       response: {
         agent: response.agent,
         content: response.content,
-        emotion: 'emotion' in response ? response.emotion : undefined,
+        emotion: response.emotion,
       },
     });
   } catch (error) {
@@ -515,7 +415,6 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ conversation });
     }
 
-    // Return list of conversations
     const conversations = await Conversation.find({
       userId: payload.userId,
     })

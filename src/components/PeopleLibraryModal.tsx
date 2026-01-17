@@ -1,20 +1,14 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
-import Modal from './Modal';
+import React, { useState, useEffect } from 'react';
 
 interface Person {
-  id: string;
+  _id: string;
   name: string;
+  description: string;
   relationship?: string;
-  distinctiveFeatures?: string[];
-  context?: string;
-  notes?: string[];
-  learnedInfo?: string[];
-  firstSeen?: string;
-  lastSeen?: string;
-  seenCount?: number;
-  isOwner?: boolean;
+  tags: string[];
+  createdAt: string;
 }
 
 interface PeopleLibraryModalProps {
@@ -24,22 +18,33 @@ interface PeopleLibraryModalProps {
 
 export default function PeopleLibraryModal({ isOpen, onClose }: PeopleLibraryModalProps) {
   const [people, setPeople] = useState<Person[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [selectedPerson, setSelectedPerson] = useState<Person | null>(null);
-  const [editMode, setEditMode] = useState(false);
-  const [editForm, setEditForm] = useState({ name: '', relationship: '', context: '' });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  
+  // Form state
+  const [showAddForm, setShowAddForm] = useState(false);
+  const [name, setName] = useState('');
+  const [description, setDescription] = useState('');
+  const [relationship, setRelationship] = useState('');
+  const [saving, setSaving] = useState(false);
 
-  const fetchPeople = useCallback(async () => {
-    if (!isOpen) return;
-    
+  useEffect(() => {
+    if (isOpen) {
+      fetchPeople();
+    }
+  }, [isOpen]);
+
+  const fetchPeople = async () => {
+    setLoading(true);
+    setError('');
     try {
-      setLoading(true);
-      setError(null);
-      const token = localStorage.getItem('mira_token');
-      
-      const response = await fetch('/api/people', {
-        headers: { Authorization: `Bearer ${token}` },
+      const token = localStorage.getItem('mira_auth_token');
+      const params = searchQuery ? `?search=${encodeURIComponent(searchQuery)}` : '';
+      const response = await fetch(`/api/people${params}`, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
       });
 
       if (response.ok) {
@@ -49,298 +54,220 @@ export default function PeopleLibraryModal({ isOpen, onClose }: PeopleLibraryMod
         setError('Failed to load people');
       }
     } catch (err) {
-      setError('Error loading people');
+      setError('Failed to load people');
+      console.error(err);
     } finally {
       setLoading(false);
     }
-  }, [isOpen]);
-
-  useEffect(() => {
-    fetchPeople();
-  }, [fetchPeople]);
-
-  const handleDelete = async (id: string) => {
-    if (!confirm('Are you sure you want to delete this person?')) return;
-    
-    try {
-      const token = localStorage.getItem('mira_token');
-      const response = await fetch(`/api/people?personId=${id}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` },
-      });
-
-      if (response.ok) {
-        setPeople(people.filter(p => p.id !== id));
-        if (selectedPerson?.id === id) setSelectedPerson(null);
-      } else {
-        const errorData = await response.json();
-        console.error('Delete failed:', errorData.error);
-        alert('Failed to delete person: ' + (errorData.error || 'Unknown error'));
-      }
-    } catch (err) {
-      console.error('Delete error:', err);
-      alert('Error deleting person');
-    }
   };
 
-  const handleUpdate = async () => {
-    if (!selectedPerson) return;
-    
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    fetchPeople();
+  };
+
+  const handleAddPerson = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!name.trim() || !description.trim()) return;
+
+    setSaving(true);
+    setError('');
     try {
-      const token = localStorage.getItem('mira_token');
+      const token = localStorage.getItem('mira_auth_token');
       const response = await fetch('/api/people', {
-        method: 'PATCH',
-        headers: { 
-          Authorization: `Bearer ${token}`,
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          personId: selectedPerson.id,
-          name: editForm.name,
-          relationship: editForm.relationship,
-          context: editForm.context,
+          name: name.trim(),
+          description: description.trim(),
+          relationship: relationship.trim() || undefined,
         }),
       });
 
       if (response.ok) {
-        await fetchPeople();
-        setEditMode(false);
+        setName('');
+        setDescription('');
+        setRelationship('');
+        setShowAddForm(false);
+        fetchPeople();
+      } else {
+        const data = await response.json();
+        setError(data.error || 'Failed to add person');
       }
     } catch (err) {
-      console.error('Update error:', err);
+      setError('Failed to add person');
+      console.error(err);
+    } finally {
+      setSaving(false);
     }
   };
 
-  const formatDate = (dateStr?: string) => {
-    if (!dateStr) return 'Never';
-    return new Date(dateStr).toLocaleDateString('en-US', {
-      month: 'short',
-      day: 'numeric',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
+  const handleDelete = async (personId: string, personName: string) => {
+    if (!confirm(`Are you sure you want to delete ${personName}?`)) return;
+
+    try {
+      const token = localStorage.getItem('mira_auth_token');
+      const response = await fetch(`/api/people?id=${personId}`, {
+        method: 'DELETE',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      });
+
+      if (response.ok) {
+        fetchPeople();
+      } else {
+        setError('Failed to delete person');
+      }
+    } catch (err) {
+      setError('Failed to delete person');
+      console.error(err);
+    }
   };
 
-  return (
-    <Modal isOpen={isOpen} onClose={onClose} title="People Library" size="xl">
-      <div className="flex flex-col md:flex-row gap-4 md:gap-6 min-h-[350px] md:min-h-[400px]">
-        {/* People List */}
-        <div className="w-full md:w-1/2 md:border-r border-white/10 md:pr-6">
-          <div className="mb-4 flex items-center justify-between">
-            <span className="text-sm text-white/50">{people.length} people recognized</span>
-            <button
-              onClick={fetchPeople}
-              className="text-sm text-purple-400 hover:text-purple-300 transition-colors"
-            >
-              Refresh
-            </button>
-          </div>
+  if (!isOpen) return null;
 
+  return (
+    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50">
+      <div className="bg-gray-900 border border-gray-700 rounded-2xl p-6 max-w-2xl w-full mx-4 max-h-[80vh] overflow-hidden flex flex-col">
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-semibold text-white">People Library</h2>
+          <button
+            onClick={onClose}
+            className="text-gray-400 hover:text-white transition-colors"
+          >
+            <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Search bar */}
+        <form onSubmit={handleSearch} className="mb-4 flex gap-2">
+          <input
+            type="text"
+            placeholder="Search people..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-4 py-2 text-white placeholder-gray-400 focus:outline-none focus:border-blue-500"
+          />
+          <button
+            type="submit"
+            className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
+          >
+            Search
+          </button>
+          <button
+            type="button"
+            onClick={() => setShowAddForm(!showAddForm)}
+            className="bg-green-600 hover:bg-green-700 text-white px-4 py-2 rounded-lg transition-colors"
+          >
+            {showAddForm ? 'Cancel' : 'Add Person'}
+          </button>
+        </form>
+
+        {/* Add person form */}
+        {showAddForm && (
+          <form onSubmit={handleAddPerson} className="mb-4 p-4 bg-gray-800 rounded-lg border border-gray-700">
+            <div className="mb-3">
+              <label className="block text-sm text-gray-400 mb-1">Name *</label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g., John Smith"
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                required
+              />
+            </div>
+            <div className="mb-3">
+              <label className="block text-sm text-gray-400 mb-1">Description *</label>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                placeholder="e.g., My colleague at TechCorp, works in engineering, likes hiking"
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 resize-none"
+                rows={2}
+                required
+              />
+            </div>
+            <div className="mb-3">
+              <label className="block text-sm text-gray-400 mb-1">Relationship</label>
+              <input
+                type="text"
+                value={relationship}
+                onChange={(e) => setRelationship(e.target.value)}
+                placeholder="e.g., colleague, friend, family"
+                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={saving || !name.trim() || !description.trim()}
+              className="w-full bg-green-600 hover:bg-green-700 disabled:bg-gray-600 disabled:cursor-not-allowed text-white py-2 rounded-lg transition-colors"
+            >
+              {saving ? 'Saving...' : 'Save Person'}
+            </button>
+          </form>
+        )}
+
+        {error && (
+          <div className="mb-4 p-3 bg-red-900/50 border border-red-700 rounded-lg text-red-300 text-sm">
+            {error}
+          </div>
+        )}
+
+        {/* People list */}
+        <div className="flex-1 overflow-y-auto">
           {loading ? (
-            <div className="flex items-center justify-center py-12">
-              <div className="w-8 h-8 border-2 border-purple-500 border-t-transparent rounded-full animate-spin" />
-            </div>
-          ) : error ? (
-            <div className="text-center py-12 text-red-400">
-              {error}
-            </div>
+            <div className="text-center text-gray-400 py-8">Loading...</div>
           ) : people.length === 0 ? (
-            <div className="text-center py-12 text-white/40">
-              <svg xmlns="http://www.w3.org/2000/svg" className="w-12 h-12 mx-auto mb-4 opacity-50" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-              </svg>
-              <p className="text-sm">No people recognized yet</p>
-              <p className="text-xs mt-2 text-white/30">MIRA will remember people as you talk</p>
+            <div className="text-center text-gray-400 py-8">
+              <p>No people saved yet.</p>
+              <p className="text-sm mt-2">Add people to help MIRA remember who&apos;s important to you!</p>
             </div>
           ) : (
-            <div className="space-y-2 max-h-[200px] md:max-h-[400px] overflow-y-auto">
+            <div className="space-y-3">
               {people.map((person) => (
-                <button
-                  key={person.id}
-                  onClick={() => {
-                    setSelectedPerson(person);
-                    setEditForm({
-                      name: person.name,
-                      relationship: person.relationship || '',
-                      context: person.context || '',
-                    });
-                    setEditMode(false);
-                  }}
-                  className={`w-full text-left p-3 rounded-lg transition-colors ${
-                    selectedPerson?.id === person.id
-                      ? 'bg-purple-500/20 border border-purple-500/50'
-                      : 'bg-white/5 hover:bg-white/10 border border-transparent'
-                  }`}
+                <div
+                  key={person._id}
+                  className="bg-gray-800 border border-gray-700 rounded-lg p-4 hover:border-gray-600 transition-colors"
                 >
-                  <div className="flex items-center gap-3">
-                    <div className={`w-10 h-10 rounded-full flex items-center justify-center text-lg font-semibold ${
-                      person.isOwner 
-                        ? 'bg-white text-black'
-                        : 'bg-white/20 text-white/70'
-                    }`}>
-                      {person.name.charAt(0).toUpperCase()}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium text-white truncate">{person.name}</span>
-                        {person.isOwner && (
-                          <span className="text-xs px-1.5 py-0.5 bg-purple-500/30 text-purple-300 rounded">Owner</span>
-                        )}
-                      </div>
+                  <div className="flex justify-between items-start">
+                    <div className="flex-1">
+                      <h3 className="text-white font-medium">{person.name}</h3>
                       {person.relationship && (
-                        <span className="text-sm text-white/50 truncate block">{person.relationship}</span>
+                        <span className="inline-block mt-1 text-xs bg-blue-900/50 text-blue-300 px-2 py-0.5 rounded">
+                          {person.relationship}
+                        </span>
                       )}
+                      <p className="text-gray-400 text-sm mt-2">{person.description}</p>
                     </div>
-                    <span className="text-xs text-white/30">{person.seenCount || 0}x</span>
+                    <button
+                      onClick={() => handleDelete(person._id, person.name)}
+                      className="text-gray-500 hover:text-red-400 transition-colors ml-2"
+                      title="Delete person"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                      </svg>
+                    </button>
                   </div>
-                </button>
+                </div>
               ))}
             </div>
           )}
         </div>
 
-        {/* Person Details */}
-        <div className="w-full md:w-1/2 md:pl-2">
-          {selectedPerson ? (
-            <div className="space-y-4">
-              <div className="flex items-start justify-between">
-                <div className="flex items-center gap-3">
-                  <div className={`w-12 h-12 md:w-14 md:h-14 rounded-full flex items-center justify-center text-xl md:text-2xl font-bold ${
-                    selectedPerson.isOwner 
-                      ? 'bg-white text-black'
-                      : 'bg-white/20 text-white/70'
-                  }`}>
-                    {selectedPerson.name.charAt(0).toUpperCase()}
-                  </div>
-                  <div>
-                    {editMode ? (
-                      <input
-                        type="text"
-                        value={editForm.name}
-                        onChange={(e) => setEditForm({ ...editForm, name: e.target.value })}
-                        className="bg-white/10 border border-white/20 rounded px-2 py-1 text-white text-lg font-semibold w-full"
-                      />
-                    ) : (
-                      <h3 className="text-lg font-semibold text-white">{selectedPerson.name}</h3>
-                    )}
-                    {editMode ? (
-                      <input
-                        type="text"
-                        value={editForm.relationship}
-                        onChange={(e) => setEditForm({ ...editForm, relationship: e.target.value })}
-                        placeholder="Relationship (e.g., Friend, Family)"
-                        className="bg-white/10 border border-white/20 rounded px-2 py-1 text-white/70 text-sm w-full mt-1"
-                      />
-                    ) : (
-                      <p className="text-sm text-white/50">{selectedPerson.relationship || 'No relationship set'}</p>
-                    )}
-                  </div>
-                </div>
-                <div className="flex gap-2">
-                  {editMode ? (
-                    <>
-                      <button
-                        onClick={handleUpdate}
-                        className="px-3 py-1.5 bg-green-500/20 hover:bg-green-500/30 text-green-400 rounded-lg text-sm transition-colors"
-                      >
-                        Save
-                      </button>
-                      <button
-                        onClick={() => setEditMode(false)}
-                        className="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white/70 rounded-lg text-sm transition-colors"
-                      >
-                        Cancel
-                      </button>
-                    </>
-                  ) : (
-                    <>
-                      <button
-                        onClick={() => setEditMode(true)}
-                        className="px-3 py-1.5 bg-white/10 hover:bg-white/20 text-white/70 rounded-lg text-sm transition-colors"
-                      >
-                        Edit
-                      </button>
-                      {!selectedPerson.isOwner && (
-                        <button
-                          onClick={() => handleDelete(selectedPerson.id)}
-                          className="px-3 py-1.5 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg text-sm transition-colors"
-                        >
-                          Delete
-                        </button>
-                      )}
-                    </>
-                  )}
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4 text-sm">
-                <div className="bg-white/5 rounded-lg p-3">
-                  <span className="text-white/40 block mb-1">First Seen</span>
-                  <span className="text-white/80">{formatDate(selectedPerson.firstSeen)}</span>
-                </div>
-                <div className="bg-white/5 rounded-lg p-3">
-                  <span className="text-white/40 block mb-1">Last Seen</span>
-                  <span className="text-white/80">{formatDate(selectedPerson.lastSeen)}</span>
-                </div>
-              </div>
-
-              {/* Context */}
-              <div>
-                <span className="text-sm text-white/40 block mb-2">Context / Notes</span>
-                {editMode ? (
-                  <textarea
-                    value={editForm.context}
-                    onChange={(e) => setEditForm({ ...editForm, context: e.target.value })}
-                    placeholder="Add context about this person..."
-                    className="w-full bg-white/5 border border-white/20 rounded-lg p-3 text-white/80 text-sm resize-none h-20"
-                  />
-                ) : (
-                  <div className="bg-white/5 rounded-lg p-3 text-white/70 text-sm">
-                    {selectedPerson.context || 'No context added'}
-                  </div>
-                )}
-              </div>
-
-              {/* Learned Info */}
-              {selectedPerson.learnedInfo && selectedPerson.learnedInfo.length > 0 && (
-                <div>
-                  <span className="text-sm text-white/40 block mb-2">Things MIRA Learned</span>
-                  <div className="bg-white/5 rounded-lg p-3 space-y-2">
-                    {selectedPerson.learnedInfo.map((info, idx) => (
-                      <div key={idx} className="flex items-start gap-2 text-sm text-white/70">
-                        <span className="text-purple-400">•</span>
-                        {info}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* Distinctive Features */}
-              {selectedPerson.distinctiveFeatures && selectedPerson.distinctiveFeatures.length > 0 && (
-                <div>
-                  <span className="text-sm text-white/40 block mb-2">Distinctive Features</span>
-                  <div className="flex flex-wrap gap-2">
-                    {selectedPerson.distinctiveFeatures.map((feature, idx) => (
-                      <span key={idx} className="px-2 py-1 bg-cyan-500/20 text-cyan-300 rounded text-xs">
-                        {feature}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="flex flex-col items-center justify-center h-full text-white/40">
-              <svg xmlns="http://www.w3.org/2000/svg" className="w-16 h-16 mb-4 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-              </svg>
-              <p className="text-sm">Select a person to view details</p>
-            </div>
-          )}
+        <div className="mt-4 pt-4 border-t border-gray-700 text-center">
+          <p className="text-xs text-gray-500">
+            People you add here will be available in MIRA&apos;s memory for context in conversations.
+          </p>
         </div>
       </div>
-    </Modal>
+    </div>
   );
 }

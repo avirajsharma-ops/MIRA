@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
+import { transcribeAudio as transcribeWithElevenLabs, isElevenLabsConfigured } from '@/lib/transcription/elevenlabs';
 
-// OpenAI Whisper transcription with improved settings
-async function transcribeAudio(audioBuffer: Buffer, language?: string): Promise<{ text: string; detectedLanguage: string }> {
+// OpenAI Whisper transcription (fallback)
+async function transcribeWithWhisper(audioBuffer: Buffer, language?: string): Promise<{ text: string; detectedLanguage: string }> {
   const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
   
   if (!OPENAI_API_KEY) {
@@ -81,19 +82,43 @@ export async function POST(request: NextRequest) {
 
     const arrayBuffer = await audioFile.arrayBuffer();
     const buffer = Buffer.from(arrayBuffer);
+    const mimeType = audioFile.type || 'audio/webm';
 
     // Log audio size for debugging
-    console.log(`[Transcribe] Processing audio: ${buffer.length} bytes`);
+    console.log(`[Transcribe] Processing audio: ${buffer.length} bytes, type: ${mimeType}`);
 
-    // Pass language hint if provided, otherwise let Whisper auto-detect
-    const result = await transcribeAudio(buffer, preferredLanguage || undefined);
+    let result: { text: string; detectedLanguage: string };
+    let engine = 'whisper';
+
+    // Try ElevenLabs first for best accuracy (if configured)
+    if (isElevenLabsConfigured()) {
+      try {
+        const elevenResult = await transcribeWithElevenLabs(buffer, mimeType);
+        result = {
+          text: elevenResult.text,
+          detectedLanguage: elevenResult.language || 'auto',
+        };
+        engine = 'elevenlabs';
+        console.log(`[Transcribe] ElevenLabs succeeded in ${Date.now() - startTime}ms`);
+      } catch (elevenError) {
+        console.warn('[Transcribe] ElevenLabs failed, falling back to Whisper:', elevenError);
+        // Fall back to Whisper
+        result = await transcribeWithWhisper(buffer, preferredLanguage || undefined);
+        engine = 'whisper';
+      }
+    } else {
+      // ElevenLabs not configured, use Whisper directly
+      result = await transcribeWithWhisper(buffer, preferredLanguage || undefined);
+    }
     
     const duration = Date.now() - startTime;
-    console.log(`[Transcribe] Completed in ${duration}ms: "${result.text.substring(0, 50)}..."`);
+    console.log(`[Transcribe] Completed with ${engine} in ${duration}ms: "${result.text.substring(0, 50)}..."`);
 
     return NextResponse.json({
       text: result.text,
       detectedLanguage: result.detectedLanguage,
+      engine,
+      latencyMs: duration,
     });
   } catch (error) {
     console.error('[Transcribe] Error:', error);

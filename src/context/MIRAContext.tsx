@@ -1,7 +1,6 @@
 'use client';
 
 import React, { createContext, useContext, useState, useCallback, useEffect, useRef } from 'react';
-import { useMediaCapture } from '@/hooks';
 import { useMIRAEngine } from '@/hooks/useMIRAEngine';
 import { useMicrophoneLevel } from '@/hooks/useMicrophoneLevel';
 import { isMobileDevice } from '@/lib/utils/deviceDetection';
@@ -19,11 +18,6 @@ interface Message {
   content: string;
   timestamp: Date;
   emotion?: string;
-}
-
-interface VisualContext {
-  cameraDescription?: string;
-  screenDescription?: string;
 }
 
 export interface FileAttachment {
@@ -352,17 +346,6 @@ interface MIRAContextType {
   reminderJustCreated: boolean; // Flag to trigger auto-open of ReminderBar
   clearReminderCreatedFlag: () => void;
 
-  // Media
-  isCameraActive: boolean;
-  isScreenActive: boolean;
-  cameraStream: MediaStream | null;
-  startCamera: () => Promise<MediaStream | null>;
-  stopCamera: () => void;
-  startScreenCapture: () => Promise<MediaStream | null>;
-  stopScreenCapture: () => void;
-  cameraVideoRef: React.RefObject<HTMLVideoElement | null>;
-  visualContext: VisualContext;
-
   // Time
   dateTime: DateTimeContext;
 }
@@ -442,9 +425,6 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     console.log('[MIRA] Auto-initiate is always enabled');
   }, []);
 
-  // Visual context
-  const [visualContext, setVisualContext] = useState<VisualContext>({});
-
   // DateTime state
   const [dateTime, setDateTime] = useState<DateTimeContext>(() => getCurrentDateTime());
 
@@ -505,6 +485,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   const miraStateRef = useRef<MIRAState>('active');
   const [restingTranscript, setRestingTranscript] = useState<string[]>([]);
   const [liveTranscript, setLiveTranscript] = useState<string>(''); // Live interim transcript
+  const liveTranscriptTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Timeout to clear stuck live transcript
   const restingSilenceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const webSpeechRecognitionRef = useRef<any>(null);
   const wakeWordConfirmationTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -748,7 +729,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     const recognition = new SpeechRecognition();
     recognition.continuous = true;
     recognition.interimResults = true; // Get results as user speaks for faster wake word detection
-    recognition.lang = 'en-IN'; // Support Hinglish
+    recognition.lang = 'hi-IN'; // Use Hindi (India) for better Hindi recognition - also handles English well
     recognition.maxAlternatives = 3; // Get multiple alternatives for better wake word matching
     
     recognition.onstart = () => {
@@ -809,7 +790,20 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       }
       
       // Update live transcript with all current speech in real-time
-      setLiveTranscript(fullInterimTranscript.trim());
+      const trimmedTranscript = fullInterimTranscript.trim();
+      setLiveTranscript(trimmedTranscript);
+      
+      // Set a timeout to clear the live transcript if it gets stuck
+      // This prevents the "Speaking now..." from staying forever
+      if (liveTranscriptTimeoutRef.current) {
+        clearTimeout(liveTranscriptTimeoutRef.current);
+      }
+      if (trimmedTranscript) {
+        liveTranscriptTimeoutRef.current = setTimeout(() => {
+          console.log('[Resting] Clearing stuck live transcript');
+          setLiveTranscript('');
+        }, 5000); // Clear after 5 seconds of no updates
+      }
     };
     
     recognition.onspeechstart = () => {
@@ -820,6 +814,11 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     recognition.onspeechend = () => {
       console.log('[Resting] Speech ended');
       lastRecognitionActivityRef.current = Date.now();
+      // Clear the stuck transcript timeout
+      if (liveTranscriptTimeoutRef.current) {
+        clearTimeout(liveTranscriptTimeoutRef.current);
+        liveTranscriptTimeoutRef.current = null;
+      }
       // Clear live transcript when speech ends (it should have become final by now)
       setLiveTranscript('');
     };
@@ -1644,6 +1643,86 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     console.log('[AutoSave] Queued save for:', speakerType, content.slice(0, 50));
   }, [queueSave]);
   
+  // === INSTRUCTION DETECTION & LEARNING ===
+  // Detect when user gives instructions/preferences and save them automatically
+  const detectAndSaveInstructions = useCallback(async (userMessage: string, miraResponse?: string) => {
+    if (!userMessage.trim() || userMessage.length < 10) return;
+    
+    const token = localStorage.getItem('mira_token');
+    if (!token) return;
+    
+    // Quick pattern-based detection for explicit instructions
+    const lowerText = userMessage.toLowerCase();
+    
+    // Instruction detection patterns
+    const instructionPatterns = [
+      // Explicit instructions
+      { pattern: /(?:always|never|don'?t)\s+(?:call me|address me|say|tell|ask|remind|forget)/i, category: 'explicit_instruction', priority: 9 },
+      { pattern: /(?:from now on|going forward|remember that)\s+/i, category: 'explicit_instruction', priority: 9 },
+      { pattern: /(?:i want you to|i need you to|please always|please never)/i, category: 'explicit_instruction', priority: 9 },
+      { pattern: /(?:can you|could you)\s+(?:always|never|stop|start)/i, category: 'explicit_instruction', priority: 8 },
+      { pattern: /(?:stop|start|begin|quit)\s+(?:calling|saying|asking|telling)/i, category: 'correction', priority: 8 },
+      
+      // Address preferences
+      { pattern: /(?:call me|my name is|i'?m called|address me as|refer to me as)\s+(\w+)/i, category: 'address_preference', priority: 10 },
+      { pattern: /(?:don'?t call me|stop calling me|i hate being called)\s+(\w+)/i, category: 'address_preference', priority: 10 },
+      
+      // Response style
+      { pattern: /(?:be more|be less)\s+(?:formal|casual|brief|detailed|funny|serious)/i, category: 'response_style', priority: 8 },
+      { pattern: /(?:shorter|longer|more detailed|less wordy)\s+(?:answers|responses|replies)/i, category: 'response_style', priority: 8 },
+      
+      // Personal info
+      { pattern: /(?:i work|i'?m a|my job is|i do)\s+(?:at|as|in)\s+/i, category: 'personal_info', priority: 6 },
+      { pattern: /(?:i live|i'?m from|i'?m based|my home is)\s+(?:in|at)\s+/i, category: 'personal_info', priority: 6 },
+      { pattern: /(?:my (?:wife|husband|partner|girlfriend|boyfriend|family|kids?|children|mom|dad|brother|sister))/i, category: 'personal_info', priority: 7 },
+      
+      // Schedule preferences
+      { pattern: /(?:i'?m a|i'?m more of a)\s+(?:morning|night|early|late)\s+(?:person|bird|owl)/i, category: 'schedule_preference', priority: 7 },
+      { pattern: /(?:don'?t|never)\s+(?:disturb|bother|remind|call)\s+me\s+(?:before|after|in the)/i, category: 'schedule_preference', priority: 8 },
+      
+      // Topic preferences
+      { pattern: /(?:i love|i hate|i'?m interested in|i don'?t care about)/i, category: 'topic_preference', priority: 5 },
+      { pattern: /(?:don'?t talk|stop talking|let'?s not discuss)\s+(?:about|to me about)/i, category: 'topic_preference', priority: 7 },
+      
+      // Corrections
+      { pattern: /(?:no|that'?s wrong|incorrect|not like that|i said)/i, category: 'correction', priority: 8 },
+      { pattern: /(?:i didn'?t|that'?s not what i)\s+(?:mean|say|want|ask)/i, category: 'correction', priority: 8 },
+    ];
+    
+    // Check for matches
+    for (const { pattern, category, priority } of instructionPatterns) {
+      if (pattern.test(userMessage)) {
+        // Found a potential instruction - save it
+        try {
+          const response = await fetch('/api/user-instructions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              category,
+              instruction: userMessage.trim(),
+              originalContext: miraResponse ? `User said: "${userMessage}" | MIRA responded: "${miraResponse}"` : userMessage,
+              priority,
+              source: category === 'correction' ? 'correction' : 'explicit',
+              confidence: 0.85,
+              tags: [category],
+            }),
+          });
+          
+          if (response.ok) {
+            console.log('[Instructions] ✓ Saved user instruction:', category, '-', userMessage.substring(0, 50));
+          }
+        } catch (err) {
+          console.error('[Instructions] Failed to save:', err);
+        }
+        
+        break; // Only save once per message
+      }
+    }
+  }, []);
+  
   // Initialize speaker manager when user is authenticated
   useEffect(() => {
     if (user?.id && !speakerManagerRef.current) {
@@ -1855,32 +1934,61 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     
     // === CHECK FOR GOODBYE/REST COMMANDS ===
     // These commands should immediately put MIRA into resting state with a brief acknowledgement
+    // Patterns can match ANYWHERE in sentence for natural conversation flow
     const lowerTextForGoodbye = text.toLowerCase().trim();
     const goodbyePatterns = [
-      /\b(?:bye|goodbye|good\s*bye)\s*(?:mira|mirror)?\b/i,
+      // === EXPLICIT GOODBYE PHRASES (work anywhere) ===
+      /\b(?:bye|goodbye|good\s*bye|bye\s*bye)\s*(?:mira|mirror)?\b/i,
+      /\b(?:mira|mirror)\s*(?:,?\s*)?(?:bye|goodbye)\b/i,
+      
+      // === STOP/SILENCE COMMANDS (work anywhere) ===
       /\b(?:stop\s+talking|stop\s+listening|be\s+quiet|shut\s+up)\b/i,
-      /\b(?:talk\s+to\s+you\s+later|ttyl|later|see\s+you|see\s+ya)\b/i,
-      /\b(?:go\s+to\s+(?:sleep|rest)|take\s+a\s+(?:break|rest))\s*(?:mira|mirror)?\b/i,
-      /\b(?:mira|mirror)\s*(?:,?\s*)?(?:go\s+to\s+(?:sleep|rest)|rest|sleep)\b/i,
-      /\b(?:that'?s?\s+(?:all|it)|i'?m\s+done|we'?re\s+done)\s*(?:mira|mirror|for\s+now)?\b/i,
-      /\b(?:ok|okay)\s*(?:mira|mirror)?\s*(?:,?\s*)?(?:that'?s?\s+(?:all|it|enough)|i'?m\s+done)\b/i,
-      /\b(?:thanks?\s+)?(?:mira|mirror)\s*(?:,?\s*)?(?:bye|goodbye|later|that'?s?\s+all)\b/i,
-      /\b(?:i\s+don'?t\s+need\s+you|leave\s+me\s+alone)\b/i,
-      // Additional natural goodbye phrases
-      /\b(?:go\s+away|stop|enough|quiet|hush)\b/i,
-      /\b(?:no\s+(?:more|thanks)|not\s+now)\b/i,
-      /\b(?:i'?m\s+(?:good|fine|okay)|all\s+(?:good|done|set))\b/i,
-      /\b(?:dismiss|exit|close|end\s+(?:session|conversation|chat))\b/i,
-      /\b(?:thank\s+you|thanks)[\s,]*(?:that'?s?\s+all|bye|goodbye)?\s*$/i,
+      /\b(?:mira|mirror)\s*(?:,?\s*)?(?:stop|quiet|silence|shush|shhh)\b/i,
+      /\b(?:stop|quiet|silence|shush|shhh)\s*(?:mira|mirror)\b/i,
+      
+      // === SEE YOU LATER PHRASES (work anywhere) ===
+      /\b(?:talk\s+to\s+you\s+later|ttyl|catch\s+you\s+later|see\s+you\s+later|see\s+ya\s+later)\b/i,
+      /\blater\s+(?:mira|mirror)\b/i,
+      /\b(?:mira|mirror)\s*(?:,?\s*)?later\b/i,
+      
+      // === SLEEP/REST COMMANDS (work anywhere) ===
+      /\b(?:go\s+to\s+(?:sleep|rest|bed)|take\s+a\s+(?:break|rest|nap))\s*(?:mira|mirror)?\b/i,
+      /\b(?:mira|mirror)\s*(?:,?\s*)?(?:go\s+to\s+(?:sleep|rest)|rest|sleep|nap)\b/i,
+      /\b(?:time\s+to\s+(?:sleep|rest)|need\s+(?:some\s+)?(?:quiet|silence|peace))\b/i,
+      
+      // === DONE/FINISHED PHRASES (work anywhere) ===
+      /\b(?:that'?s?\s+(?:all|it|enough)|i'?m\s+done|we'?re\s+done|all\s+done)\s*(?:mira|mirror|for\s+now|here)?\b/i,
+      /\b(?:done\s+(?:talking|chatting|for\s+now)|finished\s+(?:talking|chatting|here))\b/i,
+      /\b(?:no\s+more\s+(?:questions|help|assistance)|that\s+will\s+be\s+all)\b/i,
+      
+      // === DISMISSAL PHRASES (work anywhere) ===
+      /\b(?:i\s+don'?t\s+need\s+you|leave\s+me\s+alone|go\s+away)\s*(?:mira|mirror)?\b/i,
+      /\b(?:you\s+can\s+go|you'?re\s+dismissed|dismiss(?:ed)?)\s*(?:mira|mirror)?\b/i,
+      /\b(?:mira|mirror)\s*(?:,?\s*)?(?:you\s+can\s+go|dismissed?)\b/i,
+      
+      // === END SESSION PHRASES (work anywhere) ===
+      /\b(?:end\s+(?:session|conversation|chat)|close\s+(?:mira|this)|exit\s+(?:mira|chat))\b/i,
+      /\b(?:sign\s+off|logging\s+off|heading\s+out)\b/i,
+      
+      // === GOODNIGHT/GOODBYE VARIATIONS (work anywhere) ===
+      /\b(?:good\s*night|night\s*night|nighty\s*night)\s*(?:mira|mirror)?\b/i,
+      /\b(?:mira|mirror)\s*(?:,?\s*)?(?:good\s*night|night)\b/i,
+      /\b(?:gotta\s+go|got\s+to\s+go|have\s+to\s+go|need\s+to\s+go)\b/i,
+      
+      // === THANK YOU + DISMISSAL (work anywhere) ===
+      /\b(?:thanks?|thank\s+you)\s*(?:,?\s*)?(?:mira|mirror)?\s*(?:,?\s*)?(?:that'?s?\s+(?:all|it|enough)|bye|goodbye|i'?m\s+(?:done|good))\b/i,
+      /\b(?:thanks?|thank\s+you)\s+(?:mira|mirror)\s*(?:,?\s*)?(?:bye|goodbye|that'?s?\s+all)?$/i,
     ];
     
-    const isGoodbyeCommand = goodbyePatterns.some(p => p.test(lowerTextForGoodbye));
+    // Find which pattern matched (for debugging)
+    const matchedPattern = goodbyePatterns.find(p => p.test(lowerTextForGoodbye));
+    const isGoodbyeCommand = !!matchedPattern;
     
     // Check for goodbye in any active state (active, listening, speaking, thinking)
     const isInActiveState = miraState !== 'resting';
     
     if (isGoodbyeCommand && isInActiveState) {
-      console.log('[MIRA] Goodbye command detected:', text, '- current state:', miraState);
+      console.log('[MIRA] Goodbye command detected:', text, '- matched pattern:', matchedPattern?.source, '- current state:', miraState);
       
       // Save this to transcript
       saveTranscript(text, 'user');
@@ -1935,6 +2043,10 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     // === ALWAYS save transcript to database for memory ===
     // This captures everything the user says, regardless of whether it's directed at MIRA
     saveTranscript(text, 'user');
+    
+    // === DETECT AND SAVE USER INSTRUCTIONS ===
+    // Automatically learn from user's instructions and preferences
+    detectAndSaveInstructions(text);
     
     // Process through speaker detection
     if (speakerManagerRef.current) {
@@ -2055,20 +2167,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     
     // === PROACTIVE NAME DETECTION AND PEOPLE SAVING ===
     // Detect when user mentions a person's name and save to People directory
-    // This ensures we capture all names mentioned in conversation
-    const nameDetectionPatterns = [
-      // Direct introductions: "This is John", "Meet Sarah", "His name is Mike"
-      /(?:this is|that's|meet|his name is|her name is|their name is|called)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)/i,
-      // Possessive mentions: "my friend John", "my brother Mike", "my colleague Sarah"
-      /(?:my|our)\s+(?:friend|colleague|coworker|boss|brother|sister|mom|dad|mother|father|wife|husband|son|daughter|uncle|aunt|cousin|neighbor|roommate|boyfriend|girlfriend|partner|fiancee?)\s+([A-Z][a-z]+)/i,
-      // Talking about someone: "John said", "Sarah thinks", "Mike told me"
-      /([A-Z][a-z]+)\s+(?:said|told|thinks|wants|asked|called|texted|messaged|mentioned)/i,
-      // Actions with someone: "met John", "saw Sarah", "talked to Mike", "with Emily"
-      /(?:met|saw|visited|called|texted|messaged|talked to|spoke with|with|from)\s+([A-Z][a-z]+)/i,
-      // Simple mentions in context: "John and I", "me and Sarah"
-      /([A-Z][a-z]+)\s+and\s+(?:I|me|we)/i,
-      /(?:I|me|we)\s+and\s+([A-Z][a-z]+)/i,
-    ];
+    // This handles MULTIPLE people mentioned in a SINGLE sentence
     
     // Common words that look like names but aren't
     const nonNameWords = new Set([
@@ -2079,122 +2178,328 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       'september', 'october', 'november', 'december', 'today', 'tomorrow', 'yesterday',
       'morning', 'afternoon', 'evening', 'night', 'hello', 'hey', 'hi', 'bye',
       'please', 'thanks', 'thank', 'sorry', 'just', 'really', 'actually', 'basically',
+      'well', 'like', 'know', 'think', 'want', 'need', 'have', 'been', 'being',
+      'also', 'then', 'now', 'here', 'there', 'some', 'any', 'all', 'each',
+      'india', 'america', 'london', 'paris', 'delhi', 'mumbai', 'bangalore',
+      'google', 'apple', 'amazon', 'microsoft', 'facebook', 'instagram', 'twitter',
     ]);
     
-    // Detect names from patterns
-    for (const pattern of nameDetectionPatterns) {
-      const match = text.match(pattern);
-      if (match && match[1]) {
-        const detectedName = match[1].trim();
-        const lowerName = detectedName.toLowerCase();
-        
-        // Skip if it's a common word or too short
-        if (nonNameWords.has(lowerName) || detectedName.length < 2) {
-          continue;
+    // Relationship words for detection
+    const relationshipWords = [
+      'friend', 'friends', 'best friend', 'close friend',
+      'colleague', 'colleagues', 'coworker', 'coworkers', 'boss', 'manager', 'teammate',
+      'brother', 'brothers', 'sister', 'sisters', 'sibling', 'siblings',
+      'mom', 'mother', 'dad', 'father', 'parent', 'parents',
+      'wife', 'husband', 'spouse', 'partner', 'fiance', 'fiancee',
+      'son', 'daughter', 'child', 'children', 'kid', 'kids',
+      'uncle', 'aunt', 'cousin', 'cousins', 'nephew', 'niece',
+      'grandma', 'grandmother', 'grandpa', 'grandfather', 'grandparent',
+      'neighbor', 'neighbours', 'roommate', 'roommates',
+      'boyfriend', 'girlfriend', 'ex', 'crush',
+      'teacher', 'professor', 'mentor', 'student',
+      'doctor', 'dentist', 'therapist', 'trainer',
+    ];
+    
+    // Helper function to extract all name-relationship pairs from text
+    const extractPeopleFromText = (inputText: string): Array<{ name: string; relationship?: string; context: string }> => {
+      const people: Array<{ name: string; relationship?: string; context: string }> = [];
+      const seenNames = new Set<string>();
+      
+      // Normalize text for processing
+      const normalizedText = inputText.trim();
+      
+      // Pattern 1: "My [relationship] [Name]" - e.g., "my friend John", "my brother Mike"
+      const possessivePattern = /(?:my|our)\s+((?:best\s+)?(?:close\s+)?(?:friend|colleague|coworker|boss|manager|brother|sister|mom|dad|mother|father|wife|husband|son|daughter|uncle|aunt|cousin|neighbor|roommate|boyfriend|girlfriend|partner|fiancee?|teacher|mentor))\s+([A-Z][a-z]+)/gi;
+      let match;
+      while ((match = possessivePattern.exec(normalizedText)) !== null) {
+        const relationship = match[1].toLowerCase().trim();
+        const name = match[2].trim();
+        const lowerName = name.toLowerCase();
+        if (!nonNameWords.has(lowerName) && name.length >= 2 && !seenNames.has(lowerName)) {
+          seenNames.add(lowerName);
+          people.push({ name, relationship, context: match[0] });
         }
-        
-        console.log('[People] Detected name in conversation:', detectedName);
-        
-        // Check if this person already exists in our People directory
-        (async () => {
-          try {
-            if (!checkExistingPersonRef.current || !savePersonToDirectoryRef.current) {
-              console.log('[People] Refs not ready yet, skipping person detection');
-              return;
+      }
+      
+      // Pattern 2: "[Name] is my [relationship]" - e.g., "John is my friend", "Sarah is my sister"
+      const reversePattern = /([A-Z][a-z]+)\s+(?:is|are)\s+(?:my|our|a)\s+((?:best\s+)?(?:close\s+)?(?:friend|colleague|coworker|boss|manager|brother|sister|mom|dad|mother|father|wife|husband|son|daughter|uncle|aunt|cousin|neighbor|roommate|boyfriend|girlfriend|partner|fiancee?|teacher|mentor))/gi;
+      while ((match = reversePattern.exec(normalizedText)) !== null) {
+        const name = match[1].trim();
+        const relationship = match[2].toLowerCase().trim();
+        const lowerName = name.toLowerCase();
+        if (!nonNameWords.has(lowerName) && name.length >= 2 && !seenNames.has(lowerName)) {
+          seenNames.add(lowerName);
+          people.push({ name, relationship, context: match[0] });
+        }
+      }
+      
+      // Pattern 3: List of names with relationships - e.g., "John, Mike, and Sarah are my friends"
+      const listWithRelationPattern = /([A-Z][a-z]+(?:\s*,\s*[A-Z][a-z]+)*(?:\s*,?\s*and\s+[A-Z][a-z]+)?)\s+(?:are|is)\s+(?:my|our|all my)\s+((?:best\s+)?(?:close\s+)?(?:friends?|colleagues?|coworkers?|brothers?|sisters?|cousins?))/gi;
+      while ((match = listWithRelationPattern.exec(normalizedText)) !== null) {
+        const namesStr = match[1];
+        const relationship = match[2].toLowerCase().trim().replace(/s$/, ''); // Remove plural
+        // Split names by comma and "and"
+        const names = namesStr.split(/\s*,\s*|\s+and\s+/i).filter(n => n.trim());
+        for (const name of names) {
+          const trimmedName = name.trim();
+          const lowerName = trimmedName.toLowerCase();
+          if (!nonNameWords.has(lowerName) && trimmedName.length >= 2 && !seenNames.has(lowerName) && /^[A-Z][a-z]+$/.test(trimmedName)) {
+            seenNames.add(lowerName);
+            people.push({ name: trimmedName, relationship, context: match[0] });
+          }
+        }
+      }
+      
+      // Pattern 4: Names with inline relationships - e.g., "John (friend)", "Sarah, who is my sister"
+      const inlineRelationPattern = /([A-Z][a-z]+)\s*(?:\(|\s+who\s+is\s+(?:my\s+)?|\s+,\s*(?:my\s+)?)(friend|colleague|coworker|boss|brother|sister|mom|dad|mother|father|wife|husband|son|daughter|uncle|aunt|cousin|neighbor|roommate|boyfriend|girlfriend|partner)/gi;
+      while ((match = inlineRelationPattern.exec(normalizedText)) !== null) {
+        const name = match[1].trim();
+        const relationship = match[2].toLowerCase().trim();
+        const lowerName = name.toLowerCase();
+        if (!nonNameWords.has(lowerName) && name.length >= 2 && !seenNames.has(lowerName)) {
+          seenNames.add(lowerName);
+          people.push({ name, relationship, context: match[0] });
+        }
+      }
+      
+      // Pattern 5: Simple name mentions with action verbs - "met John", "saw Sarah", "called Mike"
+      const actionPattern = /(?:met|saw|visited|called|texted|messaged|talked to|spoke with|spoken to|know|knew|meeting)\s+([A-Z][a-z]+)/gi;
+      while ((match = actionPattern.exec(normalizedText)) !== null) {
+        const name = match[1].trim();
+        const lowerName = name.toLowerCase();
+        if (!nonNameWords.has(lowerName) && name.length >= 2 && !seenNames.has(lowerName)) {
+          seenNames.add(lowerName);
+          people.push({ name, relationship: undefined, context: match[0] });
+        }
+      }
+      
+      // Pattern 6: Direct introductions - "This is John", "That's Sarah", "Meet Mike"
+      const introPattern = /(?:this is|that's|that is|meet|introducing)\s+([A-Z][a-z]+)/gi;
+      while ((match = introPattern.exec(normalizedText)) !== null) {
+        const name = match[1].trim();
+        const lowerName = name.toLowerCase();
+        if (!nonNameWords.has(lowerName) && name.length >= 2 && !seenNames.has(lowerName)) {
+          seenNames.add(lowerName);
+          people.push({ name, relationship: undefined, context: match[0] });
+        }
+      }
+      
+      // Pattern 7: Names with possessive actions - "John's birthday", "Sarah's party"
+      const possessiveActionPattern = /([A-Z][a-z]+)'s\s+(?:birthday|party|wedding|house|place|work|office|car|phone|message|call|text)/gi;
+      while ((match = possessiveActionPattern.exec(normalizedText)) !== null) {
+        const name = match[1].trim();
+        const lowerName = name.toLowerCase();
+        if (!nonNameWords.has(lowerName) && name.length >= 2 && !seenNames.has(lowerName)) {
+          seenNames.add(lowerName);
+          people.push({ name, relationship: undefined, context: match[0] });
+        }
+      }
+      
+      // Pattern 8: Subject names - "John said", "Sarah thinks", "Mike told me"
+      const subjectPattern = /([A-Z][a-z]+)\s+(?:said|told|thinks|wants|asked|called|texted|messaged|mentioned|suggested|recommended)/gi;
+      while ((match = subjectPattern.exec(normalizedText)) !== null) {
+        const name = match[1].trim();
+        const lowerName = name.toLowerCase();
+        if (!nonNameWords.has(lowerName) && name.length >= 2 && !seenNames.has(lowerName)) {
+          seenNames.add(lowerName);
+          people.push({ name, relationship: undefined, context: match[0] });
+        }
+      }
+      
+      // Pattern 9: "and" connections - "John and I", "me and Sarah", "John, Sarah, and Mike"
+      const andPattern = /([A-Z][a-z]+(?:\s*,\s*[A-Z][a-z]+)*)\s+and\s+(?:I|me|we)/gi;
+      while ((match = andPattern.exec(normalizedText)) !== null) {
+        const names = match[1].split(/\s*,\s*/);
+        for (const name of names) {
+          const trimmedName = name.trim();
+          const lowerName = trimmedName.toLowerCase();
+          if (!nonNameWords.has(lowerName) && trimmedName.length >= 2 && !seenNames.has(lowerName) && /^[A-Z][a-z]+$/.test(trimmedName)) {
+            seenNames.add(lowerName);
+            people.push({ name: trimmedName, relationship: undefined, context: match[0] });
+          }
+        }
+      }
+      
+      return people;
+    };
+    
+    // Extract all people from the transcript
+    const detectedPeople = extractPeopleFromText(text);
+    
+    if (detectedPeople.length > 0) {
+      console.log('[People] Detected', detectedPeople.length, 'people in conversation:', detectedPeople.map(p => `${p.name}${p.relationship ? ` (${p.relationship})` : ''}`).join(', '));
+      
+      // Process each detected person asynchronously
+      const peopleToAskAbout: string[] = [];
+      
+      (async () => {
+        try {
+          if (!checkExistingPersonRef.current || !savePersonToDirectoryRef.current) {
+            console.log('[People] Refs not ready yet, skipping person detection');
+            return;
+          }
+          
+          for (const person of detectedPeople) {
+            const { name: detectedName, relationship, context } = person;
+            const lowerName = detectedName.toLowerCase();
+            
+            // Check cooldown to avoid spam
+            const lastAskTime = personAskCooldownRef.current.get(lowerName) || 0;
+            const now = Date.now();
+            const cooldownMs = 60 * 1000; // 1 minute cooldown
+            
+            if (now - lastAskTime <= cooldownMs) {
+              console.log('[People] Skipping', detectedName, '- on cooldown');
+              continue;
             }
+            
+            personAskCooldownRef.current.set(lowerName, now);
             
             const existingCheck = await checkExistingPersonRef.current(detectedName);
             
             if (existingCheck.exists && existingCheck.person) {
-              // Person exists - confirm if talking about the same person
-              console.log('[People] Found existing person:', existingCheck.person.name);
+              console.log('[People] Person exists:', existingCheck.person.name);
               
-              // If relationship is known, MIRA can mention it
-              if (existingCheck.person.relationship) {
-                console.log('[People] Known relationship:', existingCheck.person.relationship);
-                // Don't need to ask, we know who they are
-              } else {
-                // We have the name but no relationship - could ask to confirm
-                // But only if we haven't asked recently (use cooldown)
-                const lastAskTime = personAskCooldownRef.current.get(lowerName) || 0;
-                const now = Date.now();
-                const cooldownMs = 5 * 60 * 1000; // 5 minute cooldown
-                
-                if (now - lastAskTime > cooldownMs && speakReminderRef.current && isVoiceConnectedRef.current) {
-                  personAskCooldownRef.current.set(lowerName, now);
-                  // Optionally ask about relationship - but not every time
-                }
+              // If we have new relationship info and they don't have one, update
+              if (relationship && !existingCheck.person.relationship) {
+                console.log('[People] Updating existing person with relationship:', relationship);
+                await savePersonToDirectoryRef.current(detectedName, context, relationship, true);
               }
             } else {
-              // NEW PERSON - Ask about relationship and save immediately
-              console.log('[People] New person detected:', detectedName, '- will ask about relationship');
+              // NEW PERSON - Save immediately
+              console.log('[People] Saving new person:', detectedName, relationship ? `as ${relationship}` : '');
+              await savePersonToDirectoryRef.current(detectedName, context, relationship, true);
               
-              // Check cooldown to avoid asking repeatedly
-              const lastAskTime = personAskCooldownRef.current.get(lowerName) || 0;
-              const now = Date.now();
-              const cooldownMs = 60 * 1000; // 1 minute cooldown for new person prompts
-              
-              if (now - lastAskTime > cooldownMs) {
-                personAskCooldownRef.current.set(lowerName, now);
-                
-                // Save the person immediately with basic info
-                await savePersonToDirectoryRef.current(detectedName, text, undefined, true);
-                
-                // Ask MIRA to inquire about the relationship
-                if (speakReminderRef.current && isVoiceConnectedRef.current) {
-                  const askPrompt = `I noticed you mentioned ${detectedName}! Who is ${detectedName} to you? Are they a friend, family member, colleague? I'd love to remember them for you!`;
-                  speakReminderRef.current(askPrompt);
-                  
-                  // Mark that we're expecting relationship info for this person
-                  pendingRelationshipInfoRef.current = { name: detectedName, askedAt: now };
-                }
+              // If no relationship was provided, add to list to ask about
+              if (!relationship) {
+                peopleToAskAbout.push(detectedName);
               }
             }
-          } catch (err) {
-            console.error('[People] Error checking/saving person:', err);
           }
-        })();
-        
-        // Only process first name found to avoid spam
-        break;
-      }
+          
+          // If there are new people without relationships, ask about them
+          if (peopleToAskAbout.length > 0 && speakReminderRef.current && isVoiceConnectedRef.current) {
+            if (peopleToAskAbout.length === 1) {
+              const askPrompt = `I noticed you mentioned ${peopleToAskAbout[0]}! Who is ${peopleToAskAbout[0]} to you?`;
+              speakReminderRef.current(askPrompt);
+              pendingRelationshipInfoRef.current = { name: peopleToAskAbout[0], askedAt: Date.now() };
+            } else if (peopleToAskAbout.length <= 3) {
+              // Ask about multiple people
+              const namesStr = peopleToAskAbout.slice(0, -1).join(', ') + ' and ' + peopleToAskAbout[peopleToAskAbout.length - 1];
+              const askPrompt = `I've saved ${namesStr} to your contacts! Would you like to tell me who they are to you?`;
+              speakReminderRef.current(askPrompt);
+              // Store multiple pending relationships
+              pendingRelationshipInfoRef.current = { name: peopleToAskAbout.join(','), askedAt: Date.now() };
+            } else {
+              // Too many - just confirm save
+              const askPrompt = `I've saved ${peopleToAskAbout.length} new people to your contacts: ${peopleToAskAbout.slice(0, 3).join(', ')} and others. You can add relationship details anytime!`;
+              speakReminderRef.current(askPrompt);
+            }
+          }
+        } catch (err) {
+          console.error('[People] Error processing people:', err);
+        }
+      })();
     }
     
     // === CHECK IF USER IS PROVIDING RELATIONSHIP INFO ===
     // If we recently asked about someone, check if this response contains relationship info
+    // This now handles MULTIPLE people if comma-separated names were stored
     if (pendingRelationshipInfoRef.current) {
-      const { name: pendingName, askedAt } = pendingRelationshipInfoRef.current;
+      const { name: pendingNameStr, askedAt } = pendingRelationshipInfoRef.current;
       const timeSinceAsk = Date.now() - askedAt;
+      const pendingNames = pendingNameStr.split(',').map(n => n.trim()).filter(n => n);
       
-      // Only process if within 30 seconds of asking
-      if (timeSinceAsk < 30000) {
-        const relationshipPatterns = [
-          /(?:he|she|they)'?s?\s+(?:my|a)\s+(friend|colleague|coworker|boss|brother|sister|mom|dad|mother|father|wife|husband|son|daughter|uncle|aunt|cousin|neighbor|roommate|boyfriend|girlfriend|partner|fiancee?)/i,
-          /(?:my|a)\s+(friend|colleague|coworker|boss|brother|sister|mom|dad|mother|father|wife|husband|son|daughter|uncle|aunt|cousin|neighbor|roommate|boyfriend|girlfriend|partner|fiancee?)/i,
-          /(friend|colleague|coworker|boss|brother|sister|mom|dad|mother|father|wife|husband|son|daughter|uncle|aunt|cousin|neighbor|roommate|boyfriend|girlfriend|partner|fiancee?)\s+(?:of mine|from work)/i,
-        ];
-        
-        for (const pattern of relationshipPatterns) {
-          const match = text.match(pattern);
-          if (match && match[1]) {
-            const relationship = match[1].toLowerCase();
-            console.log('[People] Got relationship info for', pendingName, ':', relationship);
+      // Only process if within 60 seconds of asking (extended for multiple people)
+      if (timeSinceAsk < 60000) {
+        // Process relationship info asynchronously
+        (async () => {
+          try {
+            // Enhanced patterns to catch relationship info for multiple people
+            const relationshipPatterns = [
+              // "he's my friend", "she's my sister", "they're my colleagues"
+              /(?:he|she|they)'?(?:s|re)?\s+(?:my|a)\s+((?:best\s+)?(?:close\s+)?(?:friend|colleague|coworker|boss|brother|sister|mom|dad|mother|father|wife|husband|son|daughter|uncle|aunt|cousin|neighbor|roommate|boyfriend|girlfriend|partner|fiancee?)s?)/i,
+              // "my friend", "my colleagues", "friends of mine"
+              /(?:my|a)\s+((?:best\s+)?(?:close\s+)?(?:friend|colleague|coworker|boss|brother|sister|mom|dad|mother|father|wife|husband|son|daughter|uncle|aunt|cousin|neighbor|roommate|boyfriend|girlfriend|partner|fiancee?)s?)/i,
+              // "friend of mine", "colleagues from work"
+              /((?:best\s+)?(?:close\s+)?(?:friend|colleague|coworker|boss|brother|sister|mom|dad|mother|father|wife|husband|son|daughter|uncle|aunt|cousin|neighbor|roommate|boyfriend|girlfriend|partner|fiancee?)s?)\s+(?:of mine|from work|from school|from college)/i,
+              // Just the relationship word alone: "friends", "colleagues"
+              /^((?:best\s+)?(?:close\s+)?(?:friend|colleague|coworker|boss|brother|sister|mom|dad|mother|father|wife|husband|son|daughter|uncle|aunt|cousin|neighbor|roommate|boyfriend|girlfriend|partner|fiancee?)s?)$/i,
+              // "all friends", "they're all colleagues"
+              /(?:all|both)\s+((?:best\s+)?(?:close\s+)?(?:friend|colleague|coworker|boss|brother|sister|mom|dad|mother|father|wife|husband|son|daughter|uncle|aunt|cousin|neighbor|roommate|boyfriend|girlfriend|partner|fiancee?)s?)/i,
+            ];
             
-            // Update the person with relationship info
-            if (savePersonToDirectoryRef.current) {
-              savePersonToDirectoryRef.current(pendingName, text, relationship, true);
+            // Also try to extract name-specific relationships from complex responses
+            // e.g., "John is my friend, Mike is my brother, Sarah is my colleague"
+            const specificRelationshipPattern = /([A-Z][a-z]+)\s+(?:is|are)\s+(?:my|a)\s+((?:best\s+)?(?:close\s+)?(?:friend|colleague|coworker|boss|brother|sister|mom|dad|mother|father|wife|husband|son|daughter|uncle|aunt|cousin|neighbor|roommate|boyfriend|girlfriend|partner|fiancee?))/gi;
+            let specificMatch;
+            const specificRelationships: Map<string, string> = new Map();
+            
+            while ((specificMatch = specificRelationshipPattern.exec(text)) !== null) {
+              const name = specificMatch[1].trim();
+              const relationship = specificMatch[2].toLowerCase().trim();
+              // Check if this name is in our pending list
+              if (pendingNames.some(pn => pn.toLowerCase() === name.toLowerCase())) {
+                specificRelationships.set(name.toLowerCase(), relationship);
+              }
             }
             
-            // Confirm to user
-            if (speakReminderRef.current && isVoiceConnectedRef.current) {
-              speakReminderRef.current(`Got it! I'll remember that ${pendingName} is your ${relationship}!`);
+            // If we found specific relationships, apply them
+            if (specificRelationships.size > 0) {
+              console.log('[People] Found specific relationships:', Object.fromEntries(specificRelationships));
+              
+              const updates: string[] = [];
+              for (const [nameLower, relationship] of specificRelationships) {
+                const originalName = pendingNames.find(pn => pn.toLowerCase() === nameLower) || nameLower;
+                if (savePersonToDirectoryRef.current) {
+                  await savePersonToDirectoryRef.current(originalName, text, relationship.replace(/s$/, ''), true);
+                  updates.push(`${originalName} as your ${relationship.replace(/s$/, '')}`);
+                }
+              }
+              
+              if (updates.length > 0 && speakReminderRef.current && isVoiceConnectedRef.current) {
+                speakReminderRef.current(`Got it! I've saved ${updates.join(', ')}!`);
+              }
+              
+              pendingRelationshipInfoRef.current = null;
+            } else {
+              // Try general relationship patterns (applies to all pending names)
+              for (const pattern of relationshipPatterns) {
+                const match = text.match(pattern);
+                if (match && match[1]) {
+                  let relationship = match[1].toLowerCase().trim();
+                  // Remove trailing 's' for plural
+                  relationship = relationship.replace(/s$/, '');
+                  console.log('[People] Got relationship info for', pendingNames.join(', '), ':', relationship);
+                  
+                  // Update ALL pending people with this relationship
+                  if (savePersonToDirectoryRef.current) {
+                    for (const pendingName of pendingNames) {
+                      await savePersonToDirectoryRef.current(pendingName, text, relationship, true);
+                    }
+                  }
+                  
+                  // Confirm to user
+                  if (speakReminderRef.current && isVoiceConnectedRef.current) {
+                    if (pendingNames.length === 1) {
+                      speakReminderRef.current(`Got it! I'll remember that ${pendingNames[0]} is your ${relationship}!`);
+                    } else {
+                      const namesStr = pendingNames.slice(0, -1).join(', ') + ' and ' + pendingNames[pendingNames.length - 1];
+                      speakReminderRef.current(`Got it! I'll remember that ${namesStr} are your ${relationship}s!`);
+                    }
+                  }
+                  
+                  // Clear pending
+                  pendingRelationshipInfoRef.current = null;
+                  break;
+                }
+              }
             }
-            
-            // Clear pending
+          } catch (err) {
+            console.error('[People] Error processing relationship info:', err);
             pendingRelationshipInfoRef.current = null;
-            break;
           }
-        }
+        })();
       } else {
         // Timeout - clear pending
         pendingRelationshipInfoRef.current = null;
@@ -2211,7 +2516,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     };
     setMessages(prev => [...prev, userMessage]);
     
-  }, [saveTranscript, checkConversationSilence, pendingUnknownSpeakers, autoCreateReminderFromTask, queueSave, pendingNotifications, refreshReminders]);
+  }, [saveTranscript, checkConversationSilence, pendingUnknownSpeakers, autoCreateReminderFromTask, queueSave, pendingNotifications, refreshReminders, detectAndSaveInstructions]);
   
   // Check if a person with similar name exists
   const checkExistingPerson = useCallback(async (name: string): Promise<{ exists: boolean; person?: any }> => {
@@ -2324,11 +2629,55 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     savePersonToDirectoryRef.current = savePersonToDirectory;
   }, [checkExistingPerson, savePersonToDirectory]);
 
+  // Track last response to prevent duplicates
+  const lastSavedResponseRef = useRef<string>('');
+  const lastResponseTimeRef = useRef<number>(0);
+  const recentResponsesRef = useRef<Set<string>>(new Set()); // Track recent responses for dedup
+
   // Handle AI response from WebRTC
   const handleResponse = useCallback((text: string) => {
     if (!text.trim()) return;
     
-    console.log('[MIRA] Response:', text);
+    // Normalize text for comparison (remove extra whitespace, lowercase)
+    const normalizedText = text.trim().toLowerCase().replace(/\s+/g, ' ');
+    const textPrefix = normalizedText.substring(0, 50); // Use first 50 chars as fingerprint
+    
+    // === DEDUPLICATION: Prevent saving the same/similar response multiple times ===
+    const now = Date.now();
+    const timeSinceLastResponse = now - lastResponseTimeRef.current;
+    
+    // Check if we've seen this response recently (within 10 seconds)
+    if (recentResponsesRef.current.has(textPrefix)) {
+      console.log('[MIRA] ⚠️ Skipping duplicate response (seen recently):', text.substring(0, 50));
+      return;
+    }
+    
+    // Check for duplicate or very similar responses within 5 seconds
+    if (timeSinceLastResponse < 5000) {
+      const lastNormalized = lastSavedResponseRef.current.trim().toLowerCase().replace(/\s+/g, ' ');
+      // Check if this is the same response or a substring of the last one
+      if (lastNormalized === normalizedText || 
+          lastNormalized.includes(normalizedText) ||
+          normalizedText.includes(lastNormalized) ||
+          // Also check for partial match (first 30 chars)
+          (normalizedText.length > 30 && lastNormalized.startsWith(normalizedText.substring(0, 30)))) {
+        console.log('[MIRA] ⚠️ Skipping similar response:', text.substring(0, 50));
+        return;
+      }
+    }
+    
+    // Track this response
+    recentResponsesRef.current.add(textPrefix);
+    // Clean up old entries after 10 seconds
+    setTimeout(() => {
+      recentResponsesRef.current.delete(textPrefix);
+    }, 10000);
+    
+    // Update deduplication tracking
+    lastSavedResponseRef.current = text;
+    lastResponseTimeRef.current = now;
+    
+    console.log('[MIRA] ✓ Response:', text.substring(0, 80));
     
     // Save MIRA's response to transcript database (background)
     saveTranscript(text, 'mira', 'MIRA');
@@ -2601,51 +2950,6 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
       setMiraState('active');
     }
   }, [isSpeaking, isListening, miraState]);
-
-  // Media capture
-  const handleCameraFrame = useCallback(async (imageBase64: string) => {
-    if (isMobileDevice()) return;
-    // Camera frames available for future use
-  }, []);
-
-  const handleScreenFrame = useCallback(async (imageBase64: string) => {
-    try {
-      const token = localStorage.getItem('mira_token');
-      const response = await fetch('/api/vision', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ imageBase64, type: 'screen' }),
-      });
-
-      if (response.ok) {
-        const { analysis } = await response.json();
-        setVisualContext(prev => ({
-          ...prev,
-          screenDescription: analysis.description,
-        }));
-      }
-    } catch (error) {
-      console.error('Screen analysis error:', error);
-    }
-  }, []);
-
-  const {
-    isCameraActive,
-    isScreenActive,
-    cameraStream,
-    startCamera,
-    stopCamera,
-    startScreenCapture,
-    stopScreenCapture,
-    cameraVideoRef,
-  } = useMediaCapture({
-    onCameraFrame: handleCameraFrame,
-    onScreenFrame: handleScreenFrame,
-    captureInterval: 10000,
-  });
 
   // Load conversation history from database for AI context
   const loadConversationHistory = useCallback(async () => {
@@ -2983,17 +3287,6 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     refreshReminders,
     reminderJustCreated,
     clearReminderCreatedFlag,
-
-    // Media
-    isCameraActive,
-    isScreenActive,
-    cameraStream,
-    startCamera,
-    stopCamera,
-    startScreenCapture,
-    stopScreenCapture,
-    cameraVideoRef,
-    visualContext,
 
     // Time
     dateTime,

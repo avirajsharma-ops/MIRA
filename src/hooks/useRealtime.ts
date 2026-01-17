@@ -8,6 +8,12 @@ const CONSECUTIVE_SPEECH_SAMPLES_TO_RESET = 4; // Need 4 consecutive high sample
 const SPEECH_CHECK_INTERVAL_MS = 250; // Check audio level every 250ms (so 4 samples = 1 second)
 const IDLE_TIMEOUT_SECONDS = 15; // 10 seconds of silence = idle
 
+// === RESPONSE RETRY CONFIG ===
+const MAX_RESPONSE_RETRIES = 3; // Maximum number of retry attempts for incomplete responses
+const RESPONSE_TIMEOUT_MS = 45000; // 45 seconds max for a response before considering it stuck
+const MIN_RESPONSE_LENGTH = 15; // Minimum characters expected for a "complete" response
+const INCOMPLETE_SENTENCE_COOLDOWN_MS = 500; // Wait before retrying incomplete sentence
+
 interface RealtimeConfig {
   voice?: 'mira' | 'aks';
   onTranscript?: (text: string) => void;
@@ -69,6 +75,20 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
   // Track if a response is in progress to avoid conflicts
   const isResponseInProgressRef = useRef(false);
   const pendingSpeakQueueRef = useRef<string[]>([]);
+  const speakingStateTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Safety timeout for stuck speaking state
+  
+  // === RESPONSE RETRY STATE ===
+  const currentResponseTextRef = useRef<string>(''); // Accumulated response text
+  const lastUserInputRef = useRef<string>(''); // Last user input for retry context
+  const responseRetryCountRef = useRef<number>(0); // Current retry count
+  const responseStartTimeRef = useRef<number>(0); // When the current response started
+  const responseTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Timeout for stuck responses
+  const wasResponseInterruptedRef = useRef<boolean>(false); // Track if response was cut off
+  
+  // === RESPONSE DEDUPLICATION ===
+  const lastSentResponseRef = useRef<string>(''); // Track last sent response to prevent duplicates
+  const lastSentResponseTimeRef = useRef<number>(0); // Time of last sent response
+  const processedResponseIdsRef = useRef<Set<string>>(new Set()); // Track processed response IDs
   
   // === SIMPLE IDLE DETECTION STATE ===
   const idleTimerRef = useRef<number>(IDLE_TIMEOUT_SECONDS); // Current countdown value
@@ -249,6 +269,26 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
     stateRef.current = newState;
     setState(newState);
     onStateChangeRef.current?.(newState);
+    
+    // === SAFETY TIMEOUT: Prevent stuck speaking state ===
+    // Clear any existing speaking timeout
+    if (speakingStateTimeoutRef.current) {
+      clearTimeout(speakingStateTimeoutRef.current);
+      speakingStateTimeoutRef.current = null;
+    }
+    
+    // If entering speaking state, set a safety timeout to return to listening
+    if (newState === 'speaking') {
+      speakingStateTimeoutRef.current = setTimeout(() => {
+        console.log('[Realtime] ⚠️ Speaking state timeout - forcing return to listening');
+        isResponseInProgressRef.current = false;
+        currentResponseTextRef.current = '';
+        responseRetryCountRef.current = 0;
+        stateRef.current = 'listening';
+        setState('listening');
+        onStateChangeRef.current?.('listening');
+      }, 30000); // 30 second max speaking time
+    }
   }, []); // No dependencies - uses ref
 
   const getAuthToken = useCallback((): string | null => {
@@ -428,6 +468,115 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
       console.log('[Realtime] Event:', event.type);
     }
 
+    // Helper function to retry/continue response with graceful sentence completion
+    const retryOrContinueResponse = (isInterrupted: boolean = false) => {
+      if (responseRetryCountRef.current >= MAX_RESPONSE_RETRIES) {
+        console.log('[Realtime] Max retries reached, attempting graceful finish');
+        
+        // One final attempt to gracefully complete
+        if (dataChannelRef.current?.readyState === 'open' && currentResponseTextRef.current.length > 0) {
+          const gracefulFinish = {
+            type: 'response.create',
+            response: {
+              modalities: ['text', 'audio'],
+              instructions: '[Complete your thought in ONE short sentence. Do not apologize, just finish naturally.]',
+            },
+          };
+          dataChannelRef.current.send(JSON.stringify(gracefulFinish));
+        }
+        
+        responseRetryCountRef.current = 0;
+        currentResponseTextRef.current = '';
+        wasResponseInterruptedRef.current = false;
+        return;
+      }
+
+      if (!dataChannelRef.current || dataChannelRef.current.readyState !== 'open') {
+        console.log('[Realtime] Cannot retry - data channel not open');
+        return;
+      }
+
+      responseRetryCountRef.current++;
+      const partialResponse = currentResponseTextRef.current;
+      const lastInput = lastUserInputRef.current;
+      
+      console.log('[Realtime] 🔄 Retrying response (attempt', responseRetryCountRef.current, '/', MAX_RESPONSE_RETRIES, ')');
+      console.log('[Realtime] Partial response so far:', partialResponse.substring(0, 150) + (partialResponse.length > 150 ? '...' : ''));
+
+      // Construct the continuation prompt based on situation
+      let continuationPrompt = '';
+      
+      // Check if we have a substantial partial response that was cut off
+      if (isInterrupted && partialResponse.length > MIN_RESPONSE_LENGTH) {
+        // Get the last part of what was said for context
+        const lastPart = partialResponse.substring(Math.max(0, partialResponse.length - 300));
+        const endsWithIncompleteWord = /\s\w+$/.test(lastPart) && !lastPart.match(/[.!?]\s*$/);
+        
+        if (endsWithIncompleteWord) {
+          // Sentence was cut mid-word or mid-thought
+          continuationPrompt = `[CRITICAL: Your response was cut off mid-sentence. You were saying: "...${lastPart}"
+
+RULES:
+1. Do NOT apologize or acknowledge the interruption
+2. Simply CONTINUE from where you left off - complete the thought naturally
+3. Keep it brief - finish in 1-2 sentences max
+4. Then stop - do not add new information]`;
+        } else {
+          // Response ended but might be incomplete thought
+          continuationPrompt = `[Your previous response may have been incomplete. You said: "...${lastPart}"
+
+If that was a complete thought, simply confirm briefly. If not, finish your point in one sentence. Do not restart or over-explain.]`;
+        }
+      } else if (lastInput && partialResponse.length < MIN_RESPONSE_LENGTH) {
+        // Response barely started or failed
+        continuationPrompt = `[There was a brief interruption. The user said: "${lastInput}"
+
+Please respond naturally and completely. Keep your response concise but make sure to finish your thoughts fully.]`;
+      } else {
+        // Generic continuation
+        continuationPrompt = `[Please complete your response. Keep it brief and natural. Do not apologize.]`;
+      }
+
+      const retryEvent = {
+        type: 'response.create',
+        response: {
+          modalities: ['text', 'audio'],
+          instructions: continuationPrompt,
+        },
+      };
+
+      // Use configurable delay
+      setTimeout(() => {
+        if (dataChannelRef.current?.readyState === 'open') {
+          dataChannelRef.current.send(JSON.stringify(retryEvent));
+          isResponseInProgressRef.current = true;
+          responseStartTimeRef.current = Date.now();
+          console.log('[Realtime] ✓ Retry request sent');
+        }
+      }, INCOMPLETE_SENTENCE_COOLDOWN_MS);
+    };
+
+    // Clear any existing timeout
+    const clearResponseTimeout = () => {
+      if (responseTimeoutRef.current) {
+        clearTimeout(responseTimeoutRef.current);
+        responseTimeoutRef.current = null;
+      }
+    };
+
+    // Set a timeout for response completion
+    const setResponseTimeout = () => {
+      clearResponseTimeout();
+      responseTimeoutRef.current = setTimeout(() => {
+        if (isResponseInProgressRef.current) {
+          console.log('[Realtime] ⚠️ Response timeout - appears stuck');
+          wasResponseInterruptedRef.current = true;
+          isResponseInProgressRef.current = false;
+          retryOrContinueResponse(true);
+        }
+      }, RESPONSE_TIMEOUT_MS);
+    };
+
     switch (event.type) {
       case 'session.created':
       case 'session.updated':
@@ -449,25 +598,144 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
       case 'response.created':
         // A response has started
         isResponseInProgressRef.current = true;
+        currentResponseTextRef.current = ''; // Reset accumulated text
+        responseStartTimeRef.current = Date.now();
+        setResponseTimeout(); // Start timeout monitoring
         break;
 
       case 'response.audio_transcript.delta':
+        // Accumulate the response text for potential retry
+        if (event.delta) {
+          currentResponseTextRef.current += event.delta;
+        }
+        updateState('speaking');
+        isResponseInProgressRef.current = true;
+        // Refresh timeout since we're still getting data
+        setResponseTimeout();
+        break;
+        
       case 'response.audio.delta':
         updateState('speaking');
         isResponseInProgressRef.current = true;
-        // NOTE: Don't reset timer here - these events fire continuously while MIRA speaks
-        // The timer reset happens once at response.done
+        // Refresh timeout since we're still getting audio
+        setResponseTimeout();
         break;
 
       case 'response.audio_transcript.done':
-        const responseText = event.transcript || '';
-        setLastResponse(responseText);
-        onResponseRef.current?.(responseText);
+        // This event fires for EACH audio segment, not the complete response
+        // Just update the accumulated text - DON'T call onResponse here
+        // The final response will be sent in 'response.done'
+        const segmentText = event.transcript || '';
+        if (segmentText) {
+          // Update accumulated text if this segment is longer/more complete
+          if (segmentText.length > currentResponseTextRef.current.length) {
+            currentResponseTextRef.current = segmentText;
+          }
+          setLastResponse(segmentText); // Update UI display
+        }
         break;
 
       case 'response.done':
-        console.log('[Realtime] Response complete');
+        console.log('[Realtime] Response complete event received');
+        clearResponseTimeout();
+        
+        // Get the response ID to prevent duplicate processing
+        const responseId = event.response?.id || '';
+        
+        // === CRITICAL: Check if we already processed this response ===
+        if (responseId && processedResponseIdsRef.current.has(responseId)) {
+          console.log('[Realtime] ⚠️ Skipping duplicate response.done for ID:', responseId);
+          break;
+        }
+        
+        // Mark this response as processed
+        if (responseId) {
+          processedResponseIdsRef.current.add(responseId);
+          // Clean up old IDs (keep last 20)
+          if (processedResponseIdsRef.current.size > 20) {
+            const ids = Array.from(processedResponseIdsRef.current);
+            processedResponseIdsRef.current = new Set(ids.slice(-20));
+          }
+        }
+        
+        // Get the FINAL complete response text
+        const finalText = currentResponseTextRef.current;
+        const responseStatus = event.response?.status;
+        const responseDuration = Date.now() - responseStartTimeRef.current;
+        
+        console.log('[Realtime] Response stats - ID:', responseId, 'Length:', finalText.length, 
+          'Duration:', responseDuration + 'ms', 
+          'Status:', responseStatus);
+        
+        // === ADDITIONAL DEDUPLICATION: Check content similarity ===
+        const now = Date.now();
+        const timeSinceLastSent = now - lastSentResponseTimeRef.current;
+        const isSimilarToLast = finalText.trim() === lastSentResponseRef.current.trim() ||
+          (timeSinceLastSent < 3000 && (
+            lastSentResponseRef.current.includes(finalText.trim()) ||
+            finalText.trim().includes(lastSentResponseRef.current.trim())
+          ));
+        
+        if (isSimilarToLast && timeSinceLastSent < 5000) {
+          console.log('[Realtime] ⚠️ Skipping similar/duplicate response within 5s');
+          currentResponseTextRef.current = '';
+          isResponseInProgressRef.current = false;
+          break;
+        }
+        
+        // === SEND THE FINAL RESPONSE ONLY ONCE HERE ===
+        if (finalText.trim() && responseStatus !== 'cancelled' && responseStatus !== 'failed') {
+          console.log('[Realtime] ✓ Sending final response:', finalText.substring(0, 80) + (finalText.length > 80 ? '...' : ''));
+          lastSentResponseRef.current = finalText;
+          lastSentResponseTimeRef.current = now;
+          onResponseRef.current?.(finalText);
+        }
+        
+        // Check for potentially incomplete responses with improved heuristics
+        // Be LESS aggressive - only retry for clear failures, not for multilingual content
+        const validShortResponses = /^(ok|yes|no|sure|done|got it|okay|hi|hey|hello|bye|goodbye|thanks|thank you|you're welcome|no problem|absolutely|definitely|of course|certainly|exactly|right|correct|yep|nope|yeah|nah|alright|understood|noted|perfect|great|good|fine|sounds good)\.?!?$/i;
+        
+        // Only check for incomplete patterns in ENGLISH responses
+        // Don't try to detect incomplete sentences for Hindi/other languages
+        const isLikelyEnglish = /^[a-zA-Z\s.,!?'"()-]+$/.test(finalText.trim());
+        
+        const incompleteEndPatterns = /\s(the|a|an|to|and|or|but|in|on|at|for|with|of|is|are|was|were|will|would|could|should|have|has|had|be|been|being|I|you|we|they|it|this|that|which|who|what|how|why|when|where|if|then|so|because|although|while|as|like|about|from|into|over|under|through|between|,|:|-)$/i;
+        
+        const endsWithPunctuation = /[.!?।॥]\s*$/.test(finalText); // Include Hindi punctuation
+        const hasSubstantialContent = finalText.length >= 20;
+        
+        // ONLY consider incomplete if:
+        // 1. Response was EXPLICITLY cancelled/failed by API
+        // 2. OR it's clearly English AND ends mid-sentence
+        // DO NOT retry for multilingual responses
+        const seemsIncomplete = (
+          // Response was explicitly cancelled or failed
+          responseStatus === 'cancelled' ||
+          responseStatus === 'failed' ||
+          responseStatus === 'incomplete' ||
+          // Only check English patterns for English-only text
+          (isLikelyEnglish && hasSubstantialContent && !endsWithPunctuation && incompleteEndPatterns.test(finalText))
+        );
+        
+        // Be MORE conservative about retries - only 1 retry max for non-failures
+        const shouldRetry = seemsIncomplete && 
+          responseRetryCountRef.current < 1 && // Only 1 retry for heuristic incomplete
+          (responseStatus === 'cancelled' || responseStatus === 'failed' || responseRetryCountRef.current === 0);
+        
+        if (shouldRetry) {
+          console.log('[Realtime] ⚠️ Response seems incomplete, attempting retry...');
+          wasResponseInterruptedRef.current = true;
+          isResponseInProgressRef.current = false;
+          retryOrContinueResponse(true);
+          return; // Don't reset state yet
+        }
+        
+        // Response completed successfully
         isResponseInProgressRef.current = false;
+        responseRetryCountRef.current = 0; // Reset retry count on success
+        currentResponseTextRef.current = ''; // Clear accumulated text
+        wasResponseInterruptedRef.current = false;
+        
         // Reset idle timer ONCE when MIRA finishes speaking
         idleTimerRef.current = IDLE_TIMEOUT_SECONDS;
         setTimeout(() => {
@@ -491,20 +759,65 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
         }, 300);
         break;
 
+      case 'response.audio.done':
+        // Audio output finished - this fires when MIRA stops speaking
+        console.log('[Realtime] Audio output done');
+        // Don't change state here - wait for response.done
+        break;
+
+      case 'response.output_item.done':
+        // Output item completed
+        console.log('[Realtime] Output item done');
+        break;
+
+      case 'response.cancelled':
+        // Response was explicitly cancelled
+        console.log('[Realtime] ⚠️ Response cancelled');
+        clearResponseTimeout();
+        isResponseInProgressRef.current = false;
+        currentResponseTextRef.current = '';
+        responseRetryCountRef.current = 0;
+        // Always return to listening on cancel - don't retry
+        updateState('listening');
+        break;
+
       case 'conversation.item.input_audio_transcription.completed':
         const userText = event.transcript || '';
         console.log('[Realtime] User said:', userText);
         setTranscript(userText);
+        lastUserInputRef.current = userText; // Store for potential retry context
         onTranscriptRef.current?.(userText);
+        // Reset retry count for new user input
+        responseRetryCountRef.current = 0;
         // Reset idle timer on confirmed transcription - this IS actual user speech
         idleTimerRef.current = IDLE_TIMEOUT_SECONDS;
         consecutiveSpeechSamplesRef.current = 0;
         console.log('[Idle] ✓ Timer RESET - User transcription completed');
         break;
 
+      case 'conversation.item.input_audio_transcription.failed':
+        // Transcription failed - log but don't error out
+        console.warn('[Realtime] Transcription failed:', event.error);
+        break;
+
+      case 'rate_limits.updated':
+        // Rate limit info - ignore
+        break;
+
       case 'error':
         console.error('[Realtime] Error:', JSON.stringify(event.error, null, 2));
+        clearResponseTimeout();
         const errorMsg = event.error?.message || event.error?.code || 'Unknown error';
+        
+        // Check if this error interrupted an ongoing response
+        if (isResponseInProgressRef.current && currentResponseTextRef.current.length > 0) {
+          console.log('[Realtime] ⚠️ Error during response - will attempt retry');
+          wasResponseInterruptedRef.current = true;
+          isResponseInProgressRef.current = false;
+          retryOrContinueResponse(true);
+          return;
+        }
+        
         // Ignore certain non-critical errors including response in progress
         if (!errorMsg.toLowerCase().includes('cancel') && 
             !errorMsg.toLowerCase().includes('conversation') &&
@@ -529,6 +842,22 @@ export function useRealtime(config: RealtimeConfig = {}): UseRealtimeReturn {
     // Reset idle detection state for next connection
     consecutiveSpeechSamplesRef.current = 0;
     lastSampleCheckTimeRef.current = 0;
+    
+    // Clear speaking state timeout
+    if (speakingStateTimeoutRef.current) {
+      clearTimeout(speakingStateTimeoutRef.current);
+      speakingStateTimeoutRef.current = null;
+    }
+    
+    // Reset response retry state
+    if (responseTimeoutRef.current) {
+      clearTimeout(responseTimeoutRef.current);
+      responseTimeoutRef.current = null;
+    }
+    responseRetryCountRef.current = 0;
+    currentResponseTextRef.current = '';
+    wasResponseInterruptedRef.current = false;
+    isResponseInProgressRef.current = false;
     
     // Don't cancel animation frame - keep monitoring
     // if (animationFrameRef.current) {

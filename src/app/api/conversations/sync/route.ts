@@ -1,9 +1,111 @@
 // Conversation Sync API - Real-time conversation persistence
+// CRITICAL: Every conversation is saved and indexed for semantic search
 import { NextRequest, NextResponse } from 'next/server';
 import { connectToDatabase } from '@/lib/mongodb';
 import Conversation from '@/models/Conversation';
+import Memory from '@/models/Memory';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
 import mongoose from 'mongoose';
+import { generateEmbedding } from '@/lib/ai/embeddings';
+import OpenAI from 'openai';
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
+// Extract important information from conversation for memory storage
+async function extractMemoriesFromConversation(
+  userId: string,
+  userMessage: string,
+  miraResponse?: string
+): Promise<void> {
+  // Skip very short or simple messages
+  if (userMessage.length < 20) return;
+  
+  // Skip greetings and simple acknowledgments
+  const skipPatterns = [
+    /^(hi|hey|hello|bye|goodbye|thanks|thank you|ok|okay|yes|no|yeah|nope)/i,
+    /^(good morning|good night|good evening)/i,
+  ];
+  if (skipPatterns.some(p => p.test(userMessage.trim()))) return;
+  
+  try {
+    // Use AI to detect if this contains memorable information
+    const analysisPrompt = `Analyze this user message and determine if it contains information worth remembering:
+"${userMessage}"
+${miraResponse ? `MIRA's response: "${miraResponse.substring(0, 200)}"` : ''}
+
+Extract ONLY genuinely important/memorable information like:
+- Personal facts (name, job, family, pets, preferences)
+- Events or plans
+- People mentioned
+- Preferences or opinions
+- Tasks or goals
+
+Respond in JSON:
+{
+  "shouldSave": boolean,
+  "memories": [
+    {
+      "type": "fact|preference|event|person|task|insight",
+      "content": "concise memory statement",
+      "importance": 1-10
+    }
+  ]
+}
+
+If nothing memorable, return: {"shouldSave": false, "memories": []}`;
+
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: analysisPrompt }],
+      temperature: 0.3,
+      max_tokens: 300,
+    });
+
+    const content = response.choices[0]?.message?.content || '{}';
+    const parsed = JSON.parse(content.replace(/```json\n?|\n?```/g, '').trim());
+
+    if (parsed.shouldSave && parsed.memories?.length > 0) {
+      const userObjectId = new mongoose.Types.ObjectId(userId);
+      
+      for (const mem of parsed.memories) {
+        // Generate embedding for semantic search
+        let embedding: number[] | undefined;
+        try {
+          embedding = await generateEmbedding(mem.content);
+        } catch {
+          console.warn('[MemoryExtract] Failed to generate embedding');
+        }
+        
+        // Check for duplicate content
+        const existing = await Memory.findOne({
+          userId: userObjectId,
+          content: { $regex: mem.content.substring(0, 50), $options: 'i' },
+          isArchived: false,
+        });
+        
+        if (!existing) {
+          await Memory.create({
+            userId: userObjectId,
+            type: mem.type || 'fact',
+            content: mem.content,
+            importance: mem.importance || 5,
+            source: 'inferred',
+            tags: [],
+            embedding,
+            context: {
+              timestamp: new Date(),
+            },
+          });
+          console.log('[MemoryExtract] Saved new memory:', mem.content.substring(0, 50));
+        }
+      }
+    }
+  } catch (error) {
+    console.error('[MemoryExtract] Error:', error);
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -124,6 +226,19 @@ export async function POST(request: NextRequest) {
     }
 
     console.log('[Conversation Sync] Saved message to conversation:', conversation._id.toString());
+
+    // Extract memories from user messages in the background
+    // This ensures important information is indexed for semantic search
+    if (message.role === 'user' && message.content) {
+      // Get MIRA's last response for context
+      const miraResponse = conversation.messages
+        .filter((m: { role: string }) => m.role === 'mira')
+        .slice(-1)[0]?.content;
+      
+      // Extract memories asynchronously (don't block response)
+      extractMemoriesFromConversation(payload.userId, message.content, miraResponse)
+        .catch(err => console.error('[Conversation Sync] Memory extraction failed:', err));
+    }
 
     return NextResponse.json({
       success: true,

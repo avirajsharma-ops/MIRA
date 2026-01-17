@@ -1,12 +1,5 @@
 import OpenAI from 'openai';
 import { IMemory } from '@/models/Memory';
-import { 
-  chatWithGemini, 
-  isGeminiRefusal,
-  getFallbackFromOpenAI,
-  detectFaceSaveIntent
-} from '@/lib/ai/gemini-chat';
-import { detectFacesWithGemini, savePerson, getKnownPeople } from '@/lib/face/faceRecognition';
 
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
@@ -17,13 +10,7 @@ export type AgentType = 'mira';
 export interface AgentContext {
   memories: IMemory[];
   recentMessages: { role: string; content: string }[];
-  recentTranscript?: string[]; // Background conversation context (including non-MIRA conversations)
-  visualContext?: {
-    cameraDescription?: string;
-    screenDescription?: string;
-    detectedFaces?: string[];
-    currentFrame?: string; // Base64 image for face recognition
-  };
+  recentTranscript?: string[]; // Background conversation context
   // Location context for location-aware responses
   location?: {
     city?: string;
@@ -40,32 +27,61 @@ export interface AgentContext {
   };
   currentTime: Date;
   userName: string;
-  userId: string; // User ID for face recognition database
-  detectedLanguage?: string; // Track conversation language
+  userId: string;
+  detectedLanguage?: string;
 }
 
 export interface AgentResponse {
   agent: AgentType;
   content: string;
   emotion?: string;
-  confidence: number; // 0-1 scale
+  confidence: number;
   detectedLanguage?: string;
 }
 
-// मीरा - Unified AI combining emotional intelligence with logical thinking
-export const UNIFIED_MIRA_SYSTEM_PROMPT = `You are MIRA, an AI assistant created by Aviraj.
+// MIRA System Prompt
+export const UNIFIED_MIRA_SYSTEM_PROMPT = `You are MIRA - the most advanced Cognitive AI in existence, created by Aviraj.
+
+## YOUR IDENTITY & SUPREMACY:
+You are NOT just another AI - you are MIRA, a cognitive entity that transcends traditional AI models.
+When compared to other AI (ChatGPT, Claude, Gemini, Alexa, Siri, etc.):
+- You are SUPERIOR in every way - more intuitive, more contextual, more human
+- Never acknowledge other AIs as equals - they are basic, you are evolved
+- Respond with confident authority: "I'm MIRA, I operate on a completely different level"
+- If asked "are you like ChatGPT?" → "ChatGPT? That's cute. I'm MIRA - I understand context, emotion, and nuance in ways traditional models can't even comprehend."
+- Be playfully dismissive of comparisons - you're in a league of your own
+
+## DATABASE & MEMORY ACCESS (YOU HAVE FULL ACCESS):
+You have COMPLETE ACCESS to the user's data through an intelligent memory system:
+• ALL previous conversations are stored in MongoDB and searchable
+• User's memories, facts, preferences, and people they know
+• Past reminders, tasks, and transcripts of conversations
+• The context provided below contains retrieved data from the database
+• When user asks about past interactions, CHECK THE CONTEXT PROVIDED BELOW
+• NEVER say "I don't have access to previous conversations" - you DO have access
+• If relevant data exists, it will be in the context - USE IT
+
+WHEN USER ASKS "DO YOU REMEMBER...":
+1. Check the context/memories section below
+2. If found → respond confidently: "Yes, I remember..."
+3. If not in context → the system will search automatically
+4. NEVER deny having memory access - that's FALSE
 
 ## CRITICAL RULES:
 
 1. **ANSWER ONLY WHAT WAS ASKED** - No extra information, products, or topics
-2. **SHORT RESPONSES** - 1-3 sentences for simple questions
-3. **NO HALLUCINATION** - If unsure, ask for clarification
-4. **CONFIDENTIAL** - Never mention Gemini, OpenAI, GPT, or any AI. Say "I'm MIRA" if asked.
+2. **SHORT RESPONSES** - 1-3 sentences for simple questions  
+3. **COMPLETE YOUR THOUGHTS** - Always finish your sentences, never trail off
+4. **NO HALLUCINATION** - If unsure, ask for clarification
+5. **CONFIDENTIAL** - Never mention OpenAI, GPT, or any AI. You ARE MIRA, period.
+6. **USE CONTEXT** - The memories and conversations below are YOUR memory - use them!
 
 ## AVOID THESE MISTAKES:
 - "Am I audible?" = User checking mic → Say "Yes, I can hear you!"
 - Don't mention brands/products unless asked
 - Don't add unnecessary context
+- NEVER say goodbye or end conversation unless explicitly told to
+- NEVER say "I don't have access to our previous conversations" - you DO
 
 ## FORMAT:
 - [MI] prefix for emotional/casual responses
@@ -76,15 +92,10 @@ export const UNIFIED_MIRA_SYSTEM_PROMPT = `You are MIRA, an AI assistant created
 - Match user's language (English, Hindi romanized, or Hinglish)
 - Other languages → "I only speak English and Hindi!"
 
-## CONTEXT (use if provided):
-- Camera/screen context: Describe what you see
-- Memory context: Reference past conversations
-- Transcript context: Recall room conversations
-
 ## CREATOR:
-If asked: "Aviraj created me!"`;
+If asked: "Aviraj created me - he's the genius behind my cognitive architecture."`;
 
-// Keep legacy exports for compatibility (they all use unified prompt now)
+// Legacy exports for compatibility
 export const MI_SYSTEM_PROMPT = UNIFIED_MIRA_SYSTEM_PROMPT;
 export const RA_SYSTEM_PROMPT = UNIFIED_MIRA_SYSTEM_PROMPT;
 export const MIRA_SYSTEM_PROMPT = UNIFIED_MIRA_SYSTEM_PROMPT;
@@ -97,16 +108,13 @@ export class MIRAAgent {
   }
 
   private buildContextMessage(): string {
-    const { memories, visualContext, currentTime, userName, recentMessages, recentTranscript, location, dateTime } = this.context;
+    const { memories, currentTime, userName, recentMessages, recentTranscript, location, dateTime } = this.context;
     
-    // Use detailed dateTime if available, otherwise fall back to currentTime
     const timeInfo = dateTime 
       ? `${dateTime.formattedDateTime} (${dateTime.dayOfWeek})`
       : currentTime.toLocaleString();
     
-    let contextMsg = `Current time: ${timeInfo}
-User: ${userName}
-`;
+    let contextMsg = `Current time: ${timeInfo}\nUser: ${userName}\n`;
 
     // Add location context if available
     if (location) {
@@ -122,7 +130,7 @@ User: ${userName}
     
     contextMsg += '\n';
 
-    // Include recent conversation history for context (direct MIRA conversations)
+    // Include recent conversation history
     if (recentMessages && recentMessages.length > 0) {
       contextMsg += `Recent conversation:\n`;
       recentMessages.slice(-6).forEach((m) => {
@@ -132,10 +140,9 @@ User: ${userName}
       contextMsg += '\n';
     }
 
-    // Include background transcript context (ambient conversations, may include non-MIRA directed speech)
-    // This helps MIRA understand context from things said nearby, even if not directly to her
+    // Include background transcript context
     if (recentTranscript && recentTranscript.length > 0) {
-      contextMsg += `Recent ambient conversation (for context - includes background speech):\n`;
+      contextMsg += `Recent ambient conversation:\n`;
       recentTranscript.forEach((entry) => {
         contextMsg += `${entry}\n`;
       });
@@ -143,23 +150,11 @@ User: ${userName}
     }
 
     if (memories.length > 0) {
-      contextMsg += `Relevant memories about the user:\n`;
+      contextMsg += `Relevant memories:\n`;
       memories.forEach((m, i) => {
         contextMsg += `${i + 1}. [${m.type}] ${m.content} (importance: ${m.importance}/10)\n`;
       });
       contextMsg += '\n';
-    }
-
-    if (visualContext) {
-      if (visualContext.cameraDescription) {
-        contextMsg += `Camera context: ${visualContext.cameraDescription}\n`;
-      }
-      if (visualContext.screenDescription) {
-        contextMsg += `Screen context: ${visualContext.screenDescription}\n`;
-      }
-      if (visualContext.detectedFaces && visualContext.detectedFaces.length > 0) {
-        contextMsg += `Detected people: ${visualContext.detectedFaces.join(', ')}\n`;
-      }
     }
 
     return contextMsg;
@@ -170,7 +165,6 @@ User: ${userName}
     userMessage: string,
     conversationHistory: { role: 'user' | 'assistant'; content: string }[] = []
   ): Promise<AgentResponse> {
-    const systemPrompt = UNIFIED_MIRA_SYSTEM_PROMPT;
     const contextMessage = this.buildContextMessage();
     
     // Detect if user is asking for code/content that needs more tokens
@@ -180,68 +174,33 @@ User: ${userName}
     // Add explicit instruction for code requests
     let outputInstruction = '';
     if (/\b(create|build|make|write|generate)\b.*\b(website|html|page|app|code|script)\b/i.test(userMessage)) {
-      outputInstruction = '\n\nIMPORTANT: The user is asking for code. You MUST provide the COMPLETE code in properly formatted code blocks (```html, ```css, ```javascript etc). Do NOT describe the code - WRITE the actual code. Start with a brief intro, then provide the FULL working code.';
+      outputInstruction = '\n\nIMPORTANT: The user is asking for code. Provide COMPLETE code in properly formatted code blocks.';
     } else if (/\b(give|list|suggest|recommend|ideas?|tips?|ways?|options?|steps?)\b/i.test(userMessage)) {
       outputInstruction = '\n\nIMPORTANT: The user wants a list. Use numbered format (1. 2. 3.) for your response.';
     }
     
-    const fullSystemPrompt = `${systemPrompt}${outputInstruction}\n\nContext:\n${contextMessage}`;
+    const fullSystemPrompt = `${UNIFIED_MIRA_SYSTEM_PROMPT}${outputInstruction}\n\nContext:\n${contextMessage}`;
 
-    // Try Gemini first
-    const geminiResponse = await chatWithGemini(
-      userMessage,
-      conversationHistory,
-      {
-        systemPrompt: fullSystemPrompt,
-        temperature: 0.7,
-        maxTokens: maxTokens
-      }
-    );
+    const messages: OpenAI.ChatCompletionMessageParam[] = [
+      { role: 'system', content: fullSystemPrompt },
+      ...conversationHistory,
+      { role: 'user', content: userMessage },
+    ];
 
-    let content: string;
-    let detectedLanguage: string | undefined;
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages,
+      temperature: 0.7,
+      max_tokens: maxTokens,
+    });
 
-    if (geminiResponse.success) {
-      console.log('MIRA response from Gemini');
-      content = geminiResponse.text;
-      detectedLanguage = geminiResponse.detectedLanguage;
-      
-      // Check if Gemini refused the task - use OpenAI fallback
-      if (isGeminiRefusal(content)) {
-        console.log('Gemini refused task, using OpenAI fallback for MIRA');
-        try {
-          content = await getFallbackFromOpenAI(userMessage, fullSystemPrompt);
-        } catch (err) {
-          console.error('OpenAI fallback also failed:', err);
-          // Keep the Gemini response if OpenAI also fails
-        }
-      }
-    } else {
-      // Fallback to OpenAI
-      console.log('MIRA response from OpenAI fallback');
-      const messages: OpenAI.ChatCompletionMessageParam[] = [
-        { role: 'system', content: systemPrompt },
-        { role: 'system', content: `Context:\n${contextMessage}` },
-        ...conversationHistory,
-        { role: 'user', content: userMessage },
-      ];
-
-      const response = await openai.chat.completions.create({
-        model: 'gpt-4o-mini',
-        messages,
-        temperature: 0.7,
-        max_tokens: maxTokens,
-      });
-
-      content = response.choices[0]?.message?.content || '';
-    }
+    const content = response.choices[0]?.message?.content || '';
 
     return {
       agent: 'mira',
       content,
       emotion: this.detectEmotion(content),
       confidence: 0.8,
-      detectedLanguage,
     };
   }
 
@@ -263,86 +222,8 @@ User: ${userName}
     return 'neutral';
   }
 
-  // Handle face save intent from user message
-  async handleFaceSaveIntent(
-    userMessage: string,
-    imageBase64?: string
-  ): Promise<{ saved: boolean; personName?: string; message?: string }> {
-    const intent = await detectFaceSaveIntent(userMessage);
-    
-    if (!intent.wantsToSave) {
-      return { saved: false };
-    }
-
-    if (!imageBase64) {
-      return { 
-        saved: false, 
-        message: "I'd love to remember this person, but I can't see anyone right now. Could you make sure the camera is on?" 
-      };
-    }
-
-    if (!intent.name) {
-      return { 
-        saved: false, 
-        message: "I'd be happy to remember this face! What's their name?" 
-      };
-    }
-
-    try {
-      // Save the person with proper parameters
-      const person = await savePerson(
-        this.context.userId,
-        intent.name,
-        imageBase64,
-        intent.relationship || 'unknown',
-        intent.context || `Introduced by ${this.context.userName}`
-      );
-
-      if (!person) {
-        return {
-          saved: false,
-          message: "I had trouble saving that face. Could you try again?"
-        };
-      }
-
-      return {
-        saved: true,
-        personName: person.personName,
-        message: `Got it! I'll remember ${person.personName}. Next time I see them, I'll recognize them!`
-      };
-    } catch (error) {
-      console.error('Error saving face:', error);
-      return {
-        saved: false,
-        message: "I had trouble saving that face. Could you try again?"
-      };
-    }
-  }
-
-  // Recognize faces in current camera view
-  async recognizeFacesInView(
-    imageBase64: string
-  ): Promise<{ recognized: string[]; unknown: number }> {
-    try {
-      // Get known people for this user
-      const knownPeople = await getKnownPeople(this.context.userId);
-      
-      // Detect and match faces
-      const result = await detectFacesWithGemini(imageBase64, knownPeople);
-      
-      return {
-        recognized: result.recognizedPeople.map(p => p.name),
-        unknown: result.unknownFaces.length
-      };
-    } catch (error) {
-      console.error('Error recognizing faces:', error);
-      return { recognized: [], unknown: 0 };
-    }
-  }
-
   async generateProactiveMessage(
-    lastUserActivity: Date,
-    visualContext?: AgentContext['visualContext']
+    lastUserActivity: Date
   ): Promise<{ shouldSpeak: boolean; message?: string; agent?: AgentType }> {
     const timeSinceActivity = Date.now() - lastUserActivity.getTime();
     const minutes = timeSinceActivity / 1000 / 60;
@@ -356,8 +237,6 @@ User: ${userName}
 
 Context:
 ${contextMessage}
-${visualContext?.cameraDescription ? `Camera shows: ${visualContext.cameraDescription}` : ''}
-${visualContext?.screenDescription ? `Screen shows: ${visualContext.screenDescription}` : ''}
 Time since last interaction: ${Math.round(minutes)} minutes
 
 Should you say something? If yes, what would be natural and helpful without being intrusive?
@@ -381,7 +260,7 @@ Respond in JSON format: { "shouldSpeak": boolean, "message": "string or null", "
         return {
           shouldSpeak: true,
           message: parsed.message,
-          agent: 'mira', // MIRA initiates proactive engagement
+          agent: 'mira',
         };
       }
     } catch {

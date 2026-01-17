@@ -17,12 +17,6 @@ export default function AgentDisplay({ showControls = true }: AgentDisplayProps)
     isLoading,
     audioLevel,
     outputAudioLevel, // MIRA's voice level
-    isCameraActive,
-    isScreenActive,
-    startCamera,
-    stopCamera,
-    startScreenCapture,
-    stopScreenCapture,
     miraState, // MIRA's current state
   } = useMIRA();
 
@@ -37,7 +31,7 @@ export default function AgentDisplay({ showControls = true }: AgentDisplayProps)
     }
   }, [audioLevel, outputAudioLevel]);
 
-  // Display mode - always combined now (unified agent, no more debate separation)
+  // Display mode - always combined now (unified agent)
   const mode = 'combined';
 
   // AI is "thinking" when loading but not yet speaking
@@ -50,10 +44,10 @@ export default function AgentDisplay({ showControls = true }: AgentDisplayProps)
         mode={mode}
         speakingAgent={speakingAgent}
         isSpeaking={isSpeaking}
-        miraAudioLevel={outputAudioLevel}  // MIRA's voice level for distortion effect
-        userAudioLevel={audioLevel}  // Always pass audio level - sphere handles when to react
+        miraAudioLevel={outputAudioLevel}
+        userAudioLevel={audioLevel}
         isThinking={isThinking}
-        miraState={miraState}  // Pass state for visual feedback
+        miraState={miraState}
       />
 
       {/* Status overlay */}
@@ -83,33 +77,6 @@ export default function AgentDisplay({ showControls = true }: AgentDisplayProps)
             Listening...
           </p>
         )}
-      </div>
-
-      {/* Camera preview - HIDDEN but camera still runs for face detection */}
-      {/* The camera stream is active for face-api.js processing but not shown to user */}
-
-      {/* Media controls - hidden on mobile and when showControls is false */}
-      <div className={`absolute bottom-2 sm:bottom-4 left-2 sm:left-4 gap-1.5 sm:gap-2 z-20 media-controls-mobile safe-area-bottom safe-area-left ui-collapsible ${showControls ? 'sm:flex ui-visible' : 'ui-hidden hidden'}`}>
-        <button
-          onClick={() => (isCameraActive ? stopCamera() : startCamera())}
-          className={`px-2 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm transition-all min-h-[36px] ${
-            isCameraActive
-              ? 'bg-green-500/20 text-green-400 border border-green-500/50'
-              : 'bg-white/5 text-white/50 border border-white/10 hover:bg-white/10'
-          }`}
-        >
-          {isCameraActive ? '📹 On' : '📹 Off'}
-        </button>
-        <button
-          onClick={() => (isScreenActive ? stopScreenCapture() : startScreenCapture())}
-          className={`px-2 sm:px-4 py-1.5 sm:py-2 rounded-lg text-xs sm:text-sm transition-all min-h-[36px] ${
-            isScreenActive
-              ? 'bg-green-500/20 text-green-400 border border-green-500/50'
-              : 'bg-white/5 text-white/50 border border-white/10 hover:bg-white/10'
-          }`}
-        >
-          {isScreenActive ? '🖥️ On' : '🖥️ Off'}
-        </button>
       </div>
     </div>
   );

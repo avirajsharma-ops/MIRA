@@ -1,17 +1,10 @@
-// People API - CRUD for known people/faces
 import { NextRequest, NextResponse } from 'next/server';
 import { connectToDatabase } from '@/lib/mongodb';
-import FaceData from '@/models/FaceData';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
-import {
-  savePerson,
-  getKnownPeople,
-  deletePerson,
-  updatePersonContext,
-  addLearnedInfo,
-} from '@/lib/face/faceRecognition';
+import Person from '@/models/Person';
+import mongoose from 'mongoose';
 
-// GET - List all known people for the user
+// GET - List all people for the user
 export async function GET(request: NextRequest) {
   try {
     const token = getTokenFromHeader(request.headers.get('authorization'));
@@ -26,30 +19,36 @@ export async function GET(request: NextRequest) {
 
     await connectToDatabase();
 
-    const people = await getKnownPeople(payload.userId);
+    const { searchParams } = new URL(request.url);
+    const search = searchParams.get('search');
 
-    return NextResponse.json({
-      people: people.map(p => ({
-        id: p._id.toString(),
-        name: p.personName,
-        relationship: p.relationship,
-        distinctiveFeatures: p.distinctiveFeatures,
-        context: p.metadata.context,
-        notes: p.metadata.notes,
-        learnedInfo: p.metadata.learnedInfo,
-        firstSeen: p.metadata.firstSeen,
-        lastSeen: p.metadata.lastSeen,
-        seenCount: p.metadata.seenCount,
-        isOwner: p.isOwner,
-      })),
-    });
+    let query: any = { userId: new mongoose.Types.ObjectId(payload.userId) };
+    
+    if (search) {
+      query.$or = [
+        { name: { $regex: search, $options: 'i' } },
+        { description: { $regex: search, $options: 'i' } },
+        { relationship: { $regex: search, $options: 'i' } },
+        { tags: { $in: [new RegExp(search, 'i')] } },
+      ];
+    }
+
+    const people = await Person.find(query)
+      .sort({ name: 1 })
+      .limit(100)
+      .lean();
+
+    return NextResponse.json({ people });
   } catch (error) {
     console.error('Get people error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
   }
 }
 
-// POST - Add a new person (supports both face-based and voice-based detection)
+// POST - Create a new person
 export async function POST(request: NextRequest) {
   try {
     const token = getTokenFromHeader(request.headers.get('authorization'));
@@ -62,168 +61,57 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
     }
 
-    const body = await request.json();
-    const { name, imageBase64, relationship, context, conversationContext, source, firstMet } = body;
+    await connectToDatabase();
 
-    if (!name) {
+    const { name, description, relationship, tags } = await request.json();
+
+    if (!name || !description) {
       return NextResponse.json(
-        { error: 'Name is required' },
+        { error: 'Name and description are required' },
         { status: 400 }
       );
     }
 
-    await connectToDatabase();
-
-    // Check if person with this name already exists
-    const existingPerson = await FaceData.findOne({
-      userId: payload.userId,
-      personName: { $regex: new RegExp(`^${name}$`, 'i') },
+    // Check if person with same name already exists
+    const existing = await Person.findOne({
+      userId: new mongoose.Types.ObjectId(payload.userId),
+      name: { $regex: `^${name}$`, $options: 'i' },
     });
 
-    if (existingPerson) {
-      // Update existing person with new context
-      existingPerson.metadata.lastSeen = new Date();
-      existingPerson.metadata.seenCount += 1;
-      
-      // Add conversation context to learned info
-      if (conversationContext) {
-        const contextSummary = `[${new Date().toLocaleDateString()}] Said: "${conversationContext.slice(0, 200)}${conversationContext.length > 200 ? '...' : ''}"`;
-        existingPerson.metadata.learnedInfo.push(contextSummary);
-        
-        // Keep only last 20 learned items
-        if (existingPerson.metadata.learnedInfo.length > 20) {
-          existingPerson.metadata.learnedInfo = existingPerson.metadata.learnedInfo.slice(-20);
-        }
-      }
-      
-      await existingPerson.save();
+    if (existing) {
+      // Update existing person
+      existing.description = description;
+      if (relationship) existing.relationship = relationship;
+      if (tags) existing.tags = tags;
+      await existing.save();
       
       return NextResponse.json({
-        success: true,
-        isNew: false,
-        person: {
-          id: existingPerson._id.toString(),
-          name: existingPerson.personName,
-          relationship: existingPerson.relationship,
-        },
+        message: 'Person updated',
+        person: existing,
+        updated: true,
       });
     }
 
-    // If we have an image, use the face-based save function
-    if (imageBase64) {
-      const person = await savePerson(
-        payload.userId,
-        name,
-        imageBase64,
-        relationship || 'unknown',
-        context || ''
-      );
-
-      if (!person) {
-        return NextResponse.json(
-          { error: 'Failed to save person' },
-          { status: 500 }
-        );
-      }
-
-      return NextResponse.json({
-        success: true,
-        isNew: true,
-        person: {
-          id: person._id.toString(),
-          name: person.personName,
-          relationship: person.relationship,
-          distinctiveFeatures: person.distinctiveFeatures,
-          context: person.metadata.context,
-        },
-      });
-    }
-    
-    // Voice-based detection (no image)
-    const person = new FaceData({
-      userId: payload.userId,
-      personName: name,
-      relationship: relationship || 'unknown',
-      metadata: {
-        firstSeen: firstMet || new Date(),
-        lastSeen: new Date(),
-        seenCount: 1,
-        notes: source === 'voice_detection' ? 'Detected via voice in conversation' : '',
-        context: context || '',
-        learnedInfo: conversationContext 
-          ? [`[${new Date().toLocaleDateString()}] Said: "${conversationContext.slice(0, 200)}${conversationContext.length > 200 ? '...' : ''}"`]
-          : [],
-      },
-      isOwner: false,
+    // Create new person
+    const person = await Person.create({
+      userId: new mongoose.Types.ObjectId(payload.userId),
+      name: name.trim(),
+      description: description.trim(),
+      relationship: relationship?.trim(),
+      tags: tags || [],
     });
-
-    await person.save();
 
     return NextResponse.json({
-      success: true,
-      isNew: true,
-      person: {
-        id: person._id.toString(),
-        name: person.personName,
-        relationship: person.relationship,
-      },
+      message: 'Person created',
+      person,
+      updated: false,
     });
   } catch (error) {
-    console.error('Add person error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
-  }
-}
-
-// PATCH - Update a person
-export async function PATCH(request: NextRequest) {
-  try {
-    const token = getTokenFromHeader(request.headers.get('authorization'));
-    if (!token) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
-    const payload = verifyToken(token);
-    if (!payload) {
-      return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
-    }
-
-    const body = await request.json();
-    const { personId, name, relationship, context, notes, learnedInfo } = body;
-
-    if (!personId) {
-      return NextResponse.json({ error: 'Person ID is required' }, { status: 400 });
-    }
-
-    await connectToDatabase();
-
-    // Verify ownership
-    const person = await FaceData.findOne({
-      _id: personId,
-      userId: payload.userId,
-    });
-
-    if (!person) {
-      return NextResponse.json({ error: 'Person not found' }, { status: 404 });
-    }
-
-    // Update fields
-    const updates: Record<string, unknown> = {};
-    if (name) updates.personName = name;
-    if (relationship) updates.relationship = relationship;
-    if (context !== undefined) updates['metadata.context'] = context;
-    if (notes !== undefined) updates['metadata.notes'] = notes;
-
-    await FaceData.findByIdAndUpdate(personId, { $set: updates });
-
-    // Add learned info if provided
-    if (learnedInfo) {
-      await addLearnedInfo(personId, learnedInfo);
-    }
-
-    return NextResponse.json({ success: true });
-  } catch (error) {
-    console.error('Update person error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    console.error('Create person error:', error);
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
   }
 }
 
@@ -240,24 +128,36 @@ export async function DELETE(request: NextRequest) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
     }
 
-    const { searchParams } = new URL(request.url);
-    const personId = searchParams.get('personId');
-
-    if (!personId) {
-      return NextResponse.json({ error: 'Person ID is required' }, { status: 400 });
-    }
-
     await connectToDatabase();
 
-    const success = await deletePerson(personId, payload.userId);
+    const { searchParams } = new URL(request.url);
+    const personId = searchParams.get('id');
 
-    if (!success) {
-      return NextResponse.json({ error: 'Person not found' }, { status: 404 });
+    if (!personId) {
+      return NextResponse.json(
+        { error: 'Person ID is required' },
+        { status: 400 }
+      );
     }
 
-    return NextResponse.json({ success: true });
+    const result = await Person.deleteOne({
+      _id: new mongoose.Types.ObjectId(personId),
+      userId: new mongoose.Types.ObjectId(payload.userId),
+    });
+
+    if (result.deletedCount === 0) {
+      return NextResponse.json(
+        { error: 'Person not found' },
+        { status: 404 }
+      );
+    }
+
+    return NextResponse.json({ message: 'Person deleted' });
   } catch (error) {
     console.error('Delete person error:', error);
-    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
+    return NextResponse.json(
+      { error: 'Internal server error' },
+      { status: 500 }
+    );
   }
 }

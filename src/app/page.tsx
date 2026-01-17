@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { MIRAProvider, useMIRA } from '@/context/MIRAContext';
-import { AuthScreen, AgentDisplay, PeopleLibraryModal, ChatHistoryModal, FaceRegistrationModal, ReminderBar, VoiceEnrollmentModal } from '@/components';
+import { AuthScreen, AgentDisplay, ChatHistoryModal, ReminderBar, VoiceEnrollmentModal, PeopleLibraryModal } from '@/components';
 
 // Detect if running inside an iframe
 function useIframeDetection() {
@@ -417,12 +417,10 @@ function FloatingKeyboard() {
 }
 
 function MIRAApp() {
-  const { isAuthenticated, isAuthLoading, user, logout, clearConversation, isRecording, isCameraActive, messages, isMicReady, pendingNotifications, droppedCalls, dismissNotification, acknowledgeDroppedCall, reminders, reminderJustCreated, clearReminderCreatedFlag, miraState, isResting, restingTranscript, isOwnerVoiceEnrolled, isEnrollingVoice, startVoiceEnrollment, currentSpeakerName, isOwnerSpeaking, micError, attemptMicRecovery, idleTimeRemaining, isConnected } = useMIRA();
-  const [showPeopleModal, setShowPeopleModal] = useState(false);
+  const { isAuthenticated, isAuthLoading, user, logout, clearConversation, isRecording, messages, isMicReady, pendingNotifications, droppedCalls, dismissNotification, acknowledgeDroppedCall, reminders, reminderJustCreated, clearReminderCreatedFlag, miraState, isResting, restingTranscript, isOwnerVoiceEnrolled, isEnrollingVoice, startVoiceEnrollment, currentSpeakerName, isOwnerSpeaking, micError, attemptMicRecovery, idleTimeRemaining, isConnected } = useMIRA();
   const [showHistoryModal, setShowHistoryModal] = useState(false);
-  const [showFaceRegistration, setShowFaceRegistration] = useState(false);
   const [showVoiceEnrollment, setShowVoiceEnrollment] = useState(false);
-  const [hasCheckedOwnerFace, setHasCheckedOwnerFace] = useState(false);
+  const [showPeopleModal, setShowPeopleModal] = useState(false);
   const [hasCheckedVoiceEnrollment, setHasCheckedVoiceEnrollment] = useState(false);
   const [showVoiceEnrollmentPrompt, setShowVoiceEnrollmentPrompt] = useState(false);
   const [showUI, setShowUI] = useState(false); // UI hidden by default
@@ -506,34 +504,6 @@ function MIRAApp() {
     }
     prevMessagesLengthRef.current = messages.length;
   }, [messages]);
-
-  // Check if owner face exists after authentication
-  const checkOwnerFace = useCallback(async () => {
-    if (!isAuthenticated || hasCheckedOwnerFace) return;
-    
-    try {
-      const token = localStorage.getItem('mira_token');
-      const response = await fetch('/api/faces/owner', {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      
-      if (response.ok) {
-        const data = await response.json();
-        if (!data.hasOwnerFace) {
-          // Show face registration popup if no owner face registered
-          setShowFaceRegistration(true);
-        }
-      }
-    } catch (err) {
-      console.error('Error checking owner face:', err);
-    } finally {
-      setHasCheckedOwnerFace(true);
-    }
-  }, [isAuthenticated, hasCheckedOwnerFace]);
-
-  useEffect(() => {
-    checkOwnerFace();
-  }, [checkOwnerFace]);
 
   // Show loading screen while checking auth
   if (isAuthLoading) {
@@ -758,29 +728,10 @@ function MIRAApp() {
                 <div className={`w-1.5 sm:w-2 h-1.5 sm:h-2 rounded-full ${isRecording ? 'bg-green-400 animate-pulse' : 'bg-white/40'}`} />
                 <span className="hidden xs:inline">Mic</span>
               </div>
-              <div className={`flex items-center gap-1 px-1.5 sm:px-2 py-0.5 sm:py-1 rounded-full text-[10px] sm:text-xs ${isCameraActive ? 'bg-blue-500/20 text-blue-400' : 'bg-white/10 text-white/40'}`}>
-                <div className={`w-1.5 sm:w-2 h-1.5 sm:h-2 rounded-full ${isCameraActive ? 'bg-blue-400 animate-pulse' : 'bg-white/40'}`} />
-                <span className="hidden xs:inline">Cam</span>
-              </div>
             </div>
           </div>
 
           <div className="flex items-center gap-1.5 sm:gap-3">
-            {/* People Library Button */}
-            <button
-              onClick={() => setShowPeopleModal(true)}
-              className="flex items-center justify-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 bg-cyan-500/10 hover:bg-cyan-500/20 border border-cyan-500/30 rounded-lg text-cyan-400 text-xs sm:text-sm transition-colors min-w-[36px] sm:min-w-0 min-h-[36px]"
-              title="People Library"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                <circle cx="9" cy="7" r="4" />
-                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-              </svg>
-              <span className="hidden sm:inline">People</span>
-            </button>
-
             {/* Voice Enrollment Button */}
             <button
               onClick={() => setShowVoiceEnrollment(true)}
@@ -798,6 +749,21 @@ function MIRAApp() {
                 <line x1="8" y1="23" x2="16" y2="23" />
               </svg>
               <span className="hidden sm:inline">{isOwnerVoiceEnrolled ? 'Voice ✓' : 'Voice ID'}</span>
+            </button>
+
+            {/* People Library Button */}
+            <button
+              onClick={() => setShowPeopleModal(true)}
+              className="flex items-center justify-center gap-1 sm:gap-2 px-2 sm:px-3 py-1.5 bg-blue-500/10 hover:bg-blue-500/20 border border-blue-500/30 rounded-lg text-blue-400 text-xs sm:text-sm transition-colors min-w-[36px] sm:min-w-0 min-h-[36px]"
+              title="People Library"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                <circle cx="9" cy="7" r="4" />
+                <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+              </svg>
+              <span className="hidden sm:inline">People</span>
             </button>
 
             {/* Chat History Button */}
@@ -959,26 +925,19 @@ function MIRAApp() {
       )}
 
       {/* Modals */}
-      <PeopleLibraryModal 
-        isOpen={showPeopleModal} 
-        onClose={() => setShowPeopleModal(false)} 
-      />
       <ChatHistoryModal 
         isOpen={showHistoryModal} 
         onClose={() => setShowHistoryModal(false)} 
-      />
-      <FaceRegistrationModal
-        isOpen={showFaceRegistration}
-        onClose={() => setShowFaceRegistration(false)}
-        onSuccess={() => setShowFaceRegistration(false)}
-        userName={user?.name || 'User'}
-        isNewAccount={!hasCheckedOwnerFace}
       />
       <VoiceEnrollmentModal
         isOpen={showVoiceEnrollment}
         onClose={() => setShowVoiceEnrollment(false)}
         onComplete={() => setShowVoiceEnrollment(false)}
         userName={user?.name || 'User'}
+      />
+      <PeopleLibraryModal
+        isOpen={showPeopleModal}
+        onClose={() => setShowPeopleModal(false)}
       />
     </div>
   );

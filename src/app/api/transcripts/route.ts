@@ -1,4 +1,5 @@
 // Transcripts API - Background conversation storage
+// CRITICAL: All resting state conversations are saved and indexed
 import { NextRequest, NextResponse } from 'next/server';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
 import {
@@ -12,8 +13,11 @@ import {
 } from '@/lib/transcription/transcriptionService';
 import { ITranscriptEntry, ISpeaker } from '@/models/Transcript';
 import { ContextEngine } from '@/lib/agents';
+import { generateEmbedding } from '@/lib/ai/embeddings';
+import Memory from '@/models/Memory';
+import mongoose from 'mongoose';
 
-// Check if content contains information worth remembering
+// Check if content contains information worth remembering - EXPANDED patterns
 function shouldExtractMemory(content: string, speakerType: string): boolean {
   if (!content || content.length < 10) return false;
   
@@ -21,7 +25,12 @@ function shouldExtractMemory(content: string, speakerType: string): boolean {
   const simplePatterns = /^(ok|okay|yes|no|yeah|sure|thanks|bye|hi|hello|hmm|um|uh)\s*[.!?]*$/i;
   if (simplePatterns.test(content.trim())) return false;
   
-  // Extract memories from user-spoken content
+  // ALWAYS extract from meaningful user speech (longer than 20 chars)
+  if (speakerType === 'user' && content.length > 20) {
+    return true; // Save everything substantial the user says
+  }
+  
+  // Extract memories from user-spoken content - specific patterns
   if (speakerType === 'user') {
     // Personal info patterns - EXPANDED to catch more valuable info
     const personalPatterns = [
@@ -42,14 +51,18 @@ function shouldExtractMemory(content: string, speakerType: string): boolean {
       // Interests and hobbies
       /\b(i play|i enjoy|i'm interested in|my hobby)\b/i,
       /\b(i'm learning|i want to learn|i study|i'm studying)\b/i,
+      // Plans and intentions
+      /\b(i'm going to|i will|i plan to|i want to|i need to)\b/i,
+      // Any mention of names
+      /\b(called|named|name is|meet|this is)\s+[A-Z][a-z]+/,
     ];
     return personalPatterns.some(p => p.test(content));
   }
   
   // Extract from conversations about people
   if (speakerType === 'other') {
-    // Someone else is mentioned
-    return content.length > 20;
+    // Someone else is mentioned - save their speech
+    return content.length > 15;
   }
   
   return false;
@@ -151,10 +164,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Extract and save memory if content is significant
-    // This is critical - save synchronously to ensure data is captured
+    // CRITICAL: Save synchronously with embedding for semantic search
     if (shouldExtractMemory(content, speakerType)) {
       try {
-        const contextEngine = new ContextEngine(payload.userId);
         const memoryType = detectMemoryType(content);
         
         // Add context about who said it if it's not the user
@@ -162,17 +174,41 @@ export async function POST(request: NextRequest) {
           ? `${speakerName} said: "${content}"`
           : content;
         
-        // Save memory synchronously (await) to ensure it's captured
-        await contextEngine.addMemory({
-          userId: payload.userId,
-          content: memoryContent,
-          type: memoryType,
-          source: speakerType === 'user' ? 'user' : 'inferred',
-          importance: memoryType === 'person' ? 8 : 6,
-          tags: speakerType === 'other' && speakerName ? [speakerName.toLowerCase()] : [],
+        // Generate embedding for semantic search
+        let embedding: number[] | undefined;
+        try {
+          embedding = await generateEmbedding(memoryContent);
+        } catch (embErr) {
+          console.warn('[Transcript] Failed to generate embedding:', embErr);
+        }
+        
+        // Check for duplicate content
+        const userObjectId = new mongoose.Types.ObjectId(payload.userId);
+        const existing = await Memory.findOne({
+          userId: userObjectId,
+          content: { $regex: memoryContent.substring(0, 30).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' },
+          isArchived: false,
         });
         
-        console.log('[Transcript] ✅ Memory saved:', memoryType, '-', memoryContent.substring(0, 50));
+        if (!existing) {
+          // Save memory with embedding
+          await Memory.create({
+            userId: userObjectId,
+            type: memoryType,
+            content: memoryContent,
+            importance: memoryType === 'person' ? 8 : 6,
+            source: speakerType === 'user' ? 'user' : 'inferred',
+            tags: speakerType === 'other' && speakerName ? [speakerName.toLowerCase()] : [],
+            embedding,
+            context: {
+              timestamp: entryTimestamp,
+            },
+          });
+          
+          console.log('[Transcript] ✅ Memory saved with embedding:', memoryType, '-', memoryContent.substring(0, 50));
+        } else {
+          console.log('[Transcript] ⏭️ Duplicate memory skipped:', memoryContent.substring(0, 30));
+        }
       } catch (memErr) {
         console.error('[Transcript] ❌ Memory save failed:', memErr);
         // Don't fail the request, but log the error

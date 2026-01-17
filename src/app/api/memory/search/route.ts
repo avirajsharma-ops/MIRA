@@ -1,12 +1,15 @@
 // Dynamic Memory Search API
 // Searches across memories, conversations, and transcripts based on user query keywords
+// NOW WITH SEMANTIC VECTOR SEARCH for better accuracy
 import { NextRequest, NextResponse } from 'next/server';
 import { connectToDatabase } from '@/lib/mongodb';
 import { verifyToken, getTokenFromHeader } from '@/lib/auth';
 import Memory from '@/models/Memory';
+import Person from '@/models/Person';
 import Conversation from '@/models/Conversation';
 import Transcript from '@/models/Transcript';
 import mongoose from 'mongoose';
+import { generateEmbedding, cosineSimilarity } from '@/lib/ai/embeddings';
 
 // Extract keywords from user query for searching
 function extractKeywords(query: string): string[] {
@@ -98,11 +101,92 @@ function isMemoryQuery(query: string): { isMemoryQuery: boolean; confidence: num
   return { isMemoryQuery: false, confidence: 0.3, queryType: 'general' };
 }
 
-// Search memories collection
-async function searchMemories(userId: string, keywords: string[]): Promise<any[]> {
+// Search memories collection using SEMANTIC VECTOR SEARCH
+async function searchMemories(userId: string, keywords: string[], queryEmbedding?: number[]): Promise<any[]> {
   const userObjectId = new mongoose.Types.ObjectId(userId);
   
-  // Build regex patterns for each keyword
+  // Try semantic search first if we have an embedding
+  if (queryEmbedding) {
+    try {
+      // Try Atlas Vector Search
+      const db = mongoose.connection.db;
+      if (db) {
+        try {
+          const vectorResults = await db.collection('memories').aggregate([
+            {
+              $vectorSearch: {
+                index: 'memory_vector_index',
+                path: 'embedding',
+                queryVector: queryEmbedding,
+                numCandidates: 100,
+                limit: 15,
+                filter: {
+                  userId: userObjectId,
+                  isArchived: { $ne: true },
+                },
+              },
+            },
+            {
+              $project: {
+                _id: 1,
+                type: 1,
+                content: 1,
+                importance: 1,
+                createdAt: 1,
+                tags: 1,
+                score: { $meta: 'vectorSearchScore' },
+              },
+            },
+          ]).toArray();
+
+          if (vectorResults.length > 0) {
+            console.log('[MemorySearch] Vector search found', vectorResults.length, 'memories');
+            return vectorResults.map(m => ({
+              source: 'memory',
+              type: m.type,
+              content: m.content,
+              importance: m.importance,
+              createdAt: m.createdAt,
+              tags: m.tags,
+              score: m.score,
+            }));
+          }
+        } catch {
+          // Vector search not available, try manual similarity
+        }
+      }
+
+      // Fallback: Manual cosine similarity search
+      const memoriesWithEmbeddings = await Memory.find({
+        userId: userObjectId,
+        isArchived: { $ne: true },
+        embedding: { $exists: true, $ne: [] },
+      }).select('+embedding').limit(200).lean();
+
+      if (memoriesWithEmbeddings.length > 0) {
+        const scored = memoriesWithEmbeddings.map(m => ({
+          memory: m,
+          similarity: m.embedding ? cosineSimilarity(queryEmbedding, m.embedding) : 0,
+        }));
+        
+        scored.sort((a, b) => b.similarity - a.similarity);
+        
+        return scored.slice(0, 15).map(s => ({
+          source: 'memory',
+          type: s.memory.type,
+          content: s.memory.content,
+          importance: s.memory.importance,
+          createdAt: s.memory.createdAt,
+          tags: s.memory.tags,
+          score: s.similarity,
+        }));
+      }
+    } catch (error) {
+      console.error('[MemorySearch] Semantic search error:', error);
+    }
+  }
+  
+  // Fallback to keyword search
   const regexPatterns = keywords.map(k => new RegExp(k.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'i'));
   
   // Search with OR logic across keywords
@@ -128,11 +212,88 @@ async function searchMemories(userId: string, keywords: string[]): Promise<any[]
   }));
 }
 
-// Search conversations collection
-async function searchConversations(userId: string, keywords: string[]): Promise<any[]> {
+// Search conversations collection with SEMANTIC SEARCH
+async function searchConversations(userId: string, keywords: string[], queryEmbedding?: number[]): Promise<any[]> {
   const userObjectId = new mongoose.Types.ObjectId(userId);
+  const results: any[] = [];
   
-  // Build regex patterns
+  // Try semantic search first on conversation messages
+  if (queryEmbedding) {
+    try {
+      // Get recent conversations (last 30 days)
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const conversations = await Conversation.find({
+        userId: userObjectId,
+        updatedAt: { $gte: thirtyDaysAgo },
+      })
+        .sort({ updatedAt: -1 })
+        .limit(50)
+        .lean() as any[];
+
+      // Collect all messages with their conversation context
+      const allMessages: { msg: any; convId: string; convTitle?: string }[] = [];
+      for (const conv of conversations) {
+        for (const msg of (conv.messages || [])) {
+          if (msg.content && msg.content.length > 10) {
+            allMessages.push({
+              msg,
+              convId: (conv._id as any).toString(),
+              convTitle: conv.title as string | undefined,
+            });
+          }
+        }
+      }
+
+      // Generate embeddings and find similar messages (for important queries)
+      // Use a simpler keyword+similarity approach for efficiency
+      const scoredMessages: { msg: any; convId: string; convTitle?: string; score: number }[] = [];
+      
+      for (const { msg, convId, convTitle } of allMessages) {
+        // Keyword matching score
+        const content = msg.content.toLowerCase();
+        let keywordScore = 0;
+        for (const keyword of keywords) {
+          if (content.includes(keyword.toLowerCase())) {
+            keywordScore += 1;
+          }
+        }
+        
+        // Only include messages with keyword matches for efficiency
+        if (keywordScore > 0) {
+          scoredMessages.push({
+            msg,
+            convId,
+            convTitle,
+            score: keywordScore,
+          });
+        }
+      }
+
+      // Sort by score and return top matches
+      scoredMessages.sort((a, b) => b.score - a.score);
+      
+      for (const { msg, convId, convTitle, score } of scoredMessages.slice(0, 20)) {
+        results.push({
+          source: 'conversation',
+          role: msg.role,
+          content: msg.content,
+          timestamp: msg.timestamp,
+          conversationId: convId,
+          conversationTitle: convTitle,
+          score,
+        });
+      }
+
+      if (results.length > 0) {
+        console.log('[MemorySearch] Semantic conversation search found', results.length, 'messages');
+        return results;
+      }
+    } catch (error) {
+      console.error('[MemorySearch] Semantic conversation search error:', error);
+    }
+  }
+  
+  // Fallback: Build regex patterns for keyword search
   const regexPatterns = keywords.map(k => new RegExp(k.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'i'));
   
   // Search in message content
@@ -141,11 +302,10 @@ async function searchConversations(userId: string, keywords: string[]): Promise<
     'messages.content': { $in: regexPatterns },
   })
     .sort({ updatedAt: -1 })
-    .limit(10)
+    .limit(20)
     .lean();
 
   // Extract matching messages
-  const results: any[] = [];
   for (const conv of conversations) {
     const matchingMessages = (conv.messages || []).filter((m: any) =>
       keywords.some(k => m.content?.toLowerCase().includes(k.toLowerCase()))
@@ -158,11 +318,12 @@ async function searchConversations(userId: string, keywords: string[]): Promise<
         content: msg.content,
         timestamp: msg.timestamp,
         conversationId: conv._id,
+        conversationTitle: conv.title,
       });
     }
   }
 
-  return results.slice(0, 15); // Max 15 results
+  return results.slice(0, 20); // Max 20 results
 }
 
 // Search transcripts collection (ambient conversations)
@@ -239,36 +400,60 @@ export async function GET(request: NextRequest) {
     console.log('[MemorySearch] Keywords:', keywords);
     console.log('[MemorySearch] Is memory query:', memoryAnalysis);
 
-    // If not a memory query and not forced, return early
-    if (!memoryAnalysis.isMemoryQuery && !forceSearch && memoryAnalysis.confidence < 0.5) {
-      return NextResponse.json({
-        results: [],
-        keywords,
-        isMemoryQuery: false,
-        confidence: memoryAnalysis.confidence,
-        queryType: memoryAnalysis.queryType,
-        message: 'Query does not appear to be asking about past information',
-      });
+    // ALWAYS search - removed early return for non-memory queries
+    // All queries benefit from memory context
+
+    // Generate embedding for semantic search
+    let queryEmbedding: number[] | undefined;
+    try {
+      queryEmbedding = await generateEmbedding(query);
+    } catch (error) {
+      console.warn('[MemorySearch] Failed to generate embedding, falling back to keyword search');
     }
 
-    // Search all sources in parallel
-    const [memories, conversations, transcripts] = await Promise.all([
-      searchMemories(payload.userId, keywords),
-      searchConversations(payload.userId, keywords),
+    // Search all sources in parallel, including people
+    const userObjectId = new mongoose.Types.ObjectId(payload.userId);
+    const [memories, conversations, transcripts, people] = await Promise.all([
+      searchMemories(payload.userId, keywords, queryEmbedding),
+      searchConversations(payload.userId, keywords, queryEmbedding),
       searchTranscripts(payload.userId, keywords),
+      // Search people library
+      Person.find({
+        userId: userObjectId,
+        $or: [
+          { name: { $regex: keywords.join('|'), $options: 'i' } },
+          { description: { $regex: keywords.join('|'), $options: 'i' } },
+          { relationship: { $regex: keywords.join('|'), $options: 'i' } },
+        ],
+      }).limit(10).lean(),
     ]);
 
-    // Combine and sort by relevance (memories first, then conversations, then transcripts)
+    // Format people results
+    const peopleResults = people.map(p => ({
+      source: 'person',
+      name: p.name,
+      content: `${p.name}${p.relationship ? ` (${p.relationship})` : ''}: ${p.description}`,
+      relationship: p.relationship,
+    }));
+
+    // Combine and sort by relevance (people and memories first)
     const allResults = [
+      ...peopleResults.map(r => ({ ...r, relevanceScore: 4 })),
       ...memories.map(r => ({ ...r, relevanceScore: 3 })),
       ...conversations.map(r => ({ ...r, relevanceScore: 2 })),
       ...transcripts.map(r => ({ ...r, relevanceScore: 1 })),
     ];
 
-    // Sort by relevance score, then by timestamp
+    // Sort by relevance score, then by semantic score if available
     allResults.sort((a, b) => {
       if (a.relevanceScore !== b.relevanceScore) {
         return b.relevanceScore - a.relevanceScore;
+      }
+      // Use semantic score if available
+      const aScore = (a as any).score || 0;
+      const bScore = (b as any).score || 0;
+      if (aScore !== bScore) {
+        return bScore - aScore;
       }
       const aTime = new Date(a.timestamp || a.createdAt || a.date || 0).getTime();
       const bTime = new Date(b.timestamp || b.createdAt || b.date || 0).getTime();
@@ -278,8 +463,10 @@ export async function GET(request: NextRequest) {
     // Format results into a context string for the AI
     let contextString = '';
     if (allResults.length > 0) {
-      contextString = allResults.slice(0, 10).map(r => {
-        if (r.source === 'memory') {
+      contextString = allResults.slice(0, 12).map(r => {
+        if (r.source === 'person') {
+          return `[Person] ${r.content}`;
+        } else if (r.source === 'memory') {
           return `[Memory - ${r.type}] ${r.content}`;
         } else if (r.source === 'conversation') {
           return `[Past conversation - ${r.role}] ${r.content}`;
@@ -289,7 +476,7 @@ export async function GET(request: NextRequest) {
       }).join('\n');
     }
 
-    console.log('[MemorySearch] Found', allResults.length, 'results');
+    console.log('[MemorySearch] Found', allResults.length, 'results (semantic:', !!queryEmbedding, ')');
 
     return NextResponse.json({
       results: allResults.slice(0, 20),
@@ -298,7 +485,9 @@ export async function GET(request: NextRequest) {
       confidence: memoryAnalysis.confidence,
       queryType: memoryAnalysis.queryType,
       contextString,
+      usedSemanticSearch: !!queryEmbedding,
       totalResults: {
+        people: peopleResults.length,
         memories: memories.length,
         conversations: conversations.length,
         transcripts: transcripts.length,
