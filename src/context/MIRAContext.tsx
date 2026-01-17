@@ -1505,6 +1505,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   // Auto-save queue for reliable saving
   const saveQueueRef = useRef<Array<{ type: 'transcript' | 'conversation' | 'person'; data: any }>>([]);
   const isSavingRef = useRef(false);
+  const isFlushingRef = useRef(false); // For synchronous flush on page close
   
   // Process save queue - ensures saves happen in order and don't fail silently
   const processSaveQueue = useCallback(async () => {
@@ -1598,6 +1599,70 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     isSavingRef.current = false;
   }, []);
   
+  // === CRITICAL: Flush save queue synchronously using sendBeacon ===
+  // This is called on page close/navigation to prevent data loss
+  const flushSaveQueueSync = useCallback(() => {
+    if (isFlushingRef.current || saveQueueRef.current.length === 0) return;
+    isFlushingRef.current = true;
+    
+    const token = localStorage.getItem('mira_token');
+    if (!token) {
+      console.warn('[AutoSave] Cannot flush - no auth token');
+      isFlushingRef.current = false;
+      return;
+    }
+    
+    const pendingItems = [...saveQueueRef.current];
+    console.log('[AutoSave] 🚨 FLUSHING', pendingItems.length, 'items before page close');
+    
+    // Group items by type for batch sending
+    const transcripts = pendingItems.filter(i => i.type === 'transcript');
+    const conversations = pendingItems.filter(i => i.type === 'conversation');
+    
+    // Use sendBeacon for guaranteed delivery on page close
+    // sendBeacon sends data asynchronously but guarantees the request is made
+    // before the page unloads
+    
+    if (transcripts.length > 0) {
+      const transcriptPayload = JSON.stringify({
+        batch: true,
+        items: transcripts.map(t => t.data),
+        token, // Include token in payload since headers aren't supported
+      });
+      navigator.sendBeacon('/api/transcripts/batch', transcriptPayload);
+      console.log('[AutoSave] 📤 Sent', transcripts.length, 'transcripts via beacon');
+    }
+    
+    if (conversations.length > 0) {
+      // Group conversation messages by sessionId
+      const messagesBySession: { [sessionId: string]: any[] } = {};
+      for (const conv of conversations) {
+        const sid = conv.data.sessionId;
+        if (!messagesBySession[sid]) messagesBySession[sid] = [];
+        if (conv.data.message) {
+          messagesBySession[sid].push(conv.data.message);
+        }
+      }
+      
+      // Send each session's messages
+      for (const [sessionId, messages] of Object.entries(messagesBySession)) {
+        const convPayload = JSON.stringify({
+          batch: true,
+          sessionId,
+          conversationId: conversationIdRef.current,
+          messages,
+          token,
+        });
+        navigator.sendBeacon('/api/conversations/sync', convPayload);
+        console.log('[AutoSave] 📤 Sent', messages.length, 'conversation messages via beacon');
+      }
+    }
+    
+    // Clear the queue
+    saveQueueRef.current = [];
+    isFlushingRef.current = false;
+  }, []);
+  
   // Queue a save operation
   const queueSave = useCallback((type: 'transcript' | 'conversation' | 'person', data: any) => {
     saveQueueRef.current.push({ type, data });
@@ -1608,6 +1673,72 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     queueSaveRef.current = queueSave;
   }, [queueSave]);
+  
+  // === CRITICAL: Event listeners for page close/navigation ===
+  // Ensure all pending data is saved before page unloads
+  useEffect(() => {
+    // Handler for page close/navigation
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (saveQueueRef.current.length > 0) {
+        console.log('[AutoSave] 🚨 Page closing with', saveQueueRef.current.length, 'unsaved items');
+        flushSaveQueueSync();
+        // Show browser warning if there's unsaved data
+        e.preventDefault();
+        e.returnValue = 'You have unsaved conversation data. Are you sure you want to leave?';
+        return e.returnValue;
+      }
+    };
+    
+    // Handler for page unload (after beforeunload)
+    const handleUnload = () => {
+      if (saveQueueRef.current.length > 0) {
+        console.log('[AutoSave] 🚨 Final unload flush');
+        flushSaveQueueSync();
+      }
+    };
+    
+    // Handler for visibility change (mobile tab switch, minimize, etc.)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'hidden' && saveQueueRef.current.length > 0) {
+        console.log('[AutoSave] 📱 Page hidden with', saveQueueRef.current.length, 'unsaved items - flushing');
+        flushSaveQueueSync();
+      }
+    };
+    
+    // Handler for mobile page hide (iOS Safari)
+    const handlePageHide = (e: PageTransitionEvent) => {
+      if (e.persisted) {
+        // Page is being cached (bfcache) - save immediately
+        console.log('[AutoSave] 📱 Page being cached - flushing');
+      }
+      if (saveQueueRef.current.length > 0) {
+        flushSaveQueueSync();
+      }
+    };
+    
+    // Add all event listeners
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    window.addEventListener('unload', handleUnload);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    window.addEventListener('pagehide', handlePageHide);
+    
+    // Periodic auto-save every 30 seconds to ensure data is synced
+    // This catches any edge cases where the queue might stall
+    const autoSaveInterval = setInterval(() => {
+      if (saveQueueRef.current.length > 0) {
+        console.log('[AutoSave] ⏰ Periodic sync -', saveQueueRef.current.length, 'pending items');
+        processSaveQueue();
+      }
+    }, 30000);
+    
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('unload', handleUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      window.removeEventListener('pagehide', handlePageHide);
+      clearInterval(autoSaveInterval);
+    };
+  }, [flushSaveQueueSync, processSaveQueue]);
   
   // Save transcript entry to database with guaranteed delivery
   const saveTranscript = useCallback(async (
@@ -3062,7 +3193,19 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     }
   }, [autoStart, processSaveQueue]);
 
-  const logout = useCallback(() => {
+  const logout = useCallback(async () => {
+    // === CRITICAL: Flush save queue BEFORE clearing auth ===
+    // This ensures all conversation data is saved before logout
+    if (saveQueueRef.current.length > 0) {
+      console.log('[AutoSave] 🔄 Flushing', saveQueueRef.current.length, 'items before logout');
+      // Try async flush first for best reliability
+      await processSaveQueue();
+      // If any items remain, use beacon as backup
+      if (saveQueueRef.current.length > 0) {
+        flushSaveQueueSync();
+      }
+    }
+    
     localStorage.removeItem('mira_token');
     setUser(null);
     setIsAuthenticated(false);
@@ -3073,7 +3216,7 @@ export function MIRAProvider({ children }: { children: React.ReactNode }) {
     setCurrentSpeakerId(null);
     setCurrentSpeakerName(null);
     setIsOwnerSpeaking(false);
-  }, [disconnectRealtime]);
+  }, [disconnectRealtime, processSaveQueue, flushSaveQueueSync]);
 
   // Load voice embeddings when user is authenticated
   useEffect(() => {

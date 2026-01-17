@@ -109,7 +109,28 @@ If nothing memorable, return: {"shouldSave": false, "memories": []}`;
 
 export async function POST(request: NextRequest) {
   try {
-    const token = getTokenFromHeader(request.headers.get('authorization'));
+    // Handle both regular requests and sendBeacon requests
+    const contentType = request.headers.get('content-type') || '';
+    let body: any;
+    
+    if (contentType.includes('application/json')) {
+      body = await request.json();
+    } else {
+      // sendBeacon sends as text/plain by default
+      const text = await request.text();
+      try {
+        body = JSON.parse(text);
+      } catch {
+        return NextResponse.json({ error: 'Invalid JSON' }, { status: 400 });
+      }
+    }
+    
+    // Token can be in header (normal) or body (sendBeacon)
+    let token = getTokenFromHeader(request.headers.get('authorization'));
+    if (!token && body.token) {
+      token = body.token;
+    }
+    
     if (!token) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
@@ -118,17 +139,112 @@ export async function POST(request: NextRequest) {
     if (!payload) {
       return NextResponse.json({ error: 'Invalid token' }, { status: 401 });
     }
+    
+    await connectToDatabase();
+    const userObjectId = new mongoose.Types.ObjectId(payload.userId);
+    
+    // Check if this is a batch request (from sendBeacon)
+    if (body.batch && body.messages && Array.isArray(body.messages)) {
+      const { sessionId, conversationId, messages } = body;
+      
+      if (!sessionId || messages.length === 0) {
+        return NextResponse.json({ error: 'sessionId and messages are required' }, { status: 400 });
+      }
+      
+      console.log('[ConvSync Batch] 📥 Received', messages.length, 'messages from user', payload.userId);
+      
+      // Find or create conversation
+      let conversation;
+      
+      if (conversationId) {
+        conversation = await Conversation.findOne({
+          _id: conversationId,
+          userId: userObjectId,
+        });
+      }
+      
+      if (!conversation) {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        
+        conversation = await Conversation.findOne({
+          userId: userObjectId,
+          startedAt: { $gte: today },
+          isActive: true,
+        });
+        
+        if (!conversation) {
+          const firstMsg = messages[0];
+          const title = firstMsg?.content 
+            ? firstMsg.content.substring(0, 50) + (firstMsg.content.length > 50 ? '...' : '')
+            : 'Voice Conversation';
+            
+          conversation = new Conversation({
+            userId: userObjectId,
+            title,
+            messages: [],
+            isActive: true,
+            startedAt: new Date(),
+            metadata: {
+              totalMessages: 0,
+              miraMessages: 0,
+              userMessages: 0,
+            },
+          });
+        }
+      }
+      
+      // Add all messages
+      let saved = 0;
+      for (const msg of messages) {
+        const msgEntry = {
+          role: msg.role || 'user',
+          content: msg.content,
+          timestamp: msg.timestamp ? new Date(msg.timestamp) : new Date(),
+          speakerName: msg.speakerName,
+        };
+        
+        // Check for duplicates
+        const isDuplicate = conversation.messages.some(
+          (m: any) => m.content === msg.content && 
+            Math.abs(new Date(m.timestamp).getTime() - new Date(msgEntry.timestamp).getTime()) < 1000
+        );
+        
+        if (!isDuplicate) {
+          conversation.messages.push(msgEntry);
+          
+          // Update metadata
+          conversation.metadata = conversation.metadata || { totalMessages: 0, userMessages: 0, miraMessages: 0 };
+          conversation.metadata.totalMessages++;
+          if (msg.role === 'user') {
+            conversation.metadata.userMessages++;
+          } else if (msg.role === 'mira') {
+            conversation.metadata.miraMessages++;
+          }
+          saved++;
+        }
+      }
+      
+      conversation.lastMessageAt = new Date();
+      await conversation.save();
+      
+      console.log('[ConvSync Batch] ✓ Saved', saved, '/', messages.length, 'messages');
+      
+      return NextResponse.json({
+        success: true,
+        conversationId: conversation._id,
+        saved,
+        total: messages.length,
+      });
+    }
 
-    const body = await request.json();
+    // Standard single message handling
     const { sessionId, conversationId, message } = body;
 
     if (!sessionId || !message) {
       return NextResponse.json({ error: 'sessionId and message are required' }, { status: 400 });
     }
 
-    await connectToDatabase();
-
-    const userObjectId = new mongoose.Types.ObjectId(payload.userId);
     const timestamp = message.timestamp ? new Date(message.timestamp) : new Date();
 
     // Find or create conversation
