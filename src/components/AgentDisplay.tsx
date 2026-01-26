@@ -1,7 +1,7 @@
 'use client';
 
 import { useMIRA } from '@/context/MIRAContext';
-import FullScreenSpheres from './FullScreenSpheres';
+import FaceMorph from './FaceMorph';
 import { useEffect, useRef } from 'react';
 
 interface AgentDisplayProps {
@@ -31,23 +31,17 @@ export default function AgentDisplay({ showControls = true }: AgentDisplayProps)
     }
   }, [audioLevel, outputAudioLevel]);
 
-  // Display mode - always combined now (unified agent)
-  const mode = 'combined';
-
   // AI is "thinking" when loading but not yet speaking
   const isThinking = isLoading && !isSpeaking;
 
   return (
     <div className="relative w-full h-full">
-      {/* Full-screen particle spheres */}
-      <FullScreenSpheres
-        mode={mode}
-        speakingAgent={speakingAgent}
-        isSpeaking={isSpeaking}
+      {/* Face Morph Particle Effect - Globe morphs to face when detected */}
+      <FaceMorph
         miraAudioLevel={outputAudioLevel}
         userAudioLevel={audioLevel}
-        isThinking={isThinking}
         miraState={miraState}
+        isSpeaking={isSpeaking}
       />
 
       {/* Status overlay */}

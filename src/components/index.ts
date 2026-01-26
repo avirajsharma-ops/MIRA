@@ -1,6 +1,7 @@
 export { default as NebulaSphere } from './NebulaSphere';
 export { default as MIRACombinedSphere } from './MIRACombinedSphere';
 export { default as FullScreenSpheres } from './FullScreenSpheres';
+export { default as FaceMorph } from './FaceMorph';
 export { default as MessageBubble } from './MessageBubble';
 export { default as ChatPanel } from './ChatPanel';
 export { default as InputBar } from './InputBar';
